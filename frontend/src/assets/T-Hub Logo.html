@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T-Hub · Logo</title>
+<style>
+  @font-face{
+    font-family:'Lexend';
+    src:url('assets/fonts/Lexend-VariableFont_wght.ttf') format('truetype');
+    font-weight:100 900;
+    font-display:swap;
+  }
+  :root{
+    --green:#007040;
+    --anthracite:#2B2B2B;
+    --cream:#F0ECE0;
+    --cream-deep:#E6E0CF;
+    --paper:#FBFAF6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{background:var(--paper);color:var(--anthracite);font-family:'Lexend',sans-serif;-webkit-font-smoothing:antialiased;}
+  body{padding:64px 56px 96px;}
+  .wrap{max-width:1120px;margin:0 auto;}
+
+  header.head{display:flex;align-items:baseline;gap:18px;border-bottom:1px solid var(--cream-deep);padding-bottom:22px;margin-bottom:48px;}
+  header.head h1{font-size:26px;font-weight:700;letter-spacing:.01em;}
+  header.head .crumb{font-size:13px;font-weight:500;color:#9b9684;letter-spacing:.16em;text-transform:uppercase;}
+  header.head .sp{flex:1;}
+
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:22px;}
+  .card{border:1px solid var(--cream-deep);border-radius:18px;background:#fff;padding:38px;display:flex;flex-direction:column;min-height:240px;position:relative;overflow:hidden;}
+  .card .lbl{position:absolute;top:18px;left:22px;font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#a8a392;}
+  .card .stage{flex:1;display:flex;align-items:center;justify-content:center;}
+  .card.dark{background:var(--anthracite);border-color:var(--anthracite);}
+  .card.dark .lbl{color:#6f6f6a;}
+  .card.cream{background:var(--cream);border-color:var(--cream-deep);}
+  .span4{grid-column:span 4;}
+  .span6{grid-column:span 6;}
+  .span12{grid-column:span 12;}
+
+  /* ----- LOGO LOCKUP ----- */
+  .lockup{display:inline-flex;align-items:center;gap:.40em;font-size:64px;line-height:1;}
+  .lockup .picto{width:1.0em;height:1.0em;flex:none;display:block;}
+  .lockup .word{font-weight:600;letter-spacing:-.02em;color:var(--anthracite);white-space:nowrap;}
+  .lockup .word .hy{color:var(--green);}
+  .lockup.on-dark .word{color:var(--cream);}
+
+  .lockup.stack{flex-direction:column;gap:.18em;font-size:54px;text-align:center;}
+  .lockup.stack .picto{width:1.55em;height:1.55em;}
+
+  /* app tiles */
+  .tilerow{display:flex;align-items:center;gap:26px;flex-wrap:wrap;justify-content:center;}
+  .tile{display:flex;align-items:center;justify-content:center;box-shadow:0 8px 26px rgba(0,0,0,.13);}
+  .tile svg{width:100%;height:100%;display:block;}
+  .t96{width:96px;height:96px;}
+  .t64{width:64px;height:64px;}
+  .t40{width:40px;height:40px;}
+  .t28{width:28px;height:28px;}
+
+  .note{font-size:13.5px;line-height:1.65;color:#76725f;font-weight:500;}
+  .note b{color:var(--anthracite);font-weight:600;}
+  .swatches{display:flex;gap:14px;flex-wrap:wrap;}
+  .sw{display:flex;flex-direction:column;gap:8px;font-size:12px;font-weight:600;color:#76725f;}
+  .sw .chip{width:128px;height:64px;border-radius:12px;border:1px solid rgba(0,0,0,.06);}
+  .sw .nm{color:var(--anthracite);}
+
+  footer{margin-top:54px;font-size:12.5px;color:#a8a392;font-weight:500;letter-spacing:.02em;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <h1>T-Hub</h1>
+    <span class="crumb">Logo applicazione · Tonoli</span>
+    <span class="sp"></span>
+    <span class="crumb">Workforce Hub</span>
+  </header>
+
+  <div class="grid">
+
+    <!-- PRIMARY -->
+    <div class="card span12" style="min-height:300px;">
+      <span class="lbl">Lockup primario</span>
+      <div class="stage">
+        <span class="lockup">
+          <svg class="picto" viewBox="0 0 200 200" aria-label="T-Hub">
+            <defs><clipPath id="cl"><circle cx="100" cy="100" r="100"/></clipPath></defs>
+            <g clip-path="url(#cl)">
+              <rect width="200" height="200" fill="#007040"/>
+              <rect x="0" y="54" width="200" height="48" fill="#fff"/>
+              <rect x="75" y="54" width="50" height="146" fill="#fff"/>
+            </g>
+          </svg>
+          <span class="word">T<span class="hy">-</span>Hub</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- ON DARK -->
+    <div class="card dark span6">
+      <span class="lbl">Su antracite</span>
+      <div class="stage">
+        <span class="lockup on-dark" style="font-size:52px;">
+          <svg class="picto" viewBox="0 0 200 200">
+            <defs><clipPath id="cl2"><circle cx="100" cy="100" r="100"/></clipPath></defs>
+            <g clip-path="url(#cl2)">
+              <rect width="200" height="200" fill="#007040"/>
+              <rect x="0" y="54" width="200" height="48" fill="#2B2B2B"/>
+              <rect x="75" y="54" width="50" height="146" fill="#2B2B2B"/>
+            </g>
+          </svg>
+          <span class="word">T<span class="hy">-</span>Hub</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- ON CREAM -->
+    <div class="card cream span6">
+      <span class="lbl">Su crema</span>
+      <div class="stage">
+        <span class="lockup" style="font-size:52px;">
+          <svg class="picto" viewBox="0 0 200 200">
+            <defs><clipPath id="cl3"><circle cx="100" cy="100" r="100"/></clipPath></defs>
+            <g clip-path="url(#cl3)">
+              <rect width="200" height="200" fill="#007040"/>
+              <rect x="0" y="54" width="200" height="48" fill="#F0ECE0"/>
+              <rect x="75" y="54" width="50" height="146" fill="#F0ECE0"/>
+            </g>
+          </svg>
+          <span class="word">T<span class="hy">-</span>Hub</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- STACKED -->
+    <div class="card span4">
+      <span class="lbl">Verticale</span>
+      <div class="stage">
+        <span class="lockup stack">
+          <svg class="picto" viewBox="0 0 200 200">
+            <defs><clipPath id="cl4"><circle cx="100" cy="100" r="100"/></clipPath></defs>
+            <g clip-path="url(#cl4)">
+              <rect width="200" height="200" fill="#007040"/>
+              <rect x="0" y="54" width="200" height="48" fill="#fff"/>
+              <rect x="75" y="54" width="50" height="146" fill="#fff"/>
+            </g>
+          </svg>
+          <span class="word">T<span class="hy">-</span>Hub</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- APP ICONS light -->
+    <div class="card span4">
+      <span class="lbl">App icon · chiara</span>
+      <div class="stage">
+        <div class="tilerow">
+          <div class="tile t96"><img src="assets/thub-appicon-light.svg" width="96" height="96" alt=""></div>
+          <div class="tile t64"><img src="assets/thub-appicon-light.svg" width="64" height="64" alt=""></div>
+          <div class="tile t40"><img src="assets/thub-appicon-light.svg" width="40" height="40" alt=""></div>
+          <div class="tile t28"><img src="assets/thub-appicon-light.svg" width="28" height="28" alt=""></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- APP ICONS anthracite -->
+    <div class="card span4">
+      <span class="lbl">App icon · antracite</span>
+      <div class="stage">
+        <div class="tilerow">
+          <div class="tile t96"><img src="assets/thub-appicon-anthracite.svg" width="96" height="96" alt=""></div>
+          <div class="tile t64"><img src="assets/thub-appicon-anthracite.svg" width="64" height="64" alt=""></div>
+          <div class="tile t40"><img src="assets/thub-appicon-anthracite.svg" width="40" height="40" alt=""></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONSTRUCTION -->
+    <div class="card span6" style="min-height:300px;">
+      <span class="lbl">Pittogramma · costruzione</span>
+      <div class="stage">
+        <svg viewBox="0 0 260 260" style="width:210px;height:210px;">
+          <g transform="translate(30,30)">
+            <circle cx="100" cy="100" r="100" fill="#007040"/>
+            <rect x="0" y="54" width="200" height="48" fill="#fff"/>
+            <rect x="75" y="54" width="50" height="146" fill="#fff"/>
+          </g>
+          <rect x="30" y="30" width="200" height="200" fill="none" stroke="#E6E0CF" stroke-width="1.5" stroke-dasharray="4 5"/>
+          <line x1="130" y1="6" x2="130" y2="254" stroke="#007040" stroke-width="1" opacity=".25"/>
+          <line x1="6" y1="84" x2="254" y2="84" stroke="#007040" stroke-width="1" opacity=".22"/>
+          <line x1="6" y1="132" x2="254" y2="132" stroke="#007040" stroke-width="1" opacity=".22"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- COLORS -->
+    <div class="card span6">
+      <span class="lbl">Colori marchio</span>
+      <div class="stage" style="justify-content:flex-start;">
+        <div class="swatches">
+          <div class="sw"><div class="chip" style="background:#007040;"></div><span class="nm">Verde Tonoli</span><span>#007040</span></div>
+          <div class="sw"><div class="chip" style="background:#2B2B2B;"></div><span class="nm">Antracite</span><span>#2B2B2B</span></div>
+          <div class="sw"><div class="chip" style="background:#F0ECE0;"></div><span class="nm">Crema</span><span>#F0ECE0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RATIONALE -->
+    <div class="card span12" style="min-height:0;">
+      <span class="lbl">Concept</span>
+      <div class="stage" style="display:block;padding-top:14px;">
+        <p class="note"><b>T-Hub</b> riprende fedelmente il pittogramma Tonoli — le linee perpendicolari che formano la <b>T</b> in negativo, con le stesse proporzioni del marchio originale (traversa e gambo a ~¼ del diametro). È la lettura di strade che si incrociano in uno <b>snodo</b>: l'immagine giusta per un gestionale che fa convergere persone, turni e sistemi (TMS · presenze) in un unico centro. Il trattino verde lega <b>T</b> e <b>Hub</b> — il connettore, cuore dell'applicazione. Carattere <b>Lexend</b>, lo stesso del logotipo Tonoli.</p>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>Tonoli Spedizioni · T-Hub Workforce Hub · marchio derivato dal Brandbook Tonoli</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,653 @@
+/* ── Variables ─────────────────────────────────────────────────────────── */
+.planner-page {
+  --pl-border: #e2e2e5;
+  --pl-surface: #ffffff;
+  --pl-bg: #f8f8fa;
+  --pl-text: #1e1e31;
+  --pl-subtle: #515164;
+  --pl-faded: #aeaeb8;
+  --pl-shadow: 0 0 1px rgba(226,226,229,.95), 0 18px 38px rgba(30,30,49,.05);
+  --pl-name-w: 210px;
+  --pl-row-h: 52px;
+  --pl-hdr-h: 36px;
+}
+
+/* ── Topbar ────────────────────────────────────────────────────────────── */
+.planner-topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+  border: 1px solid var(--pl-border);
+  border-radius: 18px;
+  box-shadow: var(--pl-shadow);
+  background: var(--pl-surface);
+  flex-wrap: wrap;
+}
+
+.planner-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.planner-title-badge {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  background: linear-gradient(160deg, #009e5a 0%, #007040 100%);
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.planner-title-text {
+  font-weight: 700 !important;
+  color: var(--pl-text);
+}
+
+.planner-date-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.planner-nav-btn {
+  all: unset;
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--pl-border);
+  border-radius: 50%;
+  background: var(--pl-surface);
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  color: var(--pl-subtle);
+  line-height: 1;
+  transition: background 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+
+.planner-nav-btn:hover {
+  background: var(--pl-bg);
+  border-color: #c0c0cc;
+}
+
+.planner-date-input .MuiOutlinedInput-root {
+  border-radius: 12px;
+  height: 36px;
+  font-size: 14px;
+}
+
+.planner-date-input .MuiOutlinedInput-notchedOutline {
+  border-color: var(--pl-border);
+}
+
+.planner-date-label {
+  font-size: 13px !important;
+  color: var(--pl-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+}
+
+.planner-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.planner-role-filter .MuiOutlinedInput-root {
+  border-radius: 12px;
+  height: 36px;
+  min-width: 160px;
+  font-size: 14px;
+}
+
+.planner-role-filter .MuiOutlinedInput-notchedOutline {
+  border-color: var(--pl-border);
+}
+
+.planner-view-toggle .MuiToggleButton-root {
+  height: 36px;
+  font-size: 13px;
+  text-transform: none;
+  padding: 0 14px;
+  border-radius: 10px !important;
+  border-color: var(--pl-border);
+}
+
+.planner-copy-btn {
+  height: 36px !important;
+  border-radius: 10px !important;
+  border-color: var(--pl-border) !important;
+  font-size: 13px !important;
+  text-transform: none !important;
+  color: var(--pl-subtle) !important;
+  white-space: nowrap;
+}
+
+/* ── Shell (main timeline container) ───────────────────────────────────── */
+.planner-shell {
+  border: 1px solid var(--pl-border);
+  border-radius: 18px;
+  box-shadow: var(--pl-shadow);
+  background: var(--pl-surface);
+  overflow: hidden;
+}
+
+/* ── Layout: sticky name col + scrollable tracks ───────────────────────── */
+.planner-layout {
+  display: flex;
+  overflow: hidden;
+}
+
+.planner-names {
+  flex-shrink: 0;
+  width: var(--pl-name-w);
+  border-right: 1px solid var(--pl-border);
+  background: var(--pl-surface);
+  z-index: 2;
+}
+
+.planner-name-header-cell {
+  height: var(--pl-hdr-h);
+  border-bottom: 1px solid var(--pl-border);
+  background: #fbfbfc;
+}
+
+.planner-name-cell {
+  height: var(--pl-row-h);
+  padding: 0 10px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--pl-border);
+  overflow: hidden;
+}
+
+.planner-area-name-cell {
+  /* height set inline for dynamic lanes */
+  height: unset;
+  align-items: center;
+}
+
+.planner-name-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.planner-area-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.planner-name-cell:last-child {
+  border-bottom: none;
+}
+
+.planner-emp-name {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: var(--pl-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3 !important;
+}
+
+.planner-emp-role {
+  font-size: 10.5px !important;
+  color: var(--pl-faded);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.3 !important;
+}
+
+/* ── Scrollable area ────────────────────────────────────────────────────── */
+.planner-scroll {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+}
+
+/* ── Hour header ────────────────────────────────────────────────────────── */
+.planner-hour-header {
+  position: relative;
+  height: var(--pl-hdr-h);
+  border-bottom: 2px solid var(--pl-border);
+  background: #fbfbfc;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.planner-hour-label {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 4px;
+  padding-left: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--pl-faded);
+  letter-spacing: 0.02em;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* ── Track row ──────────────────────────────────────────────────────────── */
+.planner-track {
+  position: relative;
+  height: var(--pl-row-h);
+  border-bottom: 1px solid var(--pl-border);
+  cursor: crosshair;
+  /*
+    Vertical hour lines: repeat every 64px (= HOUR_WIDTH).
+    First line at x=0 matches HOUR_START boundary.
+  */
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0px,
+    transparent 63px,
+    var(--pl-border) 63px,
+    var(--pl-border) 64px
+  );
+}
+
+.planner-track:last-child {
+  border-bottom: none;
+}
+
+.planner-empty {
+  height: var(--pl-row-h);
+  display: flex;
+  align-items: center;
+  padding-left: 16px;
+  font-size: 13px;
+  color: var(--pl-faded);
+}
+
+/* ── Absence overlay ────────────────────────────────────────────────────── */
+.planner-absence {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  pointer-events: auto;
+  cursor: not-allowed;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.planner-absence.ferie {
+  background: rgba(7,162,173,0.08);
+  border: 1.5px dashed rgba(7,162,173,0.35);
+  color: #005a60;
+}
+
+.planner-absence.permesso {
+  background: rgba(245,158,11,0.08);
+  border: 1.5px dashed rgba(217,119,6,0.35);
+  color: #78350f;
+}
+
+.planner-absence-label {
+  opacity: 0.75;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+/* ── Assignment block ───────────────────────────────────────────────────── */
+.planner-block {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  border-radius: 6px;
+  border: 1.5px solid;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+  transition: box-shadow 0.1s ease;
+  z-index: 1;
+}
+
+.planner-block:hover {
+  box-shadow: 0 2px 10px rgba(0,0,0,0.13);
+  z-index: 2;
+}
+
+.planner-block.is-dragging {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  z-index: 10;
+  opacity: 0.88;
+}
+
+.planner-break-overlay {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 4px;
+  border: 1px dashed rgba(146, 64, 14, 0.65);
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(245,158,11,0.28) 0 6px,
+    rgba(245,158,11,0.12) 6px 12px
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.planner-break-label {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(120, 53, 15, 0.9);
+}
+
+/* resize handles */
+.planner-handle {
+  flex-shrink: 0;
+  width: 8px;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.1s;
+}
+
+.planner-handle-left  { cursor: w-resize; }
+.planner-handle-right { cursor: e-resize; }
+
+.planner-handle::after {
+  content: "";
+  width: 2px;
+  height: 12px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.35;
+}
+
+.planner-block:hover .planner-handle,
+.planner-block.is-dragging .planner-handle {
+  opacity: 1;
+}
+
+.planner-handle,
+.planner-block-body,
+.planner-block-delete {
+  position: relative;
+  z-index: 1;
+}
+
+/* block body */
+.planner-block-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 1px 3px;
+  cursor: grab;
+  overflow: hidden;
+}
+
+.planner-block-body:active {
+  cursor: grabbing;
+}
+
+.planner-block-area {
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.25;
+}
+
+.planner-block-note {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+  opacity: 0.8;
+}
+
+.planner-block-time {
+  font-size: 10px;
+  opacity: 0.65;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+/* quick-delete zone on the right side of assignment blocks */
+.planner-block-delete {
+  all: unset;
+  flex-shrink: 0;
+  width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(220,38,38,0.13);
+  border-left: 1px solid rgba(220,38,38,0);
+  color: #dc2626;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: width 0.14s ease, border-left-color 0.14s ease;
+  box-sizing: border-box;
+}
+
+.planner-block:hover .planner-block-delete {
+  width: 22px;
+  border-left-color: rgba(220,38,38,0.3);
+}
+
+.planner-block-delete:hover {
+  background: rgba(220,38,38,0.26);
+}
+
+/* ── Employee avatar ────────────────────────────────────────────────────── */
+.planner-avatar {
+  flex-shrink: 0;
+  border: 1.5px solid var(--pl-border);
+  object-fit: cover;
+}
+
+.planner-avatar-initials {
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #009e5a 0%, #007040 100%);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  border: 1.5px solid rgba(255,255,255,0.3);
+}
+
+/* ── Area view ──────────────────────────────────────────────────────────── */
+.planner-track-area {
+  cursor: default;
+}
+
+.planner-block-area-view {
+  cursor: pointer;
+}
+
+.planner-area-block-body {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px !important;
+}
+
+/* ghost block (being created) */
+.planner-ghost {
+  background: rgba(100,100,130,0.1) !important;
+  border: 2px dashed #9090aa !important;
+  pointer-events: none;
+  border-radius: 6px;
+}
+
+/* ── Legend ─────────────────────────────────────────────────────────────── */
+.planner-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 10px 14px 12px calc(var(--pl-name-w) + 14px);
+  border-top: 1px solid var(--pl-border);
+  background: #fbfbfc;
+}
+
+.planner-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--pl-subtle);
+}
+
+.planner-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.planner-legend-hint {
+  margin-left: auto;
+  color: var(--pl-faded);
+  font-size: 10.5px;
+  font-style: italic;
+}
+
+/* ── Dialogs ────────────────────────────────────────────────────────────── */
+.planner-dialog {
+  border-radius: 20px !important;
+  min-width: 300px !important;
+}
+
+.planner-dialog-title {
+  font-weight: 700 !important;
+  font-size: 17px !important;
+  padding-bottom: 4px !important;
+}
+
+/* area picker buttons */
+.planner-area-btn {
+  all: unset;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 16px;
+  border-radius: 10px;
+  border: 1.5px solid var(--area-border, #ccc);
+  background: var(--area-bg, #f5f5f5);
+  color: var(--area-text, #333);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.1s;
+  text-align: left;
+}
+
+.planner-area-btn:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.planner-area-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Dark theme overrides (driven by [data-theme="dark"] on <html>)
+   ═══════════════════════════════════════════════════════════════════════════ */
+[data-theme="dark"] .planner-page {
+  --pl-border: #374151;
+  --pl-surface: #374151;
+  --pl-bg: #1f2937;
+  --pl-text: #f9fafb;
+  --pl-subtle: #9ca3af;
+  --pl-faded: #6b7280;
+  --pl-shadow: 0 0 1px rgba(0,0,0,.8), 0 18px 38px rgba(0,0,0,.45);
+}
+
+[data-theme="dark"] .planner-name-header-cell,
+[data-theme="dark"] .planner-hour-header,
+[data-theme="dark"] .planner-legend {
+  background: #1f2937;
+}
+
+[data-theme="dark"] .planner-track {
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0px,
+    transparent 63px,
+    #374151 63px,
+    #374151 64px
+  );
+}
+
+[data-theme="dark"] .planner-ghost {
+  background: rgba(255,255,255,0.05) !important;
+  border-color: #4b5563 !important;
+}
+
+[data-theme="dark"] .planner-absence.ferie {
+  background: rgba(7,162,173,0.12);
+  border-color: rgba(7,162,173,0.35);
+  color: #5de8f0;
+}
+
+[data-theme="dark"] .planner-absence.permesso {
+  background: rgba(245,158,11,0.12);
+  border-color: rgba(217,119,6,0.35);
+  color: #f5c870;
+}
+
+[data-theme="dark"] .planner-nav-btn:hover {
+  border-color: #4b5563;
+}
+
+[data-theme="dark"] .planner-break-overlay {
+  border-color: rgba(200,130,60,0.4);
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(245,158,11,0.12) 0 6px,
+    rgba(245,158,11,0.04) 6px 12px
+  );
+}
+
+[data-theme="dark"] .planner-break-label {
+  color: rgba(250,185,90,0.9);
+}

@@ -1,0 +1,28 @@
+T-HUB · PACCHETTO MARCHIO
+=========================
+
+Contenuto:
+
+  T-Hub Logo.html              Tavola completa del marchio (apri nel browser)
+
+  thub-pictogram.svg         Pittogramma (vettoriale, scalabile)
+  thub-appicon-light.svg     App icon — versione chiara
+  thub-appicon-anthracite.svg  App icon — versione antracite
+  thub-appicon-green.svg     App icon — versione verde
+  thub-appicon-512.png       App icon 512×512 (store / hi-res)
+  thub-appicon-192.png       App icon 192×192 (web / PWA)
+  thub-pictogram-512.png     Pittogramma 512×512 (raster)
+  fonts/
+      Lexend-VariableFont_wght.ttf   Font del logotipo
+
+Colori marchio:
+  Verde Tonoli   #007040
+  Antracite      #2B2B2B
+  Crema          #F0ECE0
+
+Uso:
+  - SVG = qualsiasi dimensione senza perdita (web, stampa, app).
+  - PNG = quando serve un raster (icone store, anteprime).
+  - Per stampa professionale chiedi le versioni CMYK / vettoriali dedicate.
+
+Tonoli Spedizioni · T-Hub Workforce Hub

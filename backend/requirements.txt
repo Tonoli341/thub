@@ -1,0 +1,9 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+sqlalchemy==2.0.41
+psycopg[binary]==3.2.9
+pydantic-settings==2.9.1
+python-tds==1.16.1
+ldap3==2.9.1
+PyJWT==2.10.1
+Pillow==11.2.1

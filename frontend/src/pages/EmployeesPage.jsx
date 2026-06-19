@@ -1,0 +1,1669 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Alert,
+  Autocomplete,
+  Avatar,
+  Box,
+  Button,
+  Checkbox,
+  Chip,
+  CircularProgress,
+  Dialog,
+  DialogContent,
+  Divider,
+  FormControl,
+  FormControlLabel,
+  IconButton,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Snackbar,
+  Stack,
+  Switch,
+  Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  Tabs,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+
+import {
+  getEmployeeOptions,
+  getEmployeeExpirations,
+  getEmployeePhoto,
+  getEmployees,
+  getOperationalAreas,
+  getOrgDepartments,
+  getOrgFunctions,
+  syncEmployees,
+  updateEmployeeAppRole,
+  updateEmployeeDefaultArea,
+  updateEmployeeAbsencePermissions,
+  updateEmployeeConfigurationPermissions,
+  updateEmployeeManager,
+  updateEmployeeOrganization,
+  updateEmployeePhone,
+  updateEmployeeSchedule,
+} from "../api";
+
+const roleOptions = [
+  { value: "IMPIEGATO", label: "Impiegato", icon: "💻" },
+  { value: "MAGAZZINIERE", label: "Magazziniere", icon: "📦" },
+  { value: "AUTISTA", label: "Autista", icon: "🚚" },
+  { value: "OFFICINA", label: "Officina", icon: "🔧" },
+  { value: "PULIZIE", label: "Pulizie", icon: "🧹" },
+];
+
+function roleMeta(role) {
+  return roleOptions.find((option) => option.value === role) ?? { label: role || "Altro", icon: "👤" };
+}
+
+const DAY_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+
+const DEFAULT_SCHEDULE = [
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
+  { enabled: false, morning_start: null,    morning_end: null,    afternoon_start: null,    afternoon_end: null    },
+  { enabled: false, morning_start: null,    morning_end: null,    afternoon_start: null,    afternoon_end: null    },
+];
+
+function timeToMinutes(value) {
+  if (!value) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function minutesToTime(totalMinutes) {
+  if (totalMinutes === null || totalMinutes === undefined) return null;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function diffMinutes(start, end) {
+  const startMinutes = timeToMinutes(start);
+  const endMinutes = timeToMinutes(end);
+  if (startMinutes === null || endMinutes === null) return null;
+  return endMinutes - startMinutes;
+}
+
+function createStoredScheduleDay(day) {
+  if (!day?.enabled) {
+    return { enabled: false, start: null, end: null, break_minutes: 0, break_start: null, break_end: null };
+  }
+
+  const morningStart = day.morning_start ?? null;
+  const morningEnd = day.morning_end ?? null;
+  const afternoonStart = day.afternoon_start ?? null;
+  const afternoonEnd = day.afternoon_end ?? null;
+
+  if (!morningStart || !morningEnd) {
+    return { enabled: true, start: null, end: null, break_minutes: 0, break_start: null, break_end: null };
+  }
+
+  if (!afternoonStart || !afternoonEnd) {
+    return { enabled: true, start: morningStart, end: morningEnd, break_minutes: 0, break_start: null, break_end: null };
+  }
+
+  return {
+    enabled: true,
+    start: morningStart,
+    end: afternoonEnd,
+    break_minutes: Math.max(diffMinutes(morningEnd, afternoonStart) ?? 0, 0),
+    break_start: morningEnd,
+    break_end: afternoonStart,
+  };
+}
+
+function buildDraftSchedule(schedule = DEFAULT_SCHEDULE) {
+  return (schedule ?? DEFAULT_SCHEDULE).map((day) => {
+    if (!day?.enabled) {
+      return {
+        enabled: false,
+        morning_start: null,
+        morning_end: null,
+        afternoon_start: null,
+        afternoon_end: null,
+        ...createStoredScheduleDay({ enabled: false }),
+      };
+    }
+
+    if (day.morning_start || day.morning_end || day.afternoon_start || day.afternoon_end) {
+      return {
+        enabled: true,
+        morning_start: day.morning_start ?? null,
+        morning_end: day.morning_end ?? null,
+        afternoon_start: day.afternoon_start ?? null,
+        afternoon_end: day.afternoon_end ?? null,
+        ...createStoredScheduleDay(day),
+      };
+    }
+
+    const morningStart = day.start ?? null;
+    const breakMinutes = Math.max(day.break_minutes ?? 0, 0);
+    const storedBreakStart = day.break_start ?? null;
+    const storedBreakEnd = day.break_end ?? null;
+
+    let morningEnd = day.end ?? null;
+    let afternoonStart = null;
+    let afternoonEnd = null;
+
+    if (day.start && day.end && storedBreakStart && storedBreakEnd) {
+      morningEnd = storedBreakStart;
+      afternoonStart = storedBreakEnd;
+      afternoonEnd = day.end;
+    } else if (day.start && day.end && breakMinutes > 0) {
+      const totalNetMinutes = calcNetMinutes(day.start, day.end, breakMinutes);
+      const morningMinutes = totalNetMinutes && totalNetMinutes > 0 ? Math.floor(totalNetMinutes / 2) : null;
+      if (morningMinutes !== null) {
+        morningEnd = minutesToTime(timeToMinutes(day.start) + morningMinutes);
+        afternoonStart = minutesToTime(timeToMinutes(morningEnd) + breakMinutes);
+        afternoonEnd = day.end;
+      }
+    }
+
+    const draftDay = {
+      enabled: true,
+      morning_start: morningStart,
+      morning_end: morningEnd,
+      afternoon_start: afternoonStart,
+      afternoon_end: afternoonEnd,
+    };
+
+    return { ...draftDay, ...createStoredScheduleDay(draftDay) };
+  });
+}
+
+function getDraftDayWorkedMinutes(day) {
+  if (!day?.enabled) return null;
+  const morningMinutes = diffMinutes(day.morning_start, day.morning_end);
+  const afternoonMinutes = diffMinutes(day.afternoon_start, day.afternoon_end);
+  return Math.max(morningMinutes ?? 0, 0) + Math.max(afternoonMinutes ?? 0, 0);
+}
+
+function calcNetMinutes(start, end, breakMins) {
+  if (!start || !end) return null;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  const net = (eh * 60 + em) - (sh * 60 + sm) - (breakMins || 0);
+  return net;
+}
+
+function fmtMinutes(mins) {
+  if (mins === null || mins === undefined || mins < 0) return "—";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function formatShortDate(value) {
+  if (!value) return "—";
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function getExpirationStatus(value) {
+  if (!value) return { label: "Senza data", color: "default" };
+
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const target = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(target.getTime())) return null;
+
+  const targetUtc = Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate());
+  const diffDays = Math.round((targetUtc - todayUtc) / 86400000);
+
+  if (diffDays < 0) return { label: "Scaduta", color: "error" };
+  if (diffDays === 0) return { label: "Oggi", color: "warning" };
+  if (diffDays <= 30) return { label: `${diffDays} gg`, color: "warning" };
+  return { label: "Valida", color: "success" };
+}
+
+function EmployeeAvatar({ employee, size = 48 }) {
+  const [photoUrl, setPhotoUrl] = useState(null);
+
+  useEffect(() => {
+    if (!employee.has_photo) {
+      setPhotoUrl(null);
+      return undefined;
+    }
+
+    let isActive = true;
+    let objectUrl = null;
+
+    getEmployeePhoto(employee.id)
+      .then((blob) => {
+        if (!isActive) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPhotoUrl(objectUrl);
+      })
+      .catch(() => {
+        if (isActive) setPhotoUrl(null);
+      });
+
+    return () => {
+      isActive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [employee.has_photo, employee.id]);
+
+  return (
+    <Avatar
+      src={photoUrl || undefined}
+      alt={employee.full_name}
+      sx={{ width: size, height: size, bgcolor: "primary.main", fontWeight: 700, fontSize: size * 0.4 }}
+    >
+      {employee.full_name?.slice(0, 1) || "?"}
+    </Avatar>
+  );
+}
+
+function TabPanel({ children, value, index }) {
+  return value === index ? <Box sx={{ pt: 2.5, pb: 3 }}>{children}</Box> : null;
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+        {label}
+      </Typography>
+      <Typography variant="body2" fontWeight={500}>
+        {value || "—"}
+      </Typography>
+    </Box>
+  );
+}
+
+function InfoTile({ label, value, icon }) {
+  return (
+    <Box sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "action.hover" }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
+        {label}
+      </Typography>
+      <Typography variant="body2" fontWeight={600}>
+        {value ? (icon ? `${icon} ${value}` : value) : "—"}
+      </Typography>
+    </Box>
+  );
+}
+
+function EmployeeProfileDialog({
+  employee,
+  employeeOptions,
+  areas,
+  orgFunctions,
+  orgDepartments,
+  open,
+  onClose,
+  onSavePhone,
+  onSaveArea,
+  onSaveAbsencePermissions,
+  onSaveAppRole,
+  onSaveOrganization,
+  onSaveSchedule,
+}) {
+  const [activeTab, setActiveTab] = useState(0);
+  const [scheduleDraft, setScheduleDraft] = useState(() => buildDraftSchedule(DEFAULT_SCHEDULE));
+  const [phoneDraft, setPhoneDraft] = useState("");
+  const [areaDraft, setAreaDraft] = useState("");
+  const [immobileDraft, setImmobileDraft] = useState("");
+  const [absenceConfig, setAbsenceConfig] = useState({
+    absence_can_request_for_self: true,
+    absence_can_request_for_reports: false,
+    absence_can_request_for_all: false,
+    absence_allowed_role_descriptions: [],
+    absence_requires_approval: true,
+    absence_approver_1_employee_id: null,
+    absence_approver_2_employee_id: null,
+    absence_approver_3_employee_id: null,
+  });
+  const [roleConfig, setRoleConfig] = useState({ app_role: null, planner_scope: "self" });
+  const [managerEmployeeId, setManagerEmployeeId] = useState(null);
+  const [departmentDraft, setDepartmentDraft] = useState(null);
+  const [snackbar, setSnackbar] = useState(null);
+  const [saveError, setSaveError] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const employeeExpirationsQuery = useQuery({
+    queryKey: ["employee-expirations", employee?.id],
+    queryFn: () => getEmployeeExpirations(employee.id),
+    enabled: open && Boolean(employee?.id),
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (!employee) return;
+    setPhoneDraft(employee.phone ?? "");
+    setAreaDraft(employee.default_operational_area_id ?? "");
+    setImmobileDraft(employee.default_immobile ?? "");
+
+    const resolve = (storedId, fallbackFn) => {
+      const explicit = storedId && storedId !== employee.id
+        ? employeeOptions.find((o) => o.id === storedId) ?? null
+        : null;
+      return explicit ?? fallbackFn() ?? null;
+    };
+
+    const defaultApprover1 = resolve(
+      employee.absence_approver_1_employee_id,
+      () => employeeOptions.find((o) => o.id === employee.manager_employee_id && o.id !== employee.id),
+    );
+    const defaultApprover2 = resolve(
+      employee.absence_approver_2_employee_id,
+      () => employeeOptions.find((o) => o.tms_id === "85" && o.id !== employee.id),
+    );
+    const defaultApprover3 = resolve(
+      employee.absence_approver_3_employee_id,
+      () => employeeOptions.find((o) => o.tms_id === "86" && o.id !== employee.id),
+    );
+
+    setAbsenceConfig({
+      absence_can_request_for_self: employee.absence_can_request_for_self,
+      absence_can_request_for_reports: employee.absence_can_request_for_reports,
+      absence_can_request_for_all: employee.absence_can_request_for_all,
+      absence_allowed_role_descriptions: employee.absence_allowed_role_descriptions ?? [],
+      absence_requires_approval: employee.absence_requires_approval,
+      absence_approver_1_employee_id: defaultApprover1?.id ?? null,
+      absence_approver_2_employee_id: defaultApprover2?.id ?? null,
+      absence_approver_3_employee_id: defaultApprover3?.id ?? null,
+    });
+
+    setRoleConfig({
+      app_role: employee.app_role ?? null,
+      planner_scope: employee.planner_scope ?? "self",
+    });
+
+    setManagerEmployeeId(employee.manager_employee_id ?? null);
+    setDepartmentDraft(employee.organization_department ?? null);
+
+    if (employee.default_schedule && employee.default_schedule.length === 7) {
+      setScheduleDraft(buildDraftSchedule(employee.default_schedule));
+    } else {
+      setScheduleDraft(buildDraftSchedule(DEFAULT_SCHEDULE));
+    }
+    setActiveTab(0);
+    setSaveError(null);
+  }, [employee, employeeOptions]);
+
+  if (!employee) return null;
+
+  const role = roleMeta(employee.tms_role_description);
+  const managerOptions = employeeOptions.filter((o) => o.id !== employee.id);
+  const selectedManager = managerOptions.find((o) => o.id === managerEmployeeId) ?? null;
+  const currentArea = areas.find((a) => a.id === employee.default_operational_area_id);
+  const employeeExpirations = employeeExpirationsQuery.data ?? [];
+
+  async function withSave(fn) {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setSaveError(e?.message || "Errore durante il salvataggio");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleSaveProfile() {
+    await withSave(async () => {
+      if (!employee.phone_from_tms) await onSavePhone(employee.id, phoneDraft);
+      setSnackbar("Profilo salvato");
+    });
+  }
+
+  async function handleSaveOrganization() {
+    await withSave(async () => {
+      await onSaveOrganization(employee.id, {
+        organization_role: employee.organization_role ?? null,
+        organization_department: departmentDraft,
+        manager_employee_id: managerEmployeeId,
+      });
+      setSnackbar("Organizzazione salvata");
+    });
+  }
+
+  async function handleSaveAbsence() {
+    await withSave(async () => {
+      await onSaveAbsencePermissions(employee.id, absenceConfig);
+      setSnackbar("Permessi assenze salvati");
+    });
+  }
+
+  async function handleSaveAccess() {
+    await withSave(async () => {
+      await onSaveAppRole(employee.id, roleConfig);
+      setSnackbar("Accessi portale salvati");
+    });
+  }
+
+  async function handleSaveSchedule() {
+    await withSave(async () => {
+      const normalizedSchedule = scheduleDraft.map((day, idx) => {
+        if (!day.enabled) {
+          return { enabled: false, start: null, end: null, break_minutes: 0, break_start: null, break_end: null };
+        }
+
+        if (!day.morning_start || !day.morning_end) {
+          throw new Error(`${DAY_LABELS[idx]}: completa l'orario del mattino`);
+        }
+
+        const morningMinutes = diffMinutes(day.morning_start, day.morning_end);
+        if (morningMinutes === null || morningMinutes <= 0) {
+          throw new Error(`${DAY_LABELS[idx]}: l'orario del mattino non e valido`);
+        }
+
+        const hasAfternoon = Boolean(day.afternoon_start || day.afternoon_end);
+        if (!hasAfternoon) {
+          return {
+            enabled: true,
+            start: day.morning_start,
+            end: day.morning_end,
+            break_minutes: 0,
+            break_start: null,
+            break_end: null,
+          };
+        }
+
+        if (!day.afternoon_start || !day.afternoon_end) {
+          throw new Error(`${DAY_LABELS[idx]}: completa l'orario del pomeriggio`);
+        }
+
+        const breakMinutes = diffMinutes(day.morning_end, day.afternoon_start);
+        if (breakMinutes === null || breakMinutes < 0) {
+          throw new Error(`${DAY_LABELS[idx]}: la pausa deve essere tra mattino e pomeriggio`);
+        }
+
+        const afternoonMinutes = diffMinutes(day.afternoon_start, day.afternoon_end);
+        if (afternoonMinutes === null || afternoonMinutes <= 0) {
+          throw new Error(`${DAY_LABELS[idx]}: l'orario del pomeriggio non e valido`);
+        }
+
+        return {
+          enabled: true,
+          start: day.morning_start,
+          end: day.afternoon_end,
+          break_minutes: breakMinutes,
+          break_start: day.morning_end,
+          break_end: day.afternoon_start,
+        };
+      });
+
+      await onSaveArea(employee.id, areaDraft, immobileDraft);
+      await onSaveSchedule(employee.id, { default_schedule: normalizedSchedule });
+      setSnackbar("Orario e area salvati");
+    });
+  }
+
+  function updateDay(idx, patch) {
+    setScheduleDraft((prev) => prev.map((day, i) => {
+      if (i !== idx) return day;
+      const next = { ...day, ...patch };
+      return { ...next, ...createStoredScheduleDay(next) };
+    }));
+  }
+
+  function copyMonToWeekdays() {
+    const mon = scheduleDraft[0];
+    setScheduleDraft((prev) =>
+      prev.map((day, i) => (i >= 1 && i <= 4) ? { ...mon, ...createStoredScheduleDay(mon) } : day),
+    );
+  }
+
+  const saveButton = (label, handler) => (
+    <Stack direction="row" justifyContent="flex-end" sx={{ mt: 1 }}>
+      <Button variant="contained" disabled={isSaving} onClick={handler}>
+        {isSaving
+          ? <CircularProgress size={18} color="inherit" />
+          : label}
+      </Button>
+    </Stack>
+  );
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      {/* ── Header ── */}
+      <Box sx={{ px: 3, pt: 2, pb: 2, borderBottom: "1px solid", borderColor: "divider" }}>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <EmployeeAvatar employee={employee} size={48} />
+          <Typography variant="h6" fontWeight={800} noWrap sx={{ flex: 1, minWidth: 0 }}>
+            {employee.full_name}
+          </Typography>
+          <Chip size="small" label={`Matr. ${employee.tms_id}`} variant="outlined" sx={{ flexShrink: 0 }} />
+          <IconButton onClick={onClose} size="small" sx={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>
+            ✕
+          </IconButton>
+        </Stack>
+      </Box>
+
+      {/* ── Tabs ── */}
+      <Box sx={{ borderBottom: "1px solid", borderColor: "divider", px: 3 }}>
+        <Tabs
+          value={activeTab}
+          onChange={(_, v) => { setActiveTab(v); setSaveError(null); }}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          <Tab label="Profilo" />
+          <Tab label="Organizzazione" />
+          <Tab label="Ferie & Permessi" />
+          <Tab label="Orario e Area" />
+          <Tab label="Scadenze" />
+          <Tab label="Accessi" />
+        </Tabs>
+      </Box>
+
+      <DialogContent sx={{ px: 3, py: 0 }}>
+
+        {/* ── Tab 0: Profilo ── */}
+        <TabPanel value={activeTab} index={0}>
+          {/* Grid di info tiles */}
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(155px, 1fr))",
+              gap: 1.5,
+              mb: 2.5,
+            }}
+          >
+            <InfoTile label="Ruolo" value={`${role.icon} ${role.label}`} />
+            <InfoTile
+              label="Stato"
+              icon={employee.is_active ? "🟢" : "⚫"}
+              value={employee.is_active ? "Attivo" : "Inattivo"}
+            />
+            <InfoTile label="Telefono" icon="📞" value={employee.phone} />
+            <InfoTile label="Responsabile" icon="👤" value={employee.manager_employee_name} />
+            <InfoTile label="Tipo contratto" icon="📋" value={employee.contract_type} />
+            <InfoTile label="Datore di lavoro" icon="🏢" value={employee.datore_lavoro} />
+            <InfoTile label="Funzione" icon="🎯" value={employee.organization_function} />
+            <InfoTile label="Dipartimento" icon="🏛️" value={employee.organization_department} />
+            <InfoTile
+              label="Area operativa"
+              icon="📍"
+              value={areas.find((a) => a.id === employee.default_operational_area_id)?.name}
+            />
+          </Box>
+
+          {/* Orario standard recap */}
+          {(() => {
+            const sched = employee.default_schedule;
+            const hasSched = sched && sched.length === 7;
+            const enabledDays = hasSched
+              ? sched.map((d, i) => ({ ...d, label: DAY_LABELS[i] })).filter((d) => d.enabled)
+              : [];
+            const totalMins = enabledDays.reduce((s, d) => {
+              const n = calcNetMinutes(d.start, d.end, d.break_minutes);
+              return s + (n > 0 ? n : 0);
+            }, 0);
+            const isStdMonFri = hasSched
+              && sched.slice(0, 5).every((d) => d.enabled && d.start === sched[0].start && d.end === sched[0].end && d.break_minutes === sched[0].break_minutes)
+              && !sched[5].enabled && !sched[6].enabled;
+            return (
+              <Box
+                sx={{
+                  p: 1.5,
+                  mb: 2.5,
+                  borderRadius: 2,
+                  border: "1px dashed",
+                  borderColor: "divider",
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  fontWeight={700}
+                  sx={{ display: "block", mb: 0.5, textTransform: "uppercase", letterSpacing: "0.05em" }}
+                >
+                  Orario standard
+                </Typography>
+                {enabledDays.length === 0 ? (
+                  <Typography variant="body2" color="text.disabled" fontStyle="italic">
+                    Non configurato
+                  </Typography>
+                ) : isStdMonFri ? (
+                  <Typography variant="body2" fontWeight={500}>
+                    {"Lun–Ven "}
+                    {sched[0].start}{"–"}{sched[0].end}
+                    <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                      · {fmtMinutes(totalMins)}/sett.
+                    </Typography>
+                  </Typography>
+                ) : (
+                  <Typography variant="body2" fontWeight={500}>
+                    {enabledDays.map((d) => `${d.label} ${d.start}–${d.end}`).join(" · ")}
+                    <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                      · {fmtMinutes(totalMins)}/sett.
+                    </Typography>
+                  </Typography>
+                )}
+                <Typography
+                  variant="caption"
+                  color="primary.main"
+                  sx={{ display: "block", mt: 0.5, cursor: "pointer", "&:hover": { textDecoration: "underline" } }}
+                  onClick={() => setActiveTab(5)}
+                >
+                  Modifica in "Orario e Area" →
+                </Typography>
+              </Box>
+            );
+          })()}
+
+        </TabPanel>
+
+        {/* ── Tab 4: Scadenze ── */}
+        <TabPanel value={activeTab} index={4}>
+          {employeeExpirationsQuery.isLoading ? (
+            <Stack alignItems="center" sx={{ py: 4 }}>
+              <CircularProgress size={28} />
+            </Stack>
+          ) : employeeExpirationsQuery.isError ? (
+            <Alert severity="error">
+              {employeeExpirationsQuery.error?.message || "Errore durante il caricamento delle scadenze"}
+            </Alert>
+          ) : employeeExpirations.length === 0 ? (
+            <Alert severity="info">Nessuna scadenza trovata nel TMS per questo dipendente.</Alert>
+          ) : (
+            <Stack spacing={2}>
+              <Box sx={{ p: 2, borderRadius: 2, bgcolor: "action.hover" }}>
+                <Typography variant="body2" color="text.secondary">
+                  Documenti e abilitazioni recuperati in tempo reale dal TMS, ordinati per prossima scadenza.
+                </Typography>
+              </Box>
+              <Paper variant="outlined" sx={{ overflowX: "auto" }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Tipo</TableCell>
+                      <TableCell>Scadenza</TableCell>
+                      <TableCell>Rilascio</TableCell>
+                      <TableCell>Numero</TableCell>
+                      <TableCell>Autorità</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {employeeExpirations.map((item) => {
+                      const status = getExpirationStatus(item.expiration_date);
+                      return (
+                        <TableRow key={`${item.type_code || item.type_description || "expiration"}-${item.document_number || ""}-${item.expiration_date || ""}`}>
+                          <TableCell sx={{ minWidth: 240 }}>
+                            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                              <Typography variant="body2" fontWeight={600}>
+                                {item.type_description || item.type_code || "Scadenza"}
+                              </Typography>
+                              {status && (
+                                <Chip
+                                  size="small"
+                                  label={status.label}
+                                  color={status.color}
+                                  variant={status.color === "default" ? "outlined" : "filled"}
+                                />
+                              )}
+                            </Stack>
+                          </TableCell>
+                          <TableCell>{formatShortDate(item.expiration_date)}</TableCell>
+                          <TableCell>{formatShortDate(item.issue_date)}</TableCell>
+                          <TableCell>{item.document_number || "—"}</TableCell>
+                          <TableCell>{item.issuing_authority || "—"}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </Paper>
+            </Stack>
+          )}
+        </TabPanel>
+
+        {/* ── Tab 1: Organizzazione ── */}
+        <TabPanel value={activeTab} index={1}>
+          <Stack spacing={2}>
+            <Typography variant="body2" color="text.secondary">
+              Responsabile diretto per l&apos;organigramma.
+            </Typography>
+            <Autocomplete
+              options={managerOptions}
+              value={selectedManager}
+              onChange={(_e, v) => setManagerEmployeeId(v?.id ?? null)}
+              getOptionLabel={(o) => `${o.full_name} (${o.tms_id})`}
+              isOptionEqualToValue={(o, v) => o.id === v.id}
+              renderInput={(params) => (
+                <TextField {...params} label="Responsabile diretto" size="small" />
+              )}
+            />
+            {/* Funzione: sola lettura — si gestisce dalla sezione Funzione / Dipartimento */}
+            {(() => {
+              const responsibleOfFunctions = (orgFunctions ?? []).filter(
+                (f) => f.responsible_employee_id === employee.id,
+              );
+              return (
+                <Box
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 2,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    bgcolor: "action.hover",
+                  }}
+                >
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    fontWeight={700}
+                    sx={{ display: "block", mb: 0.5, textTransform: "uppercase", letterSpacing: "0.05em" }}
+                  >
+                    Funzione
+                  </Typography>
+                  {responsibleOfFunctions.length > 0 ? (
+                    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                      {responsibleOfFunctions.map((f) => (
+                        <Chip
+                          key={f.id}
+                          label={f.name}
+                          size="small"
+                          sx={{ fontWeight: 600, bgcolor: "rgba(0,112,64,0.1)", color: "primary.main" }}
+                        />
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.disabled" fontStyle="italic">
+                      {employee.organization_function || "Non assegnata"}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                    La funzione si gestisce dalla sezione Funzione / Dipartimento
+                  </Typography>
+                </Box>
+              );
+            })()}
+            {/* Dipartimento: modificabile tra quelli della funzione del dipendente */}
+            {(() => {
+              const responsibleOfDepartments = (orgDepartments ?? []).filter(
+                (d) => d.responsible_employee_id === employee.id,
+              );
+              const responsibleOfFunctions = (orgFunctions ?? []).filter(
+                (f) => f.responsible_employee_id === employee.id,
+              );
+              const availableDepts = managerEmployeeId
+                ? (orgDepartments ?? []).filter(
+                    (d) => d.responsible_employee_id === managerEmployeeId && d.is_active !== false,
+                  )
+                : [];
+              const selectedDept = availableDepts.find((d) => d.name === departmentDraft) ?? null;
+
+              // Responsabili di dipartimento: campo read-only (il dipartimento li identifica)
+              if (responsibleOfDepartments.length > 0) {
+                return (
+                  <Box sx={{ p: 1.5, borderRadius: 2, border: "1px solid", borderColor: "divider", bgcolor: "action.hover" }}>
+                    <Typography variant="caption" color="text.secondary" fontWeight={700} sx={{ display: "block", mb: 0.5, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      Dipartimento
+                    </Typography>
+                    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                      {responsibleOfDepartments.map((d) => (
+                        <Chip key={d.id} label={d.name} size="small" sx={{ fontWeight: 600, bgcolor: "rgba(0,112,64,0.1)", color: "primary.main" }} />
+                      ))}
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                      Il dipartimento si gestisce dalla sezione Funzione / Dipartimento
+                    </Typography>
+                  </Box>
+                );
+              }
+
+              return (
+                <Autocomplete
+                  options={availableDepts}
+                  value={selectedDept}
+                  onChange={(_e, v) => setDepartmentDraft(v?.name ?? null)}
+                  getOptionLabel={(o) => o.name}
+                  isOptionEqualToValue={(o, v) => o.id === v.id}
+                  disabled={!managerEmployeeId}
+                  noOptionsText="Il responsabile diretto non è associato a nessun dipartimento"
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Dipartimento"
+                      size="small"
+                      helperText={!managerEmployeeId ? "Assegna prima un responsabile diretto" : undefined}
+                    />
+                  )}
+                />
+              );
+            })()}
+            {saveError && <Alert severity="error" onClose={() => setSaveError(null)}>{saveError}</Alert>}
+            {saveButton("Salva organizzazione", handleSaveOrganization)}
+          </Stack>
+        </TabPanel>
+
+        {/* ── Tab 2: Ferie & Permessi ── */}
+        <TabPanel value={activeTab} index={2}>
+          <Stack spacing={2.5}>
+            {/* Who can request */}
+            <Box sx={{ p: 2, borderRadius: 2, bgcolor: "action.hover" }}>
+              <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
+                Può richiedere assenze per:
+              </Typography>
+              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={absenceConfig.absence_can_request_for_self}
+                      onChange={(e) =>
+                        setAbsenceConfig((c) => ({ ...c, absence_can_request_for_self: e.target.checked }))
+                      }
+                    />
+                  }
+                  label="Se stesso"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={absenceConfig.absence_can_request_for_reports}
+                      onChange={(e) =>
+                        setAbsenceConfig((c) => ({ ...c, absence_can_request_for_reports: e.target.checked }))
+                      }
+                    />
+                  }
+                  label="Sottoposti"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={absenceConfig.absence_can_request_for_all}
+                      onChange={(e) =>
+                        setAbsenceConfig((c) => ({ ...c, absence_can_request_for_all: e.target.checked }))
+                      }
+                    />
+                  }
+                  label="Tutti"
+                />
+              </Stack>
+            </Box>
+
+            <Autocomplete
+              multiple
+              options={roleOptions.map((o) => o.value)}
+              value={absenceConfig.absence_allowed_role_descriptions}
+              onChange={(_e, v) =>
+                setAbsenceConfig((c) => ({ ...c, absence_allowed_role_descriptions: v }))
+              }
+              getOptionLabel={(v) => {
+                const opt = roleOptions.find((o) => o.value === v);
+                return opt ? `${opt.icon} ${opt.label}` : v;
+              }}
+              renderTags={(v, getTagProps) =>
+                v.map((val, i) => {
+                  const opt = roleOptions.find((o) => o.value === val);
+                  return (
+                    <Chip
+                      key={val}
+                      label={opt ? `${opt.icon} ${opt.label}` : val}
+                      size="small"
+                      {...getTagProps({ index: i })}
+                    />
+                  );
+                })
+              }
+              renderInput={(params) => (
+                <TextField {...params} label="Categorie autorizzate" size="small" />
+              )}
+            />
+
+            <Divider />
+
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={absenceConfig.absence_requires_approval}
+                  onChange={(e) =>
+                    setAbsenceConfig((c) => ({ ...c, absence_requires_approval: e.target.checked }))
+                  }
+                />
+              }
+              label={<Typography variant="body2" fontWeight={600}>Richiede approvazione</Typography>}
+            />
+
+            {absenceConfig.absence_requires_approval && (
+              <Stack spacing={2}>
+                {[1, 2, 3].map((idx) => {
+                  const field = `absence_approver_${idx}_employee_id`;
+                  const selected = employeeOptions.find((o) => o.id === absenceConfig[field]) ?? null;
+                  return (
+                    <Autocomplete
+                      key={field}
+                      options={employeeOptions.filter((o) => o.id !== employee.id)}
+                      value={selected}
+                      onChange={(_e, v) =>
+                        setAbsenceConfig((c) => ({ ...c, [field]: v?.id ?? null }))
+                      }
+                      getOptionLabel={(o) => `${o.full_name} (${o.tms_id})`}
+                      isOptionEqualToValue={(o, v) => o.id === v.id}
+                      renderInput={(params) => (
+                        <TextField {...params} label={`Approvatore ${idx}`} size="small" />
+                      )}
+                    />
+                  );
+                })}
+              </Stack>
+            )}
+
+            {saveError && <Alert severity="error" onClose={() => setSaveError(null)}>{saveError}</Alert>}
+            {saveButton("Salva permessi", handleSaveAbsence)}
+          </Stack>
+        </TabPanel>
+
+        {/* ── Tab 5: Accessi portale ── */}
+        <TabPanel value={activeTab} index={5}>
+          <Stack spacing={2.5}>
+            <Box sx={{ p: 2, borderRadius: 2, bgcolor: "action.hover" }}>
+              <Typography variant="body2" color="text.secondary">
+                Il ruolo determina le sezioni del portale visibili. Admin e HR si impostano manualmente;
+                Manager e Collaboratore vengono assegnati automaticamente in base ai riporti diretti.
+              </Typography>
+            </Box>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Ruolo portale</InputLabel>
+              <Select
+                label="Ruolo portale"
+                value={roleConfig.app_role ?? ""}
+                onChange={(e) =>
+                  setRoleConfig((c) => ({ ...c, app_role: e.target.value || null }))
+                }
+              >
+                <MenuItem value="">Auto (Manager o Collaboratore)</MenuItem>
+                <MenuItem value="ADMIN">Admin</MenuItem>
+                <MenuItem value="HR">HR / Responsabile HR</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Scope Planner</InputLabel>
+              <Select
+                label="Scope Planner"
+                value={roleConfig.planner_scope ?? "self"}
+                onChange={(e) =>
+                  setRoleConfig((c) => ({ ...c, planner_scope: e.target.value }))
+                }
+              >
+                <MenuItem value="self">Solo se stesso</MenuItem>
+                <MenuItem value="team">Se stesso + team</MenuItem>
+                <MenuItem value="all">Tutti</MenuItem>
+              </Select>
+            </FormControl>
+            {saveError && <Alert severity="error" onClose={() => setSaveError(null)}>{saveError}</Alert>}
+            {saveButton("Salva accessi", handleSaveAccess)}
+          </Stack>
+        </TabPanel>
+
+        {/* ── Tab 3: Orario e Area ── */}
+        <TabPanel value={activeTab} index={3}>
+          <Stack spacing={2.5}>
+            <Typography variant="body2" color="text.secondary">
+              Imposta l&apos;area operativa di appartenenza e l&apos;orario contrattuale settimanale.
+              L&apos;orario viene usato come riferimento nel Planner per precompilare i turni.
+            </Typography>
+
+            {/* Area operativa */}
+            <FormControl size="small" fullWidth>
+              <InputLabel>Area operativa</InputLabel>
+              <Select
+                label="Area operativa"
+                value={areaDraft}
+                onChange={(e) => { setAreaDraft(e.target.value); setImmobileDraft(""); }}
+              >
+                <MenuItem value=""><em>Nessuna area</em></MenuItem>
+                {(areas ?? []).map((area) => (
+                  <MenuItem key={area.id} value={area.id}>{area.name}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            {/* Immobile (solo se l'area ha buildings) */}
+            {(() => {
+              const selectedArea = (areas ?? []).find((a) => a.id === areaDraft);
+              const buildings = selectedArea?.buildings ?? [];
+              if (buildings.length === 0) return null;
+              return (
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Immobile</InputLabel>
+                  <Select
+                    label="Immobile"
+                    value={immobileDraft}
+                    onChange={(e) => setImmobileDraft(e.target.value)}
+                  >
+                    <MenuItem value=""><em>Nessuno</em></MenuItem>
+                    {buildings.map((b) => (
+                      <MenuItem key={b} value={b}>{b}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              );
+            })()}
+
+            <Divider />
+
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: -0.5 }}>
+              La pausa coincide con l&apos;intervallo tra fine mattino e inizio pomeriggio.
+            </Typography>
+
+            {/* Per-day rows */}
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              {scheduleDraft.map((day, idx) => {
+                const total = day.enabled ? getDraftDayWorkedMinutes(day) : null;
+                const pauseLabel = day.morning_end && day.afternoon_start
+                  ? `${day.morning_end} - ${day.afternoon_start}`
+                  : "Nessuna pausa";
+                return (
+                  <Box
+                    key={idx}
+                    sx={{
+                      px: 1.5,
+                      py: 1.25,
+                      borderRadius: 2,
+                      border: "1px solid",
+                      borderColor: "divider",
+                      bgcolor: day.enabled ? "background.paper" : "action.hover",
+                      opacity: day.enabled ? 1 : 0.65,
+                      transition: "opacity 0.15s, background 0.15s",
+                    }}
+                  >
+                    <Stack spacing={1.25}>
+                      <Stack
+                        direction={{ xs: "column", md: "row" }}
+                        spacing={1}
+                        alignItems={{ xs: "flex-start", md: "center" }}
+                        justifyContent="space-between"
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Typography
+                            variant="body2"
+                            fontWeight={700}
+                            sx={{ minWidth: 32, color: idx >= 5 ? "text.disabled" : "text.primary" }}
+                          >
+                            {DAY_LABELS[idx]}
+                          </Typography>
+                          <Switch
+                            size="small"
+                            checked={day.enabled}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                updateDay(idx, {
+                                  enabled: true,
+                                  morning_start: "08:00",
+                                  morning_end: "12:00",
+                                  afternoon_start: "13:00",
+                                  afternoon_end: "17:00",
+                                });
+                              } else {
+                                updateDay(idx, {
+                                  enabled: false,
+                                  morning_start: null,
+                                  morning_end: null,
+                                  afternoon_start: null,
+                                  afternoon_end: null,
+                                });
+                              }
+                            }}
+                          />
+                        </Stack>
+
+                        {day.enabled ? (
+                          <Typography
+                            variant="body2"
+                            fontWeight={700}
+                            sx={{ color: total !== null && total > 0 ? "primary.main" : "error.main" }}
+                          >
+                            {fmtMinutes(total)}
+                          </Typography>
+                        ) : (
+                          <Typography variant="caption" color="text.disabled">
+                            non lavorativo
+                          </Typography>
+                        )}
+                      </Stack>
+
+                      {day.enabled && (
+                        <Stack direction={{ xs: "column", lg: "row" }} spacing={1.25}>
+                          <Box
+                            sx={{
+                              flex: 1,
+                              minWidth: 0,
+                              p: 1,
+                              borderRadius: 1.5,
+                              bgcolor: "action.hover",
+                            }}
+                          >
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                              Mattino
+                            </Typography>
+                            <Stack direction="row" spacing={0.75} alignItems="center">
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.morning_start ?? ""}
+                                onChange={(e) => updateDay(idx, { morning_start: e.target.value || null })}
+                                sx={{ width: 120 }}
+                                inputProps={{ step: 300 }}
+                              />
+                              <Typography variant="body2" color="text.disabled">→</Typography>
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.morning_end ?? ""}
+                                onChange={(e) => updateDay(idx, { morning_end: e.target.value || null })}
+                                sx={{ width: 120 }}
+                                inputProps={{ step: 300 }}
+                              />
+                            </Stack>
+                          </Box>
+
+                          <Box
+                            sx={{
+                              flex: 1,
+                              minWidth: 0,
+                              p: 1,
+                              borderRadius: 1.5,
+                              bgcolor: "action.hover",
+                            }}
+                          >
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                              Pomeriggio
+                            </Typography>
+                            <Stack direction="row" spacing={0.75} alignItems="center">
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.afternoon_start ?? ""}
+                                onChange={(e) => updateDay(idx, { afternoon_start: e.target.value || null })}
+                                sx={{ width: 120 }}
+                                inputProps={{ step: 300 }}
+                              />
+                              <Typography variant="body2" color="text.disabled">→</Typography>
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.afternoon_end ?? ""}
+                                onChange={(e) => updateDay(idx, { afternoon_end: e.target.value || null })}
+                                sx={{ width: 120 }}
+                                inputProps={{ step: 300 }}
+                              />
+                            </Stack>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                              Pausa: {pauseLabel}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Box>
+                );
+              })}
+            </Box>
+
+            {/* Totale settimanale */}
+            {(() => {
+              const total = scheduleDraft.reduce((sum, day) => {
+                if (!day.enabled) return sum;
+                return sum + Math.max(getDraftDayWorkedMinutes(day) ?? 0, 0);
+              }, 0);
+              return (
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    px: 1.5,
+                    py: 1,
+                    borderRadius: 2,
+                    bgcolor: "rgba(0,112,64,0.06)",
+                    borderLeft: "3px solid",
+                    borderColor: "primary.main",
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">Totale settimanale</Typography>
+                  <Typography variant="subtitle1" fontWeight={700} color="primary.main">
+                    {fmtMinutes(total)}
+                  </Typography>
+                </Box>
+              );
+            })()}
+
+            {/* Helper: copia lunedì */}
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={copyMonToWeekdays}
+              fullWidth
+              sx={{ borderStyle: "dashed" }}
+            >
+              Copia orario Lunedì → Mar, Mer, Gio, Ven
+            </Button>
+
+            {saveError && <Alert severity="error" onClose={() => setSaveError(null)}>{saveError}</Alert>}
+            {saveButton("Salva orario e area", handleSaveSchedule)}
+          </Stack>
+        </TabPanel>
+
+      </DialogContent>
+
+      <Snackbar
+        open={!!snackbar}
+        autoHideDuration={3000}
+        onClose={() => setSnackbar(null)}
+        message={snackbar}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      />
+    </Dialog>
+  );
+}
+
+export default function EmployeesPage({ onImpersonate }) {
+  const [searchParams] = useSearchParams();
+  const companyFilter = searchParams.get("company") ?? "";
+  const [search, setSearch] = useState(companyFilter);
+  const [selectedRoles, setSelectedRoles] = useState([]);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
+  const [syncSnackbar, setSyncSnackbar] = useState(null);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    setSearch(companyFilter);
+  }, [companyFilter]);
+
+  const employeesQuery = useQuery({
+    queryKey: ["employees", selectedRoles],
+    queryFn: () => getEmployees("", selectedRoles),
+  });
+
+  const employeeOptionsQuery = useQuery({
+    queryKey: ["employee-options"],
+    queryFn: getEmployeeOptions,
+  });
+
+  const areasQuery = useQuery({
+    queryKey: ["operational-areas", "active"],
+    queryFn: () => getOperationalAreas({ activeOnly: true }),
+  });
+
+  const orgFunctionsQuery = useQuery({
+    queryKey: ["org-functions"],
+    queryFn: () => getOrgFunctions(),
+  });
+
+  const orgDepartmentsQuery = useQuery({
+    queryKey: ["org-departments"],
+    queryFn: () => getOrgDepartments(),
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: syncEmployees,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["employees"] });
+      queryClient.invalidateQueries({ queryKey: ["employee-options"] });
+    },
+  });
+
+  const phoneMutation = useMutation({
+    mutationFn: ({ employeeId, phone }) => updateEmployeePhone(employeeId, { phone }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["employees"] }),
+  });
+
+  const defaultAreaMutation = useMutation({
+    mutationFn: ({ employeeId, defaultOperationalAreaId, defaultImmobile }) =>
+      updateEmployeeDefaultArea(employeeId, {
+        default_operational_area_id: defaultOperationalAreaId || null,
+        default_immobile: defaultImmobile || null,
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["employees"] }),
+  });
+
+  const employeeOrganizationMutation = useMutation({
+    mutationFn: ({ employeeId, payload }) => updateEmployeeOrganization(employeeId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["employees"] });
+      queryClient.invalidateQueries({ queryKey: ["employee-options"] });
+    },
+  });
+
+  const managerMutation = useMutation({
+    mutationFn: ({ employeeId, payload }) => updateEmployeeManager(employeeId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["employees"] });
+      queryClient.invalidateQueries({ queryKey: ["employee-options"] });
+    },
+  });
+
+  const absencePermissionsMutation = useMutation({
+    mutationFn: ({ employeeId, payload }) => updateEmployeeAbsencePermissions(employeeId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["employees"] });
+      queryClient.invalidateQueries({ queryKey: ["employee-options"] });
+    },
+  });
+
+  const configurationPermissionsMutation = useMutation({
+    mutationFn: ({ employeeId, payload }) => updateEmployeeConfigurationPermissions(employeeId, payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["employees"] }),
+  });
+
+  const appRoleMutation = useMutation({
+    mutationFn: ({ employeeId, payload }) => updateEmployeeAppRole(employeeId, payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["employees"] }),
+  });
+
+  const scheduleMutation = useMutation({
+    mutationFn: ({ employeeId, payload }) => updateEmployeeSchedule(employeeId, payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["employees"] }),
+  });
+
+  const filteredEmployees = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+    const employees = employeesQuery.data ?? [];
+    if (!normalizedSearch) return employees;
+    return employees.filter((e) => {
+      return (e.full_name ?? "").toLowerCase().includes(normalizedSearch)
+        || (e.tms_id ?? "").toLowerCase().includes(normalizedSearch)
+        || (e.datore_lavoro ?? "").toLowerCase().includes(normalizedSearch);
+    });
+  }, [employeesQuery.data, search]);
+
+  const selectedEmployee = useMemo(
+    () => filteredEmployees.find((e) => e.id === selectedEmployeeId) ?? null,
+    [selectedEmployeeId, filteredEmployees],
+  );
+
+  const areas = areasQuery.data ?? [];
+
+  return (
+    <Stack spacing={3}>
+      {/* ── Header ── */}
+      <Paper
+        sx={{
+          p: 3.5,
+          borderRadius: 4,
+          background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))",
+          color: "#fff",
+        }}
+      >
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={2}
+          alignItems={{ md: "center" }}
+          justifyContent="space-between"
+        >
+          <Box>
+            <Typography variant="overline" sx={{ opacity: 0.8 }}>Impresa</Typography>
+            <Typography variant="h4">Dipendenti</Typography>
+            <Typography sx={{ mt: 0.5, maxWidth: 600, opacity: 0.9, fontSize: "0.95rem" }}>
+              Dipendenti TMS con ruoli, telefoni e area operativa di default.
+            </Typography>
+          </Box>
+          <Button
+            variant="contained"
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending}
+            sx={{
+              bgcolor: "rgba(255,255,255,0.18)",
+              color: "#fff",
+              border: "1px solid rgba(255,255,255,0.3)",
+              "&:hover": { bgcolor: "rgba(255,255,255,0.28)" },
+              flexShrink: 0,
+            }}
+          >
+            {syncMutation.isPending ? "Sincronizzazione…" : "Sincronizza da TMS"}
+          </Button>
+        </Stack>
+      </Paper>
+
+      <Paper sx={{ p: 3 }}>
+        <Stack spacing={2}>
+          {/* Search */}
+          <TextField
+            label="Cerca per nome, matricola o datore di lavoro"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            fullWidth
+          />
+
+          {/* Role filters */}
+          <Stack
+            direction={{ xs: "column", md: "row" }}
+            spacing={1.5}
+            alignItems={{ xs: "stretch", md: "center" }}
+          >
+            <Typography variant="body2" color="text.secondary" sx={{ minWidth: 110 }}>
+              Filtra per ruolo
+            </Typography>
+            <ToggleButtonGroup
+              value={selectedRoles}
+              onChange={(_e, value) => setSelectedRoles(value)}
+              size="small"
+            >
+              {roleOptions.map((role) => (
+                <Tooltip key={role.value} title={role.label}>
+                  <ToggleButton value={role.value} sx={{ gap: 0.75, px: 1.5 }}>
+                    <Box component="span" sx={{ fontSize: 18, lineHeight: 1 }}>{role.icon}</Box>
+                    <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
+                      {role.label}
+                    </Box>
+                  </ToggleButton>
+                </Tooltip>
+              ))}
+            </ToggleButtonGroup>
+          </Stack>
+
+          {/* Sync feedback */}
+          {syncMutation.error && (
+            <Alert severity="error">{syncMutation.error.message}</Alert>
+          )}
+          {syncMutation.data && (
+            <Alert severity="success">
+              Sync completato: letti {syncMutation.data.fetched}, creati {syncMutation.data.created},
+              aggiornati {syncMutation.data.updated}, disattivati {syncMutation.data.deactivated}.
+            </Alert>
+          )}
+          {employeesQuery.error && (
+            <Alert severity="error">{employeesQuery.error.message}</Alert>
+          )}
+
+          {/* ── Table ── */}
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small" sx={{ minWidth: 700 }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Dipendente</TableCell>
+                  <TableCell>Ruolo</TableCell>
+                  <TableCell sx={{ width: 80 }}>Area</TableCell>
+                  <TableCell>Datore di lavoro</TableCell>
+                  <TableCell>Responsabile</TableCell>
+                  <TableCell sx={{ width: 90 }}>Stato</TableCell>
+                  {onImpersonate && <TableCell sx={{ width: 48 }} />}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredEmployees.map((employee) => {
+                  const meta = roleMeta(employee.tms_role_description);
+                  const area = areas.find((a) => a.id === employee.default_operational_area_id);
+                  return (
+                    <TableRow
+                      key={employee.id}
+                      hover
+                      onClick={() => setSelectedEmployeeId(employee.id)}
+                      sx={{ cursor: "pointer" }}
+                    >
+                      {/* Dipendente: avatar + nome + matricola */}
+                      <TableCell>
+                        <Stack direction="row" spacing={1.5} alignItems="center">
+                          <EmployeeAvatar employee={employee} size={36} />
+                          <Box>
+                            <Typography variant="body2" fontWeight={700} noWrap>
+                              {employee.full_name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Matr.&nbsp;{employee.tms_id}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                      </TableCell>
+
+                      {/* Ruolo */}
+                      <TableCell sx={{ whiteSpace: "nowrap" }}>
+                        <Stack direction="row" spacing={0.75} alignItems="center">
+                          <Typography component="span" sx={{ fontSize: 18, lineHeight: 1 }}>
+                            {meta.icon}
+                          </Typography>
+                          <Typography variant="body2">
+                            {employee.tms_role_description || "Altro"}
+                          </Typography>
+                        </Stack>
+                      </TableCell>
+
+                      {/* Area */}
+                      <TableCell>
+                        {area ? (
+                          <Box
+                            sx={{
+                              display: "inline-block",
+                              px: 0.75,
+                              py: 0.2,
+                              borderRadius: 1,
+                              bgcolor: "rgba(0,112,64,0.1)",
+                              color: "primary.main",
+                              fontFamily: "monospace",
+                              fontWeight: 700,
+                              fontSize: "0.72rem",
+                              letterSpacing: "0.04em",
+                            }}
+                          >
+                            {area.area_code}
+                          </Box>
+                        ) : (
+                          <Typography variant="caption" color="text.disabled">—</Typography>
+                        )}
+                      </TableCell>
+
+                      <TableCell>{employee.datore_lavoro || "—"}</TableCell>
+                      <TableCell>{employee.manager_employee_name || "—"}</TableCell>
+
+                      {/* Stato */}
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          label={employee.is_active ? "Attivo" : "Inattivo"}
+                          sx={{
+                            bgcolor: employee.is_active ? "rgba(34,197,94,0.1)" : "rgba(150,150,150,0.1)",
+                            color: employee.is_active ? "#16a34a" : "text.disabled",
+                            fontWeight: 600,
+                          }}
+                        />
+                      </TableCell>
+
+                      {onImpersonate && (
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Tooltip title={`Visualizza come ${employee.full_name}`}>
+                            <IconButton
+                              size="small"
+                              onClick={() => onImpersonate(employee.id)}
+                              sx={{ color: "text.secondary", "&:hover": { color: "warning.main" } }}
+                            >
+                              <svg
+                                width={18}
+                                height={18}
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth={1.9}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                <circle cx="12" cy="12" r="3" />
+                              </svg>
+                            </IconButton>
+                          </Tooltip>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  );
+                })}
+                {!employeesQuery.isLoading && filteredEmployees.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={onImpersonate ? 7 : 6} sx={{ textAlign: "center", py: 4, color: "text.disabled" }}>
+                      Nessun dipendente trovato.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </Box>
+        </Stack>
+      </Paper>
+
+      {/* ── Detail dialog ── */}
+      <EmployeeProfileDialog
+        employee={selectedEmployee}
+        employeeOptions={employeeOptionsQuery.data ?? []}
+        areas={areasQuery.data ?? []}
+        orgFunctions={orgFunctionsQuery.data ?? []}
+        orgDepartments={orgDepartmentsQuery.data ?? []}
+        open={Boolean(selectedEmployee)}
+        onClose={() => setSelectedEmployeeId(null)}
+        onSavePhone={(employeeId, phone) =>
+          phoneMutation.mutateAsync({ employeeId, phone })
+        }
+        onSaveArea={(employeeId, areaId, immobile) =>
+          defaultAreaMutation.mutateAsync({
+            employeeId,
+            defaultOperationalAreaId: areaId,
+            defaultImmobile: immobile,
+          })
+        }
+        onSaveAbsencePermissions={(employeeId, payload) =>
+          absencePermissionsMutation.mutateAsync({ employeeId, payload })
+        }
+        onSaveAppRole={(employeeId, payload) =>
+          appRoleMutation.mutateAsync({ employeeId, payload })
+        }
+        onSaveSchedule={(employeeId, payload) =>
+          scheduleMutation.mutateAsync({ employeeId, payload })
+        }
+        onSaveOrganization={async (employeeId, payload) => {
+          await employeeOrganizationMutation.mutateAsync({
+            employeeId,
+            payload: {
+              organization_role: payload.organization_role,
+              organization_department: payload.organization_department,
+            },
+          });
+          await managerMutation.mutateAsync({
+            employeeId,
+            payload: { manager_employee_id: payload.manager_employee_id },
+          });
+        }}
+      />
+
+      <Snackbar
+        open={!!syncSnackbar}
+        autoHideDuration={3000}
+        onClose={() => setSyncSnackbar(null)}
+        message={syncSnackbar}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      />
+    </Stack>
+  );
+}

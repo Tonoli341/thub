@@ -1,0 +1,65 @@
+@font-face {
+  font-family: 'Lexend';
+  src: url('./assets/fonts/Lexend-VariableFont_wght.ttf') format('truetype');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+/* ── Global CSS variables ────────────────────────────────────────────────── */
+:root,
+[data-theme="light"] {
+  --color-bg: #F3F0E8;
+  --color-surface: #FBFAF6;
+  --color-surface-2: #F0ECE0;
+  --color-border: #e2e2e5;
+  --color-text: #2B2B2B;
+  --color-text-secondary: #515164;
+  --color-text-muted: #aeaeb8;
+  --color-accent: #007040;
+  --color-accent-soft: rgba(0, 112, 64, 0.10);
+  --color-sidebar-bg: #EFEDE5;
+  --color-sidebar-border: rgba(0, 112, 64, 0.12);
+  --color-sidebar-text: #2B2B2B;
+  --color-sidebar-text-muted: rgba(43, 43, 43, 0.55);
+  --color-sidebar-active-bg: rgba(0, 112, 64, 0.10);
+  --color-sidebar-active-text: #007040;
+  --color-sidebar-hover-bg: rgba(0, 112, 64, 0.07);
+  --color-sidebar-separator: rgba(0, 112, 64, 0.10);
+  --color-sidebar-search-bg: rgba(255, 255, 255, 0.72);
+  --color-sidebar-search-shadow: 0 0 0 1px inset rgba(0, 112, 64, 0.18);
+  --color-sidebar-search-shadow-focus: 0 0 0 1.5px inset rgba(0, 112, 64, 0.45);
+  --color-sidebar-footer-bg: rgba(240, 236, 224, 0.5);
+}
+
+[data-theme="dark"] {
+  --color-bg: #1f2937;
+  --color-surface: #374151;
+  --color-surface-2: #2d3748;
+  --color-border: #4b5563;
+  --color-text: #f9fafb;
+  --color-text-secondary: #9ca3af;
+  --color-text-muted: #6b7280;
+  --color-accent: #10b981;
+  --color-accent-soft: rgba(16, 185, 129, 0.12);
+  --color-sidebar-bg: #111827;
+  --color-sidebar-border: rgba(75, 85, 99, 0.5);
+  --color-sidebar-text: #e5e7eb;
+  --color-sidebar-text-muted: rgba(229, 231, 235, 0.5);
+  --color-sidebar-active-bg: rgba(16, 185, 129, 0.13);
+  --color-sidebar-active-text: #10b981;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-separator: rgba(75, 85, 99, 0.4);
+  --color-sidebar-search-bg: rgba(255, 255, 255, 0.07);
+  --color-sidebar-search-shadow: 0 0 0 1px inset rgba(75, 85, 99, 0.6);
+  --color-sidebar-search-shadow-focus: 0 0 0 1.5px inset rgba(16, 185, 129, 0.5);
+  --color-sidebar-footer-bg: rgba(17, 24, 39, 0.6);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+#root {
+  min-height: 100vh;
+}
