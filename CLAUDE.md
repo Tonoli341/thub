@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+@AGENTS.md
+
 Le regole operative di questo progetto sono in **[AGENTS.md](AGENTS.md)**, file unico e
 canonico per tutti gli agenti AI. Leggilo integralmente prima di modificare il codice.
 

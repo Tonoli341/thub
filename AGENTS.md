@@ -265,11 +265,8 @@ delle pagine, non le URL.
 
 ### 5.3 Regole di convalida
 - **Esegui i test prima e dopo** la modifica. Se erano già rossi, dillo: non attribuirti
-  un fallimento preesistente né nasconderlo.
-  ⚠️ *Stato noto al 2026-08-18*: `ruff` segnala 2 errori F401 preesistenti in
-  [backend/app/api/training.py](backend/app/api/training.py) (`defaultdict`, `Employee`
-  importati e non usati). La CI è rossa su questo. Sistemali solo se stai già lavorando
-  su quel file o se l'utente te lo chiede.
+  un fallimento preesistente né nasconderlo. Al 2026-08-18 la suite e il lint sono verdi:
+  qualunque rosso che vedi è stato introdotto da te o da chi sta lavorando in parallelo.
 - Se tocchi backend **e** frontend, esegui entrambe le suite.
 - **Dopo ogni modifica che tocchi route, import, router o pagine: esegui lo smoke.**
   Se i container non girano, il livello offline (5.2a) è comunque obbligatorio.
@@ -351,7 +348,7 @@ innesco nell'interfaccia. Sono candidati al completamento, non alla cancellazion
 
 | Elemento | File | Nota |
 |---|---|---|
-| `office365_enabled(db)` | [services/integrations.py:97](backend/app/services/integrations.py#L97) | Il docstring dice "da interrogare prima di qualunque uso di Graph" — **ma nessun chiamante lo fa**. Verificare se l'interruttore generale M365 è di fatto scavalcato: se sì è un bug di sicurezza, non codice morto |
+| `office365_enabled(db)` | [services/integrations.py:97](backend/app/services/integrations.py#L97) | ✅ *Verificato il 2026-08-18: nessun problema di sicurezza.* L'interruttore **è** applicato, ma dalla proprietà `Office365Config.oof_active` (`enabled and oof_enabled and credentials_complete`), controllata da `sync_employee_oof` prima di aprire qualunque thread. Questo helper è quindi solo ridondante |
 | `generate_local_user_password(length)` | [services/local_user_auth.py:18](backend/app/services/local_user_auth.py#L18) | `hash_local_user_password` accanto è usata; la generazione password evidentemente avviene altrove |
 | `list_sync_runs_payload(db, limit)` | [services/timesheets.py:1247](backend/app/services/timesheets.py#L1247) | Nessun endpoint espone lo storico delle sincronizzazioni timesheet |
 | `require_manager_or_above` | [api/deps.py](backend/app/api/deps.py) | Unico `require_*` mai applicato a un endpoint |
@@ -402,7 +399,93 @@ cd backend/app/api && for f in *.py; do case $f in __init__.py|deps.py) continue
 
 ---
 
-## 8. Documentazione da aggiornare
+## 8. 🔒 Come queste regole vengono applicate
+
+Un documento di regole che nessuno è obbligato a leggere è un documento che verrà
+ignorato. Qui l'obbligo è a tre livelli, di forza crescente. Solo il terzo è vera
+imposizione: gli altri due sono contesto.
+
+### 8.1 Livello 1 — convenzione (tutti gli agenti)
+
+I file pointer ([CLAUDE.md](CLAUDE.md), [.github/copilot-instructions.md](.github/copilot-instructions.md),
+[.cursorrules](.cursorrules)) fanno sì che ogni strumento trovi le regole nel posto in cui
+le cerca. È una convenzione: l'agente **può** ignorarla.
+
+### 8.2 Livello 2 — contesto garantito (Claude Code)
+
+[CLAUDE.md](CLAUDE.md) apre con `@AGENTS.md`. Claude Code carica CLAUDE.md a ogni sessione
+e risolve l'import, quindi **il contenuto di questo file è in contesto dal primo turno**,
+non solo citato. Costa zero e non richiede che l'agente decida di leggerlo.
+
+### 8.3 Livello 3 — gate bloccante (Claude Code)
+
+Configurato in [.claude/settings.json](.claude/settings.json), con gli script in
+[scripts/hooks/](scripts/hooks/):
+
+| Hook | Evento | Effetto |
+|---|---|---|
+| [agents-md-gate.sh](scripts/hooks/agents-md-gate.sh) | `PreToolUse` su `Edit\|Write\|NotebookEdit\|Bash` | **Nega** l'operazione finché la versione corrente di AGENTS.md non è stata letta in questa sessione |
+| [agents-md-mark.sh](scripts/hooks/agents-md-mark.sh) | `PostToolUse` su `Read\|Bash` | Registra la lettura salvando l'impronta SHA-256 del file in `$TMPDIR/claude-agents-md/<session_id>` |
+| [agents-md-lib.sh](scripts/hooks/agents-md-lib.sh) | — | Funzioni condivise: impronta e riconoscimento dei comandi di sola lettura |
+
+Non è un promemoria che il modello può ignorare: è l'harness che rifiuta lo strumento e
+restituisce all'agente il motivo. Il blocco scatta **una sola volta per sessione** — dopo
+la lettura si lavora senza attrito.
+
+**Su Bash vale il deny-by-default.** Il gate non cerca i pattern di scrittura per poi
+consentire tutto il resto: consente solo ciò che è riconoscibilmente di sola lettura
+(`ls`, `cat`, `grep`, `find`, `sed -n`, i sottocomandi git che non modificano nulla…) e
+nega il resto, interpreti compresi. La regola inversa era aggirabile da un
+`python3 - <<PY` che apre un file in scrittura: il testo del comando non lo rivela.
+Poiché il blocco vale una volta per sessione, un falso positivo costa una lettura, mentre
+un falso negativo costava l'intera protezione.
+
+I comandi composti sono valutati **per segmento** (`;`, `&&`, `||`, `|`): `ls && python3 x.py`
+viene negato per via del secondo. Le redirezioni di silenziamento (`2>/dev/null`, `2>&1`)
+non contano come scrittura, altrimenti quasi ogni comando di lettura verrebbe bloccato.
+
+**Il marcatore è legato all'impronta di AGENTS.md.** Se il file cambia, le letture
+precedenti non valgono più e il gate rimanda a rileggerlo con un messaggio diverso. Serve
+a chi sta lavorando da ore su regole nel frattempo modificate — incluso il caso in cui a
+modificarle sia stato un altro agente in parallelo.
+
+La marcatura è volutamente stretta: valgono solo lo strumento `Read` su un file chiamato
+AGENTS.md, oppure un comando shell il cui primo token è un lettore noto (`cat`, `head`,
+`sed`, `less`…) con AGENTS.md tra gli argomenti. Una versione più permissiva si
+accontenterebbe di un `grep AGENTS.md`, o di uno script che la cita in un commento, e il
+gate diventerebbe una formalità. I marcatori più vecchi di 7 giorni vengono ripuliti da soli.
+
+### 8.4 Limiti, dichiarati
+
+Non fingere che il gate sia una barriera invalicabile:
+
+- **Vale solo per Claude Code.** Codex, Cursor e Copilot leggono i file di §8.1 ma non
+  eseguono questi hook. Per loro l'obbligo resta una convenzione. L'unico livello davvero
+  trasversale sarebbe un hook git `pre-commit`: **non è stato implementato**.
+- **Impone di leggere le regole, non di rispettarle.** Nulla verifica che le §1–§4 vengano
+  seguite. Le voci più nette di §1 (`.env`, migrazioni già committate) sarebbero
+  verificabili da una macchina, ma oggi non lo sono.
+- **Fallisce aperto per scelta.** Se AGENTS.md non esiste o manca `jq`, il gate consente:
+  un checkout senza il file non deve diventare inutilizzabile.
+- **Lo stato è per sessione**, in `$TMPDIR`. Una nuova sessione riparte bloccata.
+- **L'allowlist di sola lettura va tenuta viva.** Un comando di esplorazione legittimo ma
+  non elencato viene negato finché non si legge AGENTS.md: fastidio minimo, ma se ricorre
+  spesso conviene aggiungere il token in `_TOKEN_LETTURA` dentro `agents-md-lib.sh`.
+
+### 8.5 Manutenzione
+
+- Disattivare temporaneamente: `/hooks` nella UI, oppure rimuovere il blocco da
+  [.claude/settings.json](.claude/settings.json).
+- Renderlo non bloccante (solo promemoria): in `agents-md-gate.sh` sostituire
+  `permissionDecision: "deny"` con `"ask"`, oppure emettere
+  `hookSpecificOutput.additionalContext` senza decisione.
+- Dopo aver modificato `.claude/settings.json` serve aprire `/hooks` una volta o riavviare
+  la sessione, perché il watcher rilegga la configurazione.
+
+
+---
+
+## 9. Documentazione da aggiornare
 
 | Se cambi… | Aggiorna… |
 |---|---|
@@ -410,4 +493,5 @@ cd backend/app/api && for f in *.py; do case $f in __init__.py|deps.py) continue
 | una variabile di configurazione | `.env.example` (mai `.env`) |
 | un confine o una regola di un modulo | il documento in [docs/](docs/) del modulo |
 | colleghi, rimuovi o scopri codice scollegato | l'inventario in **§7** di questo file |
+| il meccanismo di enforcement (hook, settings) | **§8** di questo file |
 | queste regole | **questo file** (`AGENTS.md`), non i pointer |
