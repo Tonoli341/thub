@@ -1,0 +1,23 @@
+Le regole operative complete di questo progetto sono in AGENTS.md, nella root del repo.
+Leggilo prima di modificare il codice: definisce cosa è congelato, cosa richiede una
+proposta preventiva, quali pattern sono accettati e quali rifiutati, e i test di convalida
+obbligatori dopo ogni modifica.
+
+Punti critici:
+- T-Hub è in produzione con dati reali di dipendenti: modifiche minime, niente refactor
+  o riformattazioni non richieste.
+- .env non si legge e non si committa; documenta le variabili in .env.example.
+- Lo schema del database cambia SOLO con nuove migrazioni Alembic additive; le migrazioni
+  già committate non si modificano; dopo un revision verifica che `alembic heads` ne
+  restituisca una sola.
+- L'autorizzazione passa solo dai require_* in backend/app/api/deps.py; le route
+  autenticate vanno su protected_router in backend/app/api/__init__.py.
+- Errori di dominio: DomainError (HTTP 400), non RuntimeError.
+- Date: services/timeutils.today_local() (Europe/Rome), mai date.today().
+- Frontend JSX (niente TypeScript); ogni chiamata HTTP passa da src/api.js.
+- Commenti e testi UI in italiano.
+- Convalida: backend `./.venv/bin/python -m pytest -q` e `./.venv/bin/ruff check app tests`;
+  frontend `node --test src/pages/` e `npm run build`. Docker non è accessibile dalla shell.
+- Non committare e non pushare senza richiesta esplicita.
+- L'inventario del codice scollegato (unwired) e' nella sezione 7 di AGENTS.md: non
+  cancellare nulla di iniziativa; se colleghi o rimuovi una voce, aggiorna la tabella.
