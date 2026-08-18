@@ -2,13 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import require_admin
+from app.api.deps import require_admin, require_organization_access
 from app.db import get_db
-from app.models import Employee, LdapEmployee
-from app.schemas import LdapEmployeeRead, LdapEmployeeTmsLinkUpdate
+from app.models import Employee, LdapEmployee, User
+from app.schemas import LdapEmployeeRead, LdapEmployeeTmsLinkUpdate, LdapEmployeeUnlockResponse
 from app.services.audit import record_audit_log
+from app.services.rate_limit import is_username_locked, reset_failures_for_username
+from app.services.security import get_current_user
 
-router = APIRouter(prefix="/ldap-employees", tags=["ldap-employees"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/ldap-employees", tags=["ldap-employees"], dependencies=[Depends(require_organization_access)])
 
 
 def serialize_ldap_employee(employee: LdapEmployee) -> LdapEmployeeRead:
@@ -25,6 +27,7 @@ def serialize_ldap_employee(employee: LdapEmployee) -> LdapEmployeeRead:
         last_login_at=employee.last_login_at,
         is_active=employee.is_active,
         is_linked_to_tms=employee.tms_employee_id is not None,
+        is_login_locked=is_username_locked(employee.username),
         created_at=employee.created_at,
         updated_at=employee.updated_at,
     )
@@ -59,6 +62,7 @@ def list_ldap_employees(
 def update_ldap_employee_tms_link(
     ldap_employee_id: str,
     payload: LdapEmployeeTmsLinkUpdate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> LdapEmployeeRead:
     ldap_employee = db.scalar(
@@ -91,7 +95,8 @@ def update_ldap_employee_tms_link(
         db,
         action="update",
         entity="ldap_employee_tms_link",
-        actor_name="system",
+        actor_name=current_user.username,
+        user_id=current_user.id,
         detail={
             "ldap_employee_id": ldap_employee.id,
             "before": previous_tms_employee_id,
@@ -101,3 +106,38 @@ def update_ldap_employee_tms_link(
     db.commit()
     db.refresh(ldap_employee)
     return serialize_ldap_employee(ldap_employee)
+
+
+@router.post("/{ldap_employee_id}/unlock-login", response_model=LdapEmployeeUnlockResponse)
+def unlock_ldap_employee_login(
+    ldap_employee_id: str,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> LdapEmployeeUnlockResponse:
+    """Azzera il rate limit sui login falliti dell'utente (da qualsiasi IP).
+
+    Evita all'helpdesk di dover riavviare il backend per sbloccare chi ha
+    sbagliato password troppe volte; lo stato è in memoria del processo, quindi
+    con più worker uvicorn lo sblocco vale solo per il worker che serve questa
+    richiesta.
+    """
+    ldap_employee = db.get(LdapEmployee, ldap_employee_id)
+    if ldap_employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="LDAP employee not found.")
+
+    cleared = reset_failures_for_username(ldap_employee.username)
+
+    record_audit_log(
+        db,
+        action="unlock_login",
+        entity="ldap_employee",
+        actor_name=current_user.username,
+        user_id=current_user.id,
+        detail={
+            "ldap_employee_id": ldap_employee.id,
+            "username": ldap_employee.username,
+            "cleared_keys": cleared,
+        },
+    )
+    db.commit()
+    return LdapEmployeeUnlockResponse(username=ldap_employee.username, cleared_keys=cleared)

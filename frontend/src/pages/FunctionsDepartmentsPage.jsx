@@ -343,6 +343,7 @@ function DepartmentSection({ items = [], isLoading, error, employeeOptions, orgF
   const [editItem, setEditItem] = useState(null);
   const [deleteItem, setDeleteItem] = useState(null);
   const [snackbar, setSnackbar] = useState(null);
+  const [functionFilter, setFunctionFilter] = useState(null);
 
   function handleAdd() {
     setEditItem(null);
@@ -370,6 +371,16 @@ function DepartmentSection({ items = [], isLoading, error, employeeOptions, orgF
   }
 
   const activeCount = items.filter((i) => i.is_active).length;
+  const functionFilterOptions = [
+    { id: "__all__", name: "Tutte le funzioni" },
+    ...(orgFunctions ?? []).map((item) => ({ id: item.id, name: item.name })),
+    { id: "__none__", name: "Senza funzione" },
+  ];
+  const filteredItems = items.filter((item) => {
+    if (!functionFilter || functionFilter.id === "__all__") return true;
+    if (functionFilter.id === "__none__") return !item.function_id;
+    return item.function_id === functionFilter.id;
+  });
 
   return (
     <>
@@ -387,6 +398,20 @@ function DepartmentSection({ items = [], isLoading, error, employeeOptions, orgF
             + Aggiungi
           </Button>
         </Stack>
+
+        <Autocomplete
+          options={functionFilterOptions}
+          value={functionFilter ?? functionFilterOptions[0]}
+          onChange={(_event, value) => setFunctionFilter(value ?? functionFilterOptions[0])}
+          getOptionLabel={(option) => option.name}
+          isOptionEqualToValue={(option, value) => option.id === value.id}
+          size="small"
+          sx={{ mb: 2 }}
+          renderInput={(params) => (
+            <TextField {...params} label="Filtra per Funzione" />
+          )}
+          disableClearable
+        />
 
         {error && <Alert severity="error" sx={{ mb: 2 }}>{error.message}</Alert>}
 
@@ -407,9 +432,17 @@ function DepartmentSection({ items = [], isLoading, error, employeeOptions, orgF
           </Box>
         )}
 
-        {!isLoading && items.length > 0 && (
+        {!isLoading && items.length > 0 && filteredItems.length === 0 && (
+          <Box sx={{ py: 4, textAlign: "center", border: "2px dashed", borderColor: "divider", borderRadius: 2 }}>
+            <Typography variant="body2" color="text.disabled">
+              Nessun dipartimento corrisponde al filtro selezionato
+            </Typography>
+          </Box>
+        )}
+
+        {!isLoading && filteredItems.length > 0 && (
           <Stack spacing={0.25}>
-            {items.map((item, idx) => (
+            {filteredItems.map((item, idx) => (
               <Box key={item.id}>
                 <DepartmentRow
                   item={item}
@@ -417,7 +450,7 @@ function DepartmentSection({ items = [], isLoading, error, employeeOptions, orgF
                   onToggleActive={(i) => onToggleActive(i.id, { is_active: !i.is_active })}
                   onDelete={setDeleteItem}
                 />
-                {idx < items.length - 1 && <Divider sx={{ mx: 2 }} />}
+                {idx < filteredItems.length - 1 && <Divider sx={{ mx: 2 }} />}
               </Box>
             ))}
           </Stack>

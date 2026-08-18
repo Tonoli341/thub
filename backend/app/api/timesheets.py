@@ -3,8 +3,8 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_timesheets_access
 from app.db import get_db
-from app.enums import UserRole
 from app.models import User
 from app.schemas import (
     TimesheetAdminOverviewRead,
@@ -23,12 +23,10 @@ from app.schemas import (
     TimesheetProjectLinkRead,
     TimesheetProjectLinkUpdate,
     TimesheetStatsRead,
-    TimesheetSyncRunRead,
     TimesheetWorkerLinkRead,
     TimesheetWorkerLinkUpdate,
 )
 from app.services.portal_auth import build_auth_user_read
-from app.services.security import get_current_user
 from app.services.timesheets import (
     approve_timesheet_day,
     build_admin_overview,
@@ -42,48 +40,41 @@ from app.services.timesheets import (
     delete_worker,
     list_mappings_payload,
     list_project_links_payload,
-    list_sync_runs_payload,
     list_timesheet_days_payload,
     list_cost_center_links_payload,
     list_worker_links_payload,
     manual_update_timesheet_day,
     request_timesheet_correction,
-    sync_timesheets,
     upsert_project_link,
     upsert_cost_center_link,
     update_worker_link,
     update_mapping,
 )
 
+
 router = APIRouter(prefix="/timesheets", tags=["timesheets"])
 
 
-def require_timesheets_access(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+def require_timesheets_admin(current_user: User = Depends(require_timesheets_access), db: Session = Depends(get_db)) -> User:
     auth_user = build_auth_user_read(db, current_user)
-    if not auth_user.can_access_timesheets:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accesso rendicontazioni non consentito.")
-    return current_user
-
-
-def require_timesheets_admin(current_user: User = Depends(require_timesheets_access)) -> User:
-    if current_user.role != UserRole.admin:
+    if auth_user.effective_role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Area amministrativa non consentita.")
     return current_user
 
 
 @router.get("/dashboard", response_model=TimesheetDashboardRead)
 def dashboard(day: date = Query(...), db: Session = Depends(get_db), current_user: User = Depends(require_timesheets_access)) -> dict:
-    return build_timesheet_dashboard(db, day)
+    return build_timesheet_dashboard(db, current_user, day)
 
 
 @router.get("/stats", response_model=TimesheetStatsRead)
 def stats(start: date = Query(...), end: date = Query(...), db: Session = Depends(get_db), current_user: User = Depends(require_timesheets_access)) -> dict:
-    return build_timesheet_stats(db, start=start, end=end)
+    return build_timesheet_stats(db, current_user, start=start, end=end)
 
 
 @router.get("/filters", response_model=TimesheetFiltersRead)
 def filters(start: date | None = Query(default=None), end: date | None = Query(default=None), db: Session = Depends(get_db), current_user: User = Depends(require_timesheets_access)) -> dict:
-    return build_timesheet_filters(db, start=start, end=end)
+    return build_timesheet_filters(db, current_user, start=start, end=end)
 
 
 @router.get("", response_model=list[TimesheetDayListRead])
@@ -100,7 +91,7 @@ def list_timesheets(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_timesheets_access),
 ) -> list[dict]:
-    return list_timesheet_days_payload(db, start=start, end=end, worker_id=worker_id, department=department, project=project, cost_center=cost_center, status=status_filter, approval_status=approval_status, search=search)
+    return list_timesheet_days_payload(db, current_user=current_user, start=start, end=end, worker_id=worker_id, department=department, project=project, cost_center=cost_center, status=status_filter, approval_status=approval_status, search=search)
 
 
 @router.get("/export")
@@ -117,18 +108,13 @@ def export_timesheets(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_timesheets_access),
 ) -> Response:
-    csv_payload = build_timesheets_csv(db, start=start, end=end, worker_id=worker_id, department=department, project=project, cost_center=cost_center, status=status_filter, approval_status=approval_status, search=search)
+    csv_payload = build_timesheets_csv(db, current_user=current_user, start=start, end=end, worker_id=worker_id, department=department, project=project, cost_center=cost_center, status=status_filter, approval_status=approval_status, search=search)
     return Response(content=csv_payload, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=timesheets.csv"})
 
 
 @router.get("/admin/overview", response_model=TimesheetAdminOverviewRead)
 def admin_overview(db: Session = Depends(get_db), current_user: User = Depends(require_timesheets_admin)) -> dict:
     return build_admin_overview(db)
-
-
-@router.get("/admin/sync-runs", response_model=list[TimesheetSyncRunRead])
-def sync_runs(db: Session = Depends(get_db), current_user: User = Depends(require_timesheets_admin)) -> list[dict]:
-    return list_sync_runs_payload(db)
 
 
 @router.get("/admin/workers", response_model=list[TimesheetWorkerLinkRead])
@@ -138,14 +124,6 @@ def worker_links(
     current_user: User = Depends(require_timesheets_admin),
 ) -> list[dict]:
     return list_worker_links_payload(db, search)
-
-
-@router.post("/admin/sync", response_model=TimesheetSyncRunRead)
-def manual_sync(db: Session = Depends(get_db), current_user: User = Depends(require_timesheets_admin)) -> dict:
-    try:
-        return sync_timesheets(db, trigger_source="manual", actor_name=current_user.username, user_id=current_user.id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.patch("/admin/workers/{worker_id}/employee-link", response_model=TimesheetWorkerLinkRead)
@@ -246,7 +224,7 @@ def delete_mapping_endpoint(mapping_id: str, db: Session = Depends(get_db), curr
 
 @router.get("/{day_id}", response_model=TimesheetDetailRead)
 def detail(day_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_timesheets_access)) -> dict:
-    payload = build_timesheet_detail(db, day_id)
+    payload = build_timesheet_detail(db, current_user, day_id)
     if payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendicontazione non trovata.")
     return payload

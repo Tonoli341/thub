@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import require_admin
+from app.api.deps import require_organization_access
 from app.db import get_db
-from app.models import Employee, OrgDepartment, OrgFunction
+from app.models import Employee, OrgDepartment, OrgFunction, User
 from app.schemas import (
     OrgDepartmentCreate,
     OrgDepartmentRead,
@@ -14,6 +14,7 @@ from app.schemas import (
     OrgFunctionUpdate,
 )
 from app.services.audit import record_audit_log
+from app.services.security import get_current_user
 from app.services.org import propagate_org_to_reports
 
 
@@ -62,7 +63,7 @@ def _sync_department_responsible(
     propagate_org_to_reports(db, responsible)
 
 
-router = APIRouter(prefix="/org-entities", tags=["org-entities"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/org-entities", tags=["org-entities"], dependencies=[Depends(require_organization_access)])
 
 
 @router.get("/functions", response_model=list[OrgFunctionRead])
@@ -78,13 +79,14 @@ def list_org_functions(
 
 
 @router.post("/functions", response_model=OrgFunctionRead, status_code=status.HTTP_201_CREATED)
-def create_org_function(payload: OrgFunctionCreate, db: Session = Depends(get_db)) -> OrgFunction:
+def create_org_function(payload: OrgFunctionCreate, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> OrgFunction:
     duplicate = db.scalar(select(OrgFunction).where(func.lower(OrgFunction.name) == payload.name.strip().lower()))
     if duplicate is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Funzione già esistente.")
     obj = OrgFunction(name=payload.name.strip(), is_active=payload.is_active, responsible_employee_id=payload.responsible_employee_id)
     db.add(obj)
-    record_audit_log(db, action="create", entity="org_function", actor_name="system", detail=payload.model_dump())
+    record_audit_log(db, action="create", entity="org_function", actor_name=current_user.username, user_id=current_user.id, detail=payload.model_dump())
     db.commit()
     _sync_function_responsible(db, obj.name, obj.responsible_employee_id)
     db.commit()
@@ -92,7 +94,8 @@ def create_org_function(payload: OrgFunctionCreate, db: Session = Depends(get_db
 
 
 @router.put("/functions/{function_id}", response_model=OrgFunctionRead)
-def update_org_function(function_id: str, payload: OrgFunctionUpdate, db: Session = Depends(get_db)) -> OrgFunction:
+def update_org_function(function_id: str, payload: OrgFunctionUpdate, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> OrgFunction:
     obj = db.get(OrgFunction, function_id)
     if obj is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Funzione non trovata.")
@@ -109,7 +112,7 @@ def update_org_function(function_id: str, payload: OrgFunctionUpdate, db: Sessio
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Funzione già esistente.")
     for field, value in values.items():
         setattr(obj, field, value)
-    record_audit_log(db, action="update", entity="org_function", actor_name="system", detail={"id": function_id, **values})
+    record_audit_log(db, action="update", entity="org_function", actor_name=current_user.username, user_id=current_user.id, detail={"id": function_id, **values})
     db.commit()
     if "responsible_employee_id" in values or "name" in values:
         _sync_function_responsible(db, obj.name, obj.responsible_employee_id)
@@ -118,7 +121,8 @@ def update_org_function(function_id: str, payload: OrgFunctionUpdate, db: Sessio
 
 
 @router.delete("/functions/{function_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_org_function(function_id: str, db: Session = Depends(get_db)) -> None:
+def delete_org_function(function_id: str, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> None:
     obj = db.get(OrgFunction, function_id)
     if obj is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Funzione non trovata.")
@@ -133,7 +137,7 @@ def delete_org_function(function_id: str, db: Session = Depends(get_db)) -> None
     ).all()
     for dept in depts_to_clear:
         dept.function_id = None
-    record_audit_log(db, action="delete", entity="org_function", actor_name="system", detail={"id": function_id, "name": func_name, "employees_cleared": len(employees_to_clear), "depts_cleared": len(depts_to_clear)})
+    record_audit_log(db, action="delete", entity="org_function", actor_name=current_user.username, user_id=current_user.id, detail={"id": function_id, "name": func_name, "employees_cleared": len(employees_to_clear), "depts_cleared": len(depts_to_clear)})
     db.delete(obj)
     db.commit()
 
@@ -154,7 +158,8 @@ def list_org_departments(
 
 
 @router.post("/departments", response_model=OrgDepartmentRead, status_code=status.HTTP_201_CREATED)
-def create_org_department(payload: OrgDepartmentCreate, db: Session = Depends(get_db)) -> OrgDepartment:
+def create_org_department(payload: OrgDepartmentCreate, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> OrgDepartment:
     duplicate = db.scalar(select(OrgDepartment).where(func.lower(OrgDepartment.name) == payload.name.strip().lower()))
     if duplicate is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Dipartimento già esistente.")
@@ -165,7 +170,7 @@ def create_org_department(payload: OrgDepartmentCreate, db: Session = Depends(ge
         function_id=payload.function_id,
     )
     db.add(obj)
-    record_audit_log(db, action="create", entity="org_department", actor_name="system", detail=payload.model_dump())
+    record_audit_log(db, action="create", entity="org_department", actor_name=current_user.username, user_id=current_user.id, detail=payload.model_dump())
     db.commit()
     function_name: str | None = None
     if obj.function_id:
@@ -177,7 +182,8 @@ def create_org_department(payload: OrgDepartmentCreate, db: Session = Depends(ge
 
 
 @router.put("/departments/{department_id}", response_model=OrgDepartmentRead)
-def update_org_department(department_id: str, payload: OrgDepartmentUpdate, db: Session = Depends(get_db)) -> OrgDepartment:
+def update_org_department(department_id: str, payload: OrgDepartmentUpdate, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> OrgDepartment:
     obj = db.get(OrgDepartment, department_id)
     if obj is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dipartimento non trovato.")
@@ -194,7 +200,7 @@ def update_org_department(department_id: str, payload: OrgDepartmentUpdate, db: 
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Dipartimento già esistente.")
     for field, value in values.items():
         setattr(obj, field, value)
-    record_audit_log(db, action="update", entity="org_department", actor_name="system", detail={"id": department_id, **values})
+    record_audit_log(db, action="update", entity="org_department", actor_name=current_user.username, user_id=current_user.id, detail={"id": department_id, **values})
     db.commit()
     if {"responsible_employee_id", "name", "function_id"} & values.keys():
         function_name = None
@@ -207,7 +213,8 @@ def update_org_department(department_id: str, payload: OrgDepartmentUpdate, db: 
 
 
 @router.delete("/departments/{department_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_org_department(department_id: str, db: Session = Depends(get_db)) -> None:
+def delete_org_department(department_id: str, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> None:
     obj = db.get(OrgDepartment, department_id)
     if obj is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dipartimento non trovato.")
@@ -218,6 +225,6 @@ def delete_org_department(department_id: str, db: Session = Depends(get_db)) -> 
     ).all()
     for emp in employees_to_clear:
         emp.organization_department = None
-    record_audit_log(db, action="delete", entity="org_department", actor_name="system", detail={"id": department_id, "name": dept_name, "employees_cleared": len(employees_to_clear)})
+    record_audit_log(db, action="delete", entity="org_department", actor_name=current_user.username, user_id=current_user.id, detail={"id": department_id, "name": dept_name, "employees_cleared": len(employees_to_clear)})
     db.delete(obj)
     db.commit()

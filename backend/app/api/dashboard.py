@@ -1,6 +1,8 @@
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -11,6 +13,8 @@ from app.schemas import (
     ApproverDashboardResponse,
     ApproverRequestItem,
     DashboardDetail,
+    DashboardExpirationItem,
+    DashboardExpirationsResponse,
     DashboardResponse,
     MyDashboardResponse,
     PersonalAssignmentItem,
@@ -18,9 +22,35 @@ from app.schemas import (
     TeamAllocationArea,
     UpcomingAbsenceItem,
 )
+from app.api.deps import get_impersonation_employee
+from app.services.absence_permissions import get_linked_tms_employee, resolve_approvers
+from app.services.hierarchy import collect_report_ids
+from app.services.portal_auth import build_auth_user_read, build_impersonation_view
 from app.services.security import get_current_user
+from app.services.tms import fetch_all_employee_expirations_from_tms
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+def _ensure_can_view_employee_dashboard(
+    db: Session,
+    current_user: User,
+    employee_id: str,
+    impersonate_employee: Employee | None,
+) -> None:
+    """Un utente può vedere solo la dashboard del proprio dipendente collegato
+    (o di quello impersonato, se admin); admin e HR possono vedere chiunque."""
+    if impersonate_employee is not None:
+        if impersonate_employee.id == employee_id:
+            return
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Non autorizzato per questo dipendente.")
+    auth = build_auth_user_read(db, current_user)
+    if auth.effective_role in ("admin", "hr"):
+        return
+    linked = get_linked_tms_employee(db, current_user)
+    if linked is not None and linked.id == employee_id:
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Non autorizzato per questo dipendente.")
 
 
 @router.get("", response_model=DashboardResponse)
@@ -47,18 +77,19 @@ def get_dashboard(
 
     # Employees with planner assignments today
     present_rows = db.execute(
-        select(Employee.id, Employee.full_name, Assignment.area)
+        select(Employee.id, Employee.full_name, Assignment.area, Assignment.immobile)
         .join(Assignment, Assignment.employee_id == Employee.id)
         .where(Assignment.work_date == target_date)
         .order_by(Employee.full_name)
     ).all()
 
     emp_areas: dict[str, tuple[str, list[str]]] = {}
-    for emp_id, emp_name, area in present_rows:
+    for emp_id, emp_name, area, immobile in present_rows:
         if emp_id not in emp_areas:
             emp_areas[emp_id] = (emp_name, [])
-        if area:
-            emp_areas[emp_id][1].append(area)
+        area_key = " ".join(filter(None, [area, immobile]))
+        if area_key:
+            emp_areas[emp_id][1].append(area_key)
 
     present_detail = [
         DashboardDetail(
@@ -87,8 +118,8 @@ def get_dashboard(
     absent_rows = db.execute(
         select(
             Employee.id, Employee.full_name,
-            Justification.justification_type,
             Justification.start_date, Justification.end_date,
+            Justification.start_time, Justification.end_time,
         )
         .join(Justification, Justification.employee_id == Employee.id)
         .where(
@@ -103,17 +134,19 @@ def get_dashboard(
         DashboardDetail(
             employee_id=emp_id,
             employee_name=emp_name,
-            info=f"{jtype} · {sd.strftime('%d/%m')}–{ed.strftime('%d/%m')}",
+            info=f"{sd.strftime('%d/%m')}–{ed.strftime('%d/%m')}",
+            start_time=str(st)[:5] if st else None,
+            end_time=str(et)[:5] if et else None,
         )
-        for emp_id, emp_name, jtype, sd, ed in absent_rows
+        for emp_id, emp_name, sd, ed, st, et in absent_rows
     ]
 
     # Future pending approvals (start_date >= today)
     pending_rows = db.execute(
         select(
             Employee.id, Employee.full_name,
-            Justification.justification_type,
             Justification.start_date, Justification.end_date,
+            Justification.start_time, Justification.end_time,
         )
         .join(Justification, Justification.employee_id == Employee.id)
         .where(
@@ -127,9 +160,11 @@ def get_dashboard(
         DashboardDetail(
             employee_id=emp_id,
             employee_name=emp_name,
-            info=f"{jtype} · {sd.strftime('%d/%m')}–{ed.strftime('%d/%m')}",
+            info=f"{sd.strftime('%d/%m')}–{ed.strftime('%d/%m')}",
+            start_time=str(st)[:5] if st else None,
+            end_time=str(et)[:5] if et else None,
         )
-        for emp_id, emp_name, jtype, sd, ed in pending_rows
+        for emp_id, emp_name, sd, ed, st, et in pending_rows
     ]
 
     return DashboardResponse(
@@ -146,15 +181,109 @@ def get_dashboard(
     )
 
 
-@router.get("/me", response_model=MyDashboardResponse)
-def get_my_dashboard(
-    employee_id: str = Query(),
-    target_date: date = Query(alias="date"),
+# Cache in-memory del fetch scadenze dal TMS: il box Scadenze della home lo richiede
+# a ogni apertura e i dati cambiano di rado. La chiamata TMS è identica per 30/45/60 gg
+# (il filtro temporale è applicato in Python), quindi una sola cache serve tutti i range.
+_EXPIRATIONS_TTL_SECONDS = 10 * 60
+_expirations_cache: dict = {"at": 0.0, "data": None}
+_expirations_lock = threading.Lock()
+
+
+def _get_expirations_by_code(db: Session) -> dict[str, tuple[str, str, list]]:
+    """Mappa CODICE TMS -> (employee_id, employee_name, records), con cache TTL."""
+    now = time.monotonic()
+    with _expirations_lock:
+        cached = _expirations_cache["data"]
+        if cached is not None and now - _expirations_cache["at"] < _EXPIRATIONS_TTL_SECONDS:
+            return cached
+
+    employees = db.scalars(
+        select(Employee).where(Employee.is_active.is_(True))
+    ).all()
+    name_by_code: dict[str, tuple[str, str]] = {
+        emp.tms_id.strip(): (emp.id, emp.full_name)
+        for emp in employees
+        if emp.tms_id
+    }
+
+    try:
+        expirations_by_code = fetch_all_employee_expirations_from_tms(list(name_by_code.keys()))
+    except Exception:
+        expirations_by_code = {}
+
+    result: dict[str, tuple[str, str, list]] = {}
+    for code, (employee_id, employee_name) in name_by_code.items():
+        result[code] = (employee_id, employee_name, expirations_by_code.get(code, []))
+
+    with _expirations_lock:
+        _expirations_cache["data"] = result
+        _expirations_cache["at"] = now
+
+    return result
+
+
+@router.get("/expirations", response_model=DashboardExpirationsResponse)
+def get_dashboard_expirations(
+    days: int = Query(default=30),
     db: Session = Depends(get_db),
-) -> MyDashboardResponse:
-    # ── personal: today's assignments ──
+    current_user: User = Depends(get_current_user),
+    impersonate_employee: Employee | None = Depends(get_impersonation_employee),
+) -> DashboardExpirationsResponse:
+    """Scadenze documenti/abilitazioni dei dipendenti attivi entro `days` giorni."""
+    auth = (
+        build_impersonation_view(db, impersonate_employee)
+        if impersonate_employee is not None
+        else build_auth_user_read(db, current_user)
+    )
+    if not auth.can_access_expirations:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Non autorizzato.")
+
+    if days not in (1, 7, 14, 30, 45, 60):
+        days = 30
+
+    today = date.today()
+    horizon = today + timedelta(days=days)
+
+    by_code = _get_expirations_by_code(db)
+    allowed_employee_ids: set[str] | None = None
+    if auth.expirations_scope == "reports":
+        linked_employee = impersonate_employee or get_linked_tms_employee(db, current_user)
+        if linked_employee is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Profilo dipendente non collegato.")
+        allowed_employee_ids = collect_report_ids(db, linked_employee.id)
+
+    items: list[DashboardExpirationItem] = []
+    for employee_id, employee_name, records in by_code.values():
+        if allowed_employee_ids is not None and employee_id not in allowed_employee_ids:
+            continue
+        for record in records:
+            exp = record.expiration_date
+            if exp is None or exp < today or exp > horizon:
+                continue
+            items.append(
+                DashboardExpirationItem(
+                    employee_id=employee_id,
+                    employee_name=employee_name,
+                    type_description=record.type_description or record.type_code,
+                    document_number=record.document_number,
+                    expiration_date=exp,
+                    days_remaining=(exp - today).days,
+                )
+            )
+
+    items.sort(key=lambda i: (i.expiration_date, i.employee_name))
+
+    return DashboardExpirationsResponse(days=days, count=len(items), items=items)
+
+
+def build_personal_info(
+    db: Session,
+    employee_id: str,
+    target_date: date,
+) -> tuple[list[PersonalAssignmentItem], list[UpcomingAbsenceItem], int]:
+    """Pianificazione del giorno e assenze in corso/future per un dipendente (box "Le mie info")."""
     personal_rows = db.execute(
-        select(Assignment.area, Assignment.site, Assignment.start_time, Assignment.end_time)
+        select(Assignment.area, Assignment.site, Assignment.immobile, Assignment.start_time, Assignment.end_time)
         .where(
             Assignment.employee_id == employee_id,
             Assignment.work_date == target_date,
@@ -166,13 +295,14 @@ def get_my_dashboard(
         PersonalAssignmentItem(
             area=r.area,
             site=r.site,
+            immobile=r.immobile,
             start_time=str(r.start_time)[:5] if r.start_time else None,
             end_time=str(r.end_time)[:5] if r.end_time else None,
         )
         for r in personal_rows
     ]
 
-    # ── personal: upcoming absences (next 60 days, not rejected) ──
+    # upcoming absences (next 60 days, including rejected)
     look_ahead = target_date + timedelta(days=60)
     upcoming_rows = db.execute(
         select(
@@ -181,12 +311,13 @@ def get_my_dashboard(
             Justification.start_date,
             Justification.end_date,
             Justification.approval_status,
+            Justification.start_time,
+            Justification.end_time,
         )
         .where(
             Justification.employee_id == employee_id,
             Justification.end_date >= target_date,
             Justification.start_date <= look_ahead,
-            Justification.approval_status != JustificationApprovalStatus.rejected,
         )
         .order_by(Justification.start_date)
     ).all()
@@ -198,12 +329,27 @@ def get_my_dashboard(
             start_date=row.start_date,
             end_date=row.end_date,
             approval_status=row.approval_status.value,
+            start_time=str(row.start_time)[:5] if row.start_time else None,
+            end_time=str(row.end_time)[:5] if row.end_time else None,
         )
         for row in upcoming_rows
     ]
     pending_count = sum(
         1 for a in upcoming_absences if a.approval_status == JustificationApprovalStatus.pending.value
     )
+    return today_assignments, upcoming_absences, pending_count
+
+
+@router.get("/me", response_model=MyDashboardResponse)
+def get_my_dashboard(
+    employee_id: str = Query(),
+    target_date: date = Query(alias="date"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    impersonate_employee: Employee | None = Depends(get_impersonation_employee),
+) -> MyDashboardResponse:
+    _ensure_can_view_employee_dashboard(db, current_user, employee_id, impersonate_employee)
+    today_assignments, upcoming_absences, pending_count = build_personal_info(db, employee_id, target_date)
 
     # ── team: direct reports ──
     team_rows = db.execute(
@@ -227,6 +373,9 @@ def get_my_dashboard(
                 Justification.justification_type,
                 Justification.start_date,
                 Justification.end_date,
+                Justification.approval_status,
+                Justification.start_time,
+                Justification.end_time,
             )
             .join(Justification, Justification.employee_id == Employee.id)
             .where(
@@ -245,12 +394,15 @@ def get_my_dashboard(
                 justification_type=row[2].value,
                 start_date=row[3],
                 end_date=row[4],
+                approval_status=row[5].value,
+                start_time=str(row[6])[:5] if row[6] else None,
+                end_time=str(row[7])[:5] if row[7] else None,
             )
             for row in absent_rows
         ]
 
         alloc_rows = db.execute(
-            select(Employee.id, Employee.full_name, Assignment.area)
+            select(Employee.id, Employee.full_name, Assignment.area, Assignment.immobile)
             .join(Assignment, Assignment.employee_id == Employee.id)
             .where(
                 Employee.id.in_(team_ids),
@@ -259,18 +411,23 @@ def get_my_dashboard(
             .order_by(Employee.full_name)
         ).all()
 
-        alloc_map: dict[str, list[str]] = {}
+        alloc_map: dict[str, list[dict]] = {}
         seen: dict[str, set] = {}
-        for emp_id, emp_name, area in alloc_rows:
-            key = area or "Senza area"
+        for emp_id, emp_name, area, immobile in alloc_rows:
+            key = " ".join(filter(None, [area, immobile])) or "Senza area"
             seen.setdefault(emp_id, set())
             if key not in seen[emp_id]:
                 seen[emp_id].add(key)
-                alloc_map.setdefault(key, []).append(emp_name)
+                alloc_map.setdefault(key, []).append({"id": emp_id, "name": emp_name})
 
         team_allocations = [
-            TeamAllocationArea(area=area, employee_names=sorted(names), count=len(names))
-            for area, names in sorted(alloc_map.items())
+            TeamAllocationArea(
+                area=area,
+                employees=sorted(emps, key=lambda e: e["name"]),
+                employee_names=sorted(e["name"] for e in emps),
+                count=len(emps),
+            )
+            for area, emps in sorted(alloc_map.items())
         ]
 
     return MyDashboardResponse(
@@ -288,24 +445,37 @@ def get_approver_dashboard(
     employee_id: str = Query(),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    impersonate_employee: Employee | None = Depends(get_impersonation_employee),
 ) -> ApproverDashboardResponse:
+    _ensure_can_view_employee_dashboard(db, current_user, employee_id, impersonate_employee)
+    def is_current_approver(justification: Justification) -> bool:
+        approver_1, approver_2, approver_3 = resolve_approvers(db, justification.employee)
+        approver_ids = {
+            approver_1.id if approver_1 else None,
+            approver_2.id if approver_2 else None,
+            approver_3.id if approver_3 else None,
+        }
+        return employee_id in approver_ids
+
+    # Calcolato sugli approvatori attuali del dipendente, non su quelli congelati sulla
+    # richiesta al momento della creazione: un cambio di approvatore deve riflettersi subito.
+    pending_candidates = db.scalars(
+        select(Justification)
+        .options(selectinload(Justification.employee), selectinload(Justification.requested_by_employee))
+        .where(Justification.approval_status == JustificationApprovalStatus.pending)
+        .order_by(Justification.start_date.asc())
+    ).all()
+    pending_rows = [j for j in pending_candidates if is_current_approver(j)]
+
     is_approver = or_(
         Justification.approver_1_employee_id == employee_id,
         Justification.approver_2_employee_id == employee_id,
         Justification.approver_3_employee_id == employee_id,
     )
-
-    pending_rows = db.scalars(
-        select(Justification)
-        .options(selectinload(Justification.employee))
-        .where(Justification.approval_status == JustificationApprovalStatus.pending, is_approver)
-        .order_by(Justification.start_date.asc())
-    ).all()
-
     cutoff = datetime.now(timezone.utc) - timedelta(days=14)
     recent_rows = db.scalars(
         select(Justification)
-        .options(selectinload(Justification.employee))
+        .options(selectinload(Justification.employee), selectinload(Justification.requested_by_employee))
         .where(
             Justification.approval_status.in_([JustificationApprovalStatus.approved, JustificationApprovalStatus.rejected]),
             is_approver,
@@ -323,7 +493,13 @@ def get_approver_dashboard(
             justification_type=j.justification_type.value,
             start_date=j.start_date,
             end_date=j.end_date,
+            start_time=str(j.start_time)[:5] if j.start_time else None,
+            end_time=str(j.end_time)[:5] if j.end_time else None,
             approval_status=j.approval_status.value,
+            created_by_name=j.created_by_name
+            or (j.requested_by_employee.full_name if j.requested_by_employee else None),
+            decided_by_name=j.decided_by_name,
+            decided_at=j.decided_at,
             created_at=j.created_at,
             updated_at=j.updated_at,
         )

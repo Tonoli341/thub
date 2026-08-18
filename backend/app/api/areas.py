@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import require_organization_access
 from app.db import get_db
-from app.models import Employee, OperationalArea, TimesheetMapping
+from app.models import Employee, OperationalArea, TimesheetMapping, User
 from app.schemas import OperationalAreaCreate, OperationalAreaRead, OperationalAreaUpdate
 from app.services.audit import record_audit_log
+from app.services.security import get_current_user
 
-router = APIRouter(prefix="/operational-areas", tags=["operational-areas"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/operational-areas", tags=["operational-areas"])
 
 
 @router.get("", response_model=list[OperationalAreaRead])
@@ -17,6 +18,7 @@ def list_operational_areas(
     operational_only: bool = Query(default=False),
     search: str | None = Query(default=None),
     db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
 ) -> list[OperationalArea]:
     statement: Select[tuple[OperationalArea]] = select(OperationalArea)
     if active_only:
@@ -41,7 +43,8 @@ def list_operational_areas(
 
 
 @router.post("", response_model=OperationalAreaRead, status_code=status.HTTP_201_CREATED)
-def create_operational_area(payload: OperationalAreaCreate, db: Session = Depends(get_db)) -> OperationalArea:
+def create_operational_area(payload: OperationalAreaCreate, current_user: User = Depends(require_organization_access),
+    db: Session = Depends(get_db)) -> OperationalArea:
     duplicate = db.scalar(
         select(OperationalArea).where(
             or_(
@@ -55,14 +58,15 @@ def create_operational_area(payload: OperationalAreaCreate, db: Session = Depend
 
     area = OperationalArea(**payload.model_dump())
     db.add(area)
-    record_audit_log(db, action="create", entity="operational_area", actor_name="system", detail=payload.model_dump())
+    record_audit_log(db, action="create", entity="operational_area", actor_name=current_user.username, user_id=current_user.id, detail=payload.model_dump())
     db.commit()
     db.refresh(area)
     return area
 
 
 @router.put("/{area_id}", response_model=OperationalAreaRead)
-def update_operational_area(area_id: str, payload: OperationalAreaUpdate, db: Session = Depends(get_db)) -> OperationalArea:
+def update_operational_area(area_id: str, payload: OperationalAreaUpdate, current_user: User = Depends(require_organization_access),
+    db: Session = Depends(get_db)) -> OperationalArea:
     area = db.get(OperationalArea, area_id)
     if area is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operational area not found.")
@@ -97,7 +101,8 @@ def update_operational_area(area_id: str, payload: OperationalAreaUpdate, db: Se
         db,
         action="update",
         entity="operational_area",
-        actor_name="system",
+        actor_name=current_user.username,
+        user_id=current_user.id,
         detail={"before": previous, "after": OperationalAreaRead.model_validate(area).model_dump(mode="json")},
     )
     db.commit()
@@ -106,7 +111,8 @@ def update_operational_area(area_id: str, payload: OperationalAreaUpdate, db: Se
 
 
 @router.delete("/{area_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_operational_area(area_id: str, db: Session = Depends(get_db)) -> None:
+def delete_operational_area(area_id: str, current_user: User = Depends(require_organization_access),
+    db: Session = Depends(get_db)) -> None:
     area = db.get(OperationalArea, area_id)
     if area is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operational area not found.")
@@ -136,7 +142,8 @@ def delete_operational_area(area_id: str, db: Session = Depends(get_db)) -> None
         db,
         action="delete",
         entity="operational_area",
-        actor_name="system",
+        actor_name=current_user.username,
+        user_id=current_user.id,
         detail=OperationalAreaRead.model_validate(area).model_dump(mode="json"),
     )
     db.delete(area)

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_impersonation_employee
 from app.db import get_db
-from app.enums import JustificationApprovalStatus
+from app.enums import JustificationApprovalStatus, JustificationType
 from app.models import Employee, Justification, User
 from app.schemas import JustificationApprovalUpdate, JustificationCreate, JustificationRead, JustificationUpdate
 from app.services.absence_permissions import (
@@ -15,13 +15,15 @@ from app.services.absence_permissions import (
     requires_my_approval,
 )
 from app.services.audit import record_audit_log
-from app.services.email import notify_approvers_new_request, notify_employee_approval_update
+from app.services.email import notify_approvers_new_request
+from app.services.graph_oof import sync_employee_oof
+from app.services.justification_approval import apply_justification_approval_update
 from app.services.security import get_current_user
 
 router = APIRouter(prefix="/justifications", tags=["justifications"])
 
 
-def serialize_justification(justification: Justification, context) -> JustificationRead:
+def serialize_justification(justification: Justification, requires_my_approval_flag: bool) -> JustificationRead:
     return JustificationRead(
         id=justification.id,
         employee_id=justification.employee_id,
@@ -42,7 +44,13 @@ def serialize_justification(justification: Justification, context) -> Justificat
         approver_2_employee_name=justification.approver_2_employee.full_name if justification.approver_2_employee else None,
         approver_3_employee_id=justification.approver_3_employee_id,
         approver_3_employee_name=justification.approver_3_employee.full_name if justification.approver_3_employee else None,
-        requires_my_approval=requires_my_approval(context, justification),
+        requires_my_approval=requires_my_approval_flag,
+        created_by_name=justification.created_by_name
+        or (justification.requested_by_employee.full_name if justification.requested_by_employee else None),
+        decided_by_name=justification.decided_by_name,
+        decided_by_employee_id=justification.decided_by_employee_id,
+        decided_by_user_id=justification.decided_by_user_id,
+        decided_at=justification.decided_at,
         created_at=justification.created_at,
         updated_at=justification.updated_at,
     )
@@ -66,6 +74,8 @@ def ensure_no_duplicate_justification(
         Justification.end_date >= justification.start_date,
         Justification.start_time < justification.end_time,
         Justification.end_time > justification.start_time,
+        # le richieste rifiutate non devono bloccare una nuova richiesta sullo stesso periodo
+        Justification.approval_status != JustificationApprovalStatus.rejected,
     )
     if exclude_id is not None:
         statement = statement.where(Justification.id != exclude_id)
@@ -128,14 +138,16 @@ def list_justifications(
     )
     if employee_id:
         statement = statement.where(Justification.employee_id == employee_id)
+    rows = db.scalars(statement).all()
+    approval_flags = {item.id: requires_my_approval(db, context, item) for item in rows}
     justifications = [
         item
-        for item in db.scalars(statement).all()
-        if can_view_justification(context, item, current_user) or requires_my_approval(context, item)
+        for item in rows
+        if can_view_justification(context, item, current_user) or approval_flags[item.id]
     ]
     if only_pending_approvals:
-        justifications = [item for item in justifications if requires_my_approval(context, item)]
-    return [serialize_justification(item, context) for item in justifications]
+        justifications = [item for item in justifications if approval_flags[item.id]]
+    return [serialize_justification(item, approval_flags[item.id]) for item in justifications]
 
 
 @router.post("", response_model=JustificationRead, status_code=status.HTTP_201_CREATED)
@@ -151,6 +163,9 @@ def create_justification(
     justification = Justification(**payload.model_dump())
     justification.employee = employee
     justification.requested_by_employee_id = context.employee.id if context.employee else None
+    justification.created_by_name = (
+        context.employee.full_name if context.employee else (current_user.display_name or current_user.username)
+    )
     justification.approval_required = context.approval_required
     justification.approver_1_employee_id = context.approver_1.id if context.approver_1 else None
     justification.approver_2_employee_id = context.approver_2.id if context.approver_2 else None
@@ -165,8 +180,14 @@ def create_justification(
     record_audit_log(db, action="create", entity="justification", actor_name=current_user.username, detail=payload.model_dump(mode="json"))
     db.commit()
     justification = get_justification_or_404(db, justification.id)
-    notify_approvers_new_request(db, justification)
-    return serialize_justification(justification, context)
+    # Notifica gli approvatori per ogni richiesta pendente, anche se inserita
+    # da un manager per conto del dipendente: altrimenti resta in attesa in silenzio.
+    if justification.approval_required:
+        notify_approvers_new_request(db, justification)
+    # Ferie già approvata alla creazione (nessuna approvazione richiesta) → OOF.
+    if justification.justification_type == JustificationType.ferie:
+        sync_employee_oof(justification.employee_id)
+    return serialize_justification(justification, requires_my_approval(db, context, justification))
 
 
 @router.put("/{justification_id}", response_model=JustificationRead)
@@ -178,10 +199,12 @@ def update_justification(
 ) -> JustificationRead:
     context = build_absence_permission_context(db, current_user)
     justification = get_justification_or_404(db, justification_id)
-    if justification.employee_id not in context.allowed_employee_ids and not requires_my_approval(context, justification):
+    if justification.employee_id not in context.allowed_employee_ids and not requires_my_approval(db, context, justification):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to update this absence.")
 
-    previous_state = serialize_justification(justification, context).model_dump(mode="json")
+    previous_state = serialize_justification(justification, requires_my_approval(db, context, justification)).model_dump(mode="json")
+    previous_employee_id = justification.employee_id
+    was_ferie = justification.justification_type == JustificationType.ferie
     changes = payload.model_dump(exclude_unset=True)
 
     if "employee_id" in changes:
@@ -201,11 +224,16 @@ def update_justification(
         action="update",
         entity="justification",
         actor_name=current_user.username,
-        detail={"before": previous_state, "after": serialize_justification(justification, context).model_dump(mode="json")},
+        detail={"before": previous_state, "after": serialize_justification(justification, requires_my_approval(db, context, justification)).model_dump(mode="json")},
     )
     db.commit()
     justification = get_justification_or_404(db, justification_id)
-    return serialize_justification(justification, context)
+    # Modifica ferie (date/dipendente/tipo) → risincronizza l'OOF degli interessati.
+    if was_ferie or justification.justification_type == JustificationType.ferie:
+        sync_employee_oof(justification.employee_id)
+        if previous_employee_id != justification.employee_id:
+            sync_employee_oof(previous_employee_id)
+    return serialize_justification(justification, requires_my_approval(db, context, justification))
 
 
 @router.patch("/{justification_id}/approval", response_model=JustificationRead)
@@ -217,23 +245,21 @@ def update_justification_approval(
 ) -> JustificationRead:
     context = build_absence_permission_context(db, current_user)
     justification = get_justification_or_404(db, justification_id)
-    if not requires_my_approval(context, justification):
+    if not requires_my_approval(db, context, justification):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to approve this absence.")
 
-    previous_status = justification.approval_status
-    justification.approval_status = payload.approval_status
-    record_audit_log(
-        db,
-        action="update",
-        entity="justification_approval",
-        actor_name=current_user.username,
-        detail={"justification_id": justification.id, "before": previous_status.value, "after": payload.approval_status.value},
-    )
-    db.commit()
-    justification = get_justification_or_404(db, justification_id)
     approver_name = context.employee.full_name if context.employee else current_user.username
-    notify_employee_approval_update(db, justification, approver_name)
-    return serialize_justification(justification, context)
+    apply_justification_approval_update(
+        db,
+        justification,
+        payload.approval_status,
+        audit_actor_name=current_user.username,
+        approver_name=approver_name,
+        approver_employee_id=context.employee.id if context.employee else None,
+        approver_user_id=current_user.id,
+    )
+    justification = get_justification_or_404(db, justification_id)
+    return serialize_justification(justification, requires_my_approval(db, context, justification))
 
 
 @router.delete("/{justification_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -244,10 +270,10 @@ def delete_justification(
 ) -> Response:
     context = build_absence_permission_context(db, current_user)
     justification = get_justification_or_404(db, justification_id)
-    if justification.employee_id not in context.allowed_employee_ids and not requires_my_approval(context, justification):
+    if justification.employee_id not in context.allowed_employee_ids and not requires_my_approval(db, context, justification):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this absence.")
 
-    previous_state = serialize_justification(justification, context).model_dump(mode="json")
+    previous_state = serialize_justification(justification, requires_my_approval(db, context, justification)).model_dump(mode="json")
     record_audit_log(
         db,
         action="delete",
@@ -255,6 +281,11 @@ def delete_justification(
         actor_name=current_user.username,
         detail=previous_state,
     )
+    deleted_employee_id = justification.employee_id
+    was_ferie = justification.justification_type == JustificationType.ferie
     db.delete(justification)
     db.commit()
+    # Cancellazione ferie → ricalcola l'OOF (rimuove o passa alla prossima ferie).
+    if was_ferie:
+        sync_employee_oof(deleted_employee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

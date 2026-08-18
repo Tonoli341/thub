@@ -6,10 +6,13 @@ import {
   getCurrentUser,
   getImpersonationView,
   login as loginRequest,
+  refreshSession,
   setAccessToken,
   setImpersonateEmployeeId,
   subscribeToAuthLogout,
 } from "./api";
+
+const SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
 const AuthContext = createContext(null);
 
@@ -45,6 +48,21 @@ export function AuthProvider({ children }) {
     bootstrap();
     return unsubscribe;
   }, []);
+
+  // Rolling session: finché l'utente è attivo il token viene rinnovato in
+  // background, così la scadenza JWT può restare corta senza sloggare nessuno.
+  useEffect(() => {
+    if (!user) return undefined;
+    const intervalId = window.setInterval(async () => {
+      try {
+        const payload = await refreshSession();
+        setAccessToken(payload.access_token);
+      } catch {
+        // un eventuale 401 è già gestito da request() (logout)
+      }
+    }, SESSION_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [user]);
 
   async function login(username, password) {
     const payload = await loginRequest({ username, password });

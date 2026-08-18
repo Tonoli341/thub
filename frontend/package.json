@@ -9,6 +9,7 @@
     "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
     "@mui/material": "^6.4.11",
@@ -16,6 +17,8 @@
     "@xyflow/react": "^12.11.0",
     "dagre": "^0.8.5",
     "dayjs": "^1.11.13",
+    "html-to-image": "^1.11.11",
+    "pdf-lib": "^1.17.1",
     "react": "^18.3.1",
     "react-day-picker": "^10.0.1",
     "react-dom": "^18.3.1",

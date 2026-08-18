@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import require_organization_access
 from app.db import get_db
-from app.models import LocalProject, TimesheetMapping
+from app.models import LocalProject, TimesheetMapping, User
 from app.schemas import LocalProjectCreate, LocalProjectRead, LocalProjectUpdate
 from app.services.audit import record_audit_log
+from app.services.security import get_current_user
 
-router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(require_organization_access)])
 
 
 @router.get("", response_model=list[LocalProjectRead])
@@ -34,7 +35,8 @@ def list_local_projects(
 
 
 @router.post("", response_model=LocalProjectRead, status_code=status.HTTP_201_CREATED)
-def create_local_project(payload: LocalProjectCreate, db: Session = Depends(get_db)) -> LocalProject:
+def create_local_project(payload: LocalProjectCreate, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> LocalProject:
     duplicate = db.scalar(
         select(LocalProject).where(
             or_(
@@ -48,14 +50,15 @@ def create_local_project(payload: LocalProjectCreate, db: Session = Depends(get_
 
     project = LocalProject(**payload.model_dump())
     db.add(project)
-    record_audit_log(db, action="create", entity="local_project", actor_name="system", detail=payload.model_dump())
+    record_audit_log(db, action="create", entity="local_project", actor_name=current_user.username, user_id=current_user.id, detail=payload.model_dump())
     db.commit()
     db.refresh(project)
     return project
 
 
 @router.put("/{project_id}", response_model=LocalProjectRead)
-def update_local_project(project_id: str, payload: LocalProjectUpdate, db: Session = Depends(get_db)) -> LocalProject:
+def update_local_project(project_id: str, payload: LocalProjectUpdate, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> LocalProject:
     project = db.get(LocalProject, project_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Commessa non trovata.")
@@ -88,7 +91,8 @@ def update_local_project(project_id: str, payload: LocalProjectUpdate, db: Sessi
         db,
         action="update",
         entity="local_project",
-        actor_name="system",
+        actor_name=current_user.username,
+        user_id=current_user.id,
         detail={"before": previous, "after": LocalProjectRead.model_validate(project).model_dump(mode="json")},
     )
     db.commit()
@@ -97,7 +101,8 @@ def update_local_project(project_id: str, payload: LocalProjectUpdate, db: Sessi
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_local_project(project_id: str, db: Session = Depends(get_db)) -> None:
+def delete_local_project(project_id: str, current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)) -> None:
     project = db.get(LocalProject, project_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Commessa non trovata.")
@@ -118,7 +123,8 @@ def delete_local_project(project_id: str, db: Session = Depends(get_db)) -> None
         db,
         action="delete",
         entity="local_project",
-        actor_name="system",
+        actor_name=current_user.username,
+        user_id=current_user.id,
         detail=LocalProjectRead.model_validate(project).model_dump(mode="json"),
     )
     db.delete(project)

@@ -25,6 +25,7 @@ import {
 import { useState } from "react";
 
 import { createOperationalArea, deleteOperationalArea, getOperationalAreas, updateOperationalArea } from "../api";
+import { normalizeBuildings } from "../buildings";
 
 const EMPTY_FORM = { area_code: "", name: "", description: "", is_operational: true, buildings: [] };
 
@@ -91,7 +92,7 @@ export default function OperationalAreasPage() {
         description: area.description || "",
         is_operational: area.is_operational,
         is_active: area.is_active,
-        buildings: area.buildings ?? [],
+        buildings: normalizeBuildings(area.buildings),
       },
     });
   }
@@ -412,23 +413,28 @@ function AreaCard({ area, onEdit, onToggleActive, onDelete }) {
       )}
 
       {/* Buildings */}
-      {(area.buildings ?? []).length > 0 ? (
+      {normalizeBuildings(area.buildings).length > 0 ? (
         <Box>
           <Typography variant="caption" color="text.disabled" sx={{ display: "block", mb: 0.5 }}>
             Immobili
           </Typography>
           <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-            {(area.buildings ?? []).map((b) => (
+            {normalizeBuildings(area.buildings).map((b) => (
               <Chip
-                key={b}
-                label={b}
+                key={b.code}
+                label={b.code}
                 size="small"
                 variant="outlined"
+                title={[
+                  b.visible_in_planner ? "Visibile nel Planner" : "Nascosto nel Planner",
+                  b.visible_in_reporting ? "Visibile in rendicontazione" : "Nascosto in rendicontazione",
+                ].join(" · ")}
                 sx={{
                   fontFamily: '"Lexend Mono", monospace',
                   fontSize: "0.72rem",
                   fontWeight: 700,
                   height: 22,
+                  opacity: b.visible_in_planner || b.visible_in_reporting ? 1 : 0.5,
                 }}
               />
             ))}
@@ -497,14 +503,24 @@ function AreaDialog({ state, onClose, onSave, isPending, error }) {
   const canSave = form.area_code.trim() && form.name.trim();
 
   function addBuilding() {
-    const b = buildingInput.trim().toUpperCase();
-    if (!b || form.buildings.includes(b)) return;
-    setForm((c) => ({ ...c, buildings: [...c.buildings, b] }));
+    const code = buildingInput.trim().toUpperCase();
+    if (!code || form.buildings.some((b) => b.code === code)) return;
+    setForm((c) => ({
+      ...c,
+      buildings: [...c.buildings, { code, visible_in_planner: true, visible_in_reporting: true }],
+    }));
     setBuildingInput("");
   }
 
-  function removeBuilding(b) {
-    setForm((c) => ({ ...c, buildings: c.buildings.filter((x) => x !== b) }));
+  function removeBuilding(code) {
+    setForm((c) => ({ ...c, buildings: c.buildings.filter((b) => b.code !== code) }));
+  }
+
+  function toggleBuildingFlag(code, flag, value) {
+    setForm((c) => ({
+      ...c,
+      buildings: c.buildings.map((b) => (b.code === code ? { ...b, [flag]: value } : b)),
+    }));
   }
 
   return (
@@ -581,18 +597,68 @@ function AreaDialog({ state, onClose, onSave, isPending, error }) {
 
           {/* Buildings */}
           <Box>
-            <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
+            <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
               Immobili
             </Typography>
-            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mb: 1.5, minHeight: 28 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+              Con &quot;Visibile nel Planner&quot; disattivo il Planner mostra solo l&apos;area, senza il
+              dettaglio dell&apos;immobile. Con &quot;Visibile in rendicontazione&quot; disattivo l&apos;immobile
+              non è utilizzabile nelle tabelle della rendicontazione.
+            </Typography>
+            <Stack spacing={1} sx={{ mb: 1.5 }}>
               {form.buildings.map((b) => (
-                <Chip
-                  key={b}
-                  label={b}
-                  size="small"
-                  onDelete={() => removeBuilding(b)}
-                  sx={{ fontFamily: '"Lexend Mono", monospace', fontWeight: 700, fontSize: "0.78rem" }}
-                />
+                <Box
+                  key={b.code}
+                  sx={{
+                    p: 1.25,
+                    borderRadius: 2,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1.5,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <Chip
+                    label={b.code}
+                    size="small"
+                    onDelete={() => removeBuilding(b.code)}
+                    sx={{ fontFamily: '"Lexend Mono", monospace', fontWeight: 700, fontSize: "0.78rem" }}
+                  />
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ ml: "auto" }}>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          size="small"
+                          checked={b.visible_in_planner}
+                          onChange={(e) => toggleBuildingFlag(b.code, "visible_in_planner", e.target.checked)}
+                        />
+                      }
+                      label={
+                        <Typography variant="caption" color="text.secondary">
+                          Visibile nel Planner
+                        </Typography>
+                      }
+                      sx={{ mr: 0 }}
+                    />
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          size="small"
+                          checked={b.visible_in_reporting}
+                          onChange={(e) => toggleBuildingFlag(b.code, "visible_in_reporting", e.target.checked)}
+                        />
+                      }
+                      label={
+                        <Typography variant="caption" color="text.secondary">
+                          Visibile in rendicontazione
+                        </Typography>
+                      }
+                      sx={{ mr: 0 }}
+                    />
+                  </Stack>
+                </Box>
               ))}
               {form.buildings.length === 0 && (
                 <Typography variant="caption" color="text.disabled" sx={{ lineHeight: "28px" }}>

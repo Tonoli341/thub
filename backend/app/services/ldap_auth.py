@@ -62,6 +62,80 @@ def _extract_attr(entry, attr_name: str) -> str | None:
     return str(value).strip() or None
 
 
+def _service_bind_connection() -> Connection:
+    server = Server(settings.ldap_uri, get_info=ALL, connect_timeout=10)
+    conn = Connection(
+        server,
+        user=settings.ldap_service_bind_dn,
+        password=settings.ldap_service_bind_password,
+        authentication=SIMPLE,
+        raise_exceptions=True,
+    )
+    if not conn.bind():
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Bind di servizio LDAP fallito.")
+    return conn
+
+
+def _fetch_ad_user_attributes(conn: Connection, username: str) -> dict | None:
+    user_base = settings.ldap_user_dn or _domain_to_base_dn(settings.ldap_domain)
+    if not user_base:
+        return None
+
+    escaped_username = escape_filter_chars(username)
+    escaped_upn = escape_filter_chars(f"{username}@{settings.ldap_domain}")
+    user_filter = f"(|(sAMAccountName={escaped_username})(userPrincipalName={escaped_upn}))"
+    conn.search(user_base, user_filter, attributes=["displayName", "mail", "distinguishedName"])
+    if not conn.entries:
+        return None
+
+    entry = conn.entries[0]
+    return {
+        "display_name": _extract_attr(entry, "displayName"),
+        "email": _extract_attr(entry, "mail"),
+        "distinguished_name": str(entry.entry_dn).strip() or None,
+    }
+
+
+def maybe_refresh_ldap_employee(ldap_employee: LdapEmployee | None) -> None:
+    """Best-effort, throttled re-sync of one LdapEmployee's AD attributes.
+
+    Called on the rolling session-refresh heartbeat so data drifts less for users who
+    stay logged in for a long time without re-entering their password. Silently does
+    nothing if there's no linked LDAP employee, no service account configured, or the
+    last sync is still within LDAP_AD_SYNC_INTERVAL_HOURS - this must never break the
+    caller (session refresh), so all AD errors are swallowed.
+    """
+    if ldap_employee is None or not settings.ldap_service_bind_configured:
+        return
+
+    now = datetime.now(timezone.utc)
+    if ldap_employee.last_ad_sync_at is not None:
+        elapsed_hours = (now - ldap_employee.last_ad_sync_at).total_seconds() / 3600
+        if elapsed_hours < settings.ldap_ad_sync_interval_hours:
+            return
+
+    conn = None
+    try:
+        conn = _service_bind_connection()
+        attrs = _fetch_ad_user_attributes(conn, ldap_employee.username)
+        if attrs is not None:
+            if attrs["display_name"]:
+                ldap_employee.display_name = attrs["display_name"]
+            ldap_employee.email = attrs["email"]
+            if attrs["distinguished_name"]:
+                ldap_employee.distinguished_name = attrs["distinguished_name"]
+        ldap_employee.last_ad_sync_at = now
+    except Exception:
+        # AD irraggiungibile o mal configurato: si riprova al prossimo refresh (30 min).
+        pass
+    finally:
+        if conn is not None:
+            try:
+                conn.unbind()
+            except Exception:
+                pass
+
+
 def authenticate_with_ldap(data: AuthLoginRequest, request: Request, db: Session) -> TokenResponse:
     username = data.username.strip()
     password = data.password
@@ -150,6 +224,7 @@ def authenticate_with_ldap(data: AuthLoginRequest, request: Request, db: Session
                 auth_user=user,
                 first_login_at=logged_at,
                 last_login_at=logged_at,
+                last_ad_sync_at=logged_at,
                 is_active=True,
             )
             db.add(ldap_employee)
@@ -159,6 +234,7 @@ def authenticate_with_ldap(data: AuthLoginRequest, request: Request, db: Session
             ldap_employee.distinguished_name = distinguished_name
             ldap_employee.auth_user = user
             ldap_employee.last_login_at = logged_at
+            ldap_employee.last_ad_sync_at = logged_at
             ldap_employee.is_active = True
             if ldap_employee.first_login_at is None:
                 ldap_employee.first_login_at = logged_at

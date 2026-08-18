@@ -1,25 +1,48 @@
-import { useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Alert, Box, Button, CircularProgress, Container, Divider, InputBase, Popover, Stack, Tooltip, Typography } from "@mui/material";
 
 import { useAuth } from "./auth";
 import { useAppTheme } from "./ThemeContext";
-import DashboardPage from "./pages/DashboardPage";
-import CalendarPage from "./pages/CalendarPage";
-import EmployeesPage from "./pages/EmployeesPage";
-import FunctionsDepartmentsPage from "./pages/FunctionsDepartmentsPage";
-import LdapEmployeesPage from "./pages/LdapEmployeesPage";
+import ErrorBoundary from "./ErrorBoundary";
 import LoginPage from "./pages/LoginPage";
-import OrgChartPage from "./pages/OrgChartPage";
-import OperationalAreasPage from "./pages/OperationalAreasPage";
-import PlannerPage from "./pages/PlannerPage";
-import ProjectsPage from "./pages/ProjectsPage";
-import SquadrePage from "./pages/SquadrePage";
-import TimesheetAdminPage from "./pages/TimesheetAdminPage";
-import TimesheetDashboardPage from "./pages/TimesheetDashboardPage";
-import TimesheetDetailPage from "./pages/TimesheetDetailPage";
-import TimesheetListPage from "./pages/TimesheetListPage";
-import ToolChangesPage from "./pages/ToolChangesPage";
+
+// Code-splitting per route: le pagine (alcune molto grandi, con dipendenze come
+// pdf-lib o @xyflow/react) vengono scaricate solo quando servono.
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
+const CalendarPage = lazy(() => import("./pages/CalendarPage"));
+const EmployeesPage = lazy(() => import("./pages/EmployeesPage"));
+const FunctionsDepartmentsPage = lazy(() => import("./pages/FunctionsDepartmentsPage"));
+const LdapEmployeesPage = lazy(() => import("./pages/LdapEmployeesPage"));
+const OrgChartPage = lazy(() => import("./pages/OrgChartPage"));
+const OperationalAreasPage = lazy(() => import("./pages/OperationalAreasPage"));
+const TrainingConfigPage = lazy(() => import("./pages/TrainingConfigPage"));
+const PlannerPage = lazy(() => import("./pages/PlannerPage"));
+const ProjectsPage = lazy(() => import("./pages/ProjectsPage"));
+const SquadrePage = lazy(() => import("./pages/SquadrePage"));
+const ActivityDashboardPage = lazy(() => import("./pages/TimesheetDashboardPage"));
+const ActivityListPage = lazy(() => import("./pages/TimesheetListPage"));
+const ActiveActivitiesPage = lazy(() => import("./pages/ActiveActivitiesPage"));
+const DailyRecordsPage = lazy(() => import("./pages/DailyRecordsPage"));
+const loadOperationalReportingPage = () => import("./pages/OperationalReportingPage");
+const OperationalReportingPage = lazy(loadOperationalReportingPage);
+const OperationalReportingDashboardPage = lazy(() => import("./pages/OperationalReportingDashboardPage"));
+const ToolChangesPage = lazy(() => import("./pages/ToolChangesPage"));
+const WorkloadPage = lazy(() => import("./pages/WorkloadPage"));
+const EndpointsPage = lazy(() => import("./pages/EndpointsPage"));
+const AuditLogPage = lazy(() => import("./pages/AuditLogPage"));
+const SystemStatusPage = lazy(() => import("./pages/SystemStatusPage"));
+const IntegrationsPage = lazy(() => import("./pages/IntegrationsPage"));
+const ConsegnePage = lazy(() => import("./pages/ConsegnePage"));
+const DeliverySignaturePage = lazy(() => import("./pages/DeliverySignaturePage"));
+
+function PageLoader() {
+  return (
+    <Box sx={{ minHeight: "40vh", display: "grid", placeItems: "center" }}>
+      <CircularProgress sx={{ color: "#007040" }} />
+    </Box>
+  );
+}
 
 const SIDEBAR_SECTIONS = [
   {
@@ -28,15 +51,17 @@ const SIDEBAR_SECTIONS = [
     items: [
       { to: "/", label: "Home", icon: "home" },
       { to: "/planner", label: "Planner", icon: "briefcase", requires: "planning" },
+      { to: "/carichi", label: "Carichi", icon: "document", requires: "workloads" },
       { to: "/calendario", label: "Assenze", icon: "sun", requires: "calendar" },
+      { to: "/consegne", label: "Consegne", icon: "box", requires: "deliveries" },
     ],
   },
   {
     key: "rendicontazioni",
     title: "Rendicontazioni",
     items: [
-      { to: "/rendicontazioni/dashboard", label: "Dashboard", icon: "receipt", requires: "timesheets" },
-      { to: "/rendicontazioni/elenco", label: "Giornate", icon: "document", requires: "timesheets" },
+      { to: "/rendicontazioni/operativa/dashboard", label: "Dashboard operativa", icon: "panel", requires: "operationalReporting" },
+      { to: "/rendicontazioni/operativa", label: "Operativa", icon: "clock", requires: "operationalReporting", exact: true },
     ],
   },
   {
@@ -52,7 +77,7 @@ const SIDEBAR_SECTIONS = [
     items: [
       { to: "/dipendenti", label: "Dipendenti", icon: "user", requires: "organization" },
       { to: "/squadre", label: "Squadre", icon: "team", requires: "organization" },
-      { to: "/organigramma", label: "Organigramma", icon: "orgchart", requires: "planning" },
+      { to: "/organigramma", label: "Organigramma", icon: "orgchart", requires: "organization" },
       { to: "/funzioni-dipartimenti", label: "Funzione / Dipartimento", icon: "structure", requires: "organization" },
     ],
   },
@@ -60,10 +85,14 @@ const SIDEBAR_SECTIONS = [
     key: "configurazione",
     title: "Configurazione",
     items: [
-      { to: "/dipendenti-ldap", label: "Mapping LDAP", icon: "folder", requires: "admin" },
-      { to: "/rendicontazioni/admin", label: "Mapping AWS", icon: "checklist", requires: "admin" },
-      { to: "/commesse", label: "Commesse", icon: "briefcase", requires: "admin" },
-      { to: "/aree-operative", label: "Aree operative", icon: "document", requires: "admin" },
+      { to: "/dipendenti-ldap", label: "Mapping LDAP", icon: "folder", requires: "organization" },
+      { to: "/commesse", label: "Jupiter", icon: "planet", requires: "organization" },
+      { to: "/aree-operative", label: "Aree operative", icon: "document", requires: "organization" },
+      { to: "/formazione", label: "Formazione", icon: "graduation", requires: "hr" },
+      { to: "/integrazioni", label: "Integrazioni", icon: "plug", requires: "admin" },
+      { to: "/endpoints", label: "Endpoint API", icon: "code", requires: "admin" },
+      { to: "/audit", label: "Audit", icon: "checklist", requires: "admin" },
+      { to: "/stato-sistema", label: "Stato sistema", icon: "pulse", requires: "admin" },
     ],
   },
 ];
@@ -196,6 +225,14 @@ function Icon({ name, size = 20, stroke = 1.9 }) {
           <path d="m4 18 1.5 1.5L8 16" />
         </svg>
       );
+    case "box":
+      return (
+        <svg {...common}>
+          <path d="M12 3 20 7v10l-8 4-8-4V7z" />
+          <path d="M4 7l8 4 8-4" />
+          <path d="M12 11v9" />
+        </svg>
+      );
     case "receipt":
       return (
         <svg {...common}>
@@ -276,6 +313,51 @@ function Icon({ name, size = 20, stroke = 1.9 }) {
           <path d="M12 11v3" />
         </svg>
       );
+    case "graduation":
+      return (
+        <svg {...common}>
+          <path d="M12 4 2.5 9 12 14l9.5-5L12 4Z" />
+          <path d="M6.5 11.2v4.3c0 1 2.5 2.5 5.5 2.5s5.5-1.5 5.5-2.5v-4.3" />
+          <path d="M21.5 9v5" />
+        </svg>
+      );
+    case "code":
+      return (
+        <svg {...common}>
+          <path d="m8 9-3 3 3 3" />
+          <path d="m16 9 3 3-3 3" />
+          <path d="m14 4-4 16" />
+        </svg>
+      );
+    case "clock":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 7.5V12l3 2" />
+        </svg>
+      );
+    case "pulse":
+      return (
+        <svg {...common}>
+          <path d="M3 12h4l2.5-6 4.5 12 2.5-6H21" />
+        </svg>
+      );
+    case "planet":
+      return (
+        <svg {...common}>
+          <circle cx="11" cy="12" r="6.5" />
+          <ellipse cx="11" cy="12" rx="10.5" ry="3" transform="rotate(-18 11 12)" />
+        </svg>
+      );
+    case "plug":
+      return (
+        <svg {...common}>
+          <path d="M9 3v5" />
+          <path d="M15 3v5" />
+          <path d="M6.5 8h11v3.5a5.5 5.5 0 0 1-11 0V8Z" />
+          <path d="M12 17v4" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -336,14 +418,20 @@ function SidebarNav({ user, collapsed, search }) {
       ...section,
       items: section.items.filter((item) => {
         if (item.requires === "admin") return user?.effective_role === "admin";
+        if (item.requires === "hr") return user?.effective_role === "admin" || user?.effective_role === "hr";
         if (item.requires === "planning") return Boolean(user?.can_access_planning);
         if (item.requires === "calendar") return Boolean(user?.can_access_calendar);
         if (item.requires === "organization") return Boolean(user?.can_access_organization);
         if (item.requires === "timesheets") return Boolean(user?.can_access_timesheets);
+        if (item.requires === "operationalReporting") return Boolean(
+          user?.effective_role === "admin" || (user?.effective_role === "manager" && user?.can_access_timesheets)
+        );
+        if (item.requires === "workloads") return Boolean(user?.can_access_workloads);
+        if (item.requires === "deliveries") return Boolean(user?.can_access_deliveries);
         return true;
       }),
     })).filter((section) => section.items.length > 0),
-    [user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets],
+    [user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets, user?.can_access_workloads, user?.can_access_deliveries],
   );
 
   const displayedSections = useMemo(() => {
@@ -391,8 +479,8 @@ function SidebarNav({ user, collapsed, search }) {
             {collapsed && section.title && <Box sx={{ my: 0.75, mx: 0.5, height: 1, bgcolor: "var(--color-sidebar-separator)" }} />}
 
             {isOpen && section.items.map((item) => {
-              const active = item.to === "/"
-                ? location.pathname === "/"
+              const active = item.to === "/" || item.exact
+                ? location.pathname === item.to
                 : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
               return (
                 <Box component="li" key={item.to} sx={{ mt: 0.25 }}>
@@ -411,11 +499,21 @@ function ProtectedLayout() {
   const { logout, user, effectiveUser, isImpersonating, stopImpersonation, startImpersonation } = useAuth();
   const { darkMode, setDarkMode } = useAppTheme();
   const timesheetsOnly = Boolean(effectiveUser?.can_access_timesheets && !effectiveUser?.can_access_planning && !effectiveUser?.can_access_calendar && !effectiveUser?.can_access_organization);
+  const canAccessOperationalReporting = Boolean(
+    effectiveUser?.effective_role === "admin"
+    || (effectiveUser?.effective_role === "manager" && effectiveUser?.can_access_timesheets)
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [bellAnchorEl, setBellAnchorEl] = useState(null);
 
   const sidebarWidth = sidebarCollapsed ? 56 : 240;
+
+  useEffect(() => {
+    if (canAccessOperationalReporting) {
+      loadOperationalReportingPage();
+    }
+  }, [canAccessOperationalReporting]);
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
@@ -433,6 +531,13 @@ function ProtectedLayout() {
                   ({effectiveUser.effective_role})
                 </Typography>
               )}
+              <Typography component="span" sx={{ fontSize: 12, ml: 1, fontWeight: 400, opacity: 0.8 }}>
+                · Scadenze: {effectiveUser?.expirations_scope === "all"
+                  ? "tutte"
+                  : effectiveUser?.expirations_scope === "reports"
+                    ? "solo riporti"
+                    : "nessuna"}
+              </Typography>
             </Typography>
             <Button size="small" variant="outlined" color="warning" onClick={stopImpersonation} sx={{ fontWeight: 700, textTransform: "none", fontSize: 12 }}>
               Esci dalla visualizzazione
@@ -634,23 +739,45 @@ function ProtectedLayout() {
 
         <Box sx={{ minWidth: 0, px: { xs: 2, md: 3 }, py: { xs: 2, md: 3 } }}>
           <Container maxWidth={false} disableGutters>
+            <ErrorBoundary>
+            <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route path="/" element={timesheetsOnly ? <Navigate to="/rendicontazioni/dashboard" replace /> : <DashboardPage />} />
-              <Route path="/organigramma" element={<OrgChartPage />} />
-              <Route path="/dipendenti" element={user?.can_access_organization ? <EmployeesPage onImpersonate={startImpersonation} /> : <Navigate to="/" replace />} />
+              <Route path="/organigramma" element={effectiveUser?.can_access_organization ? <OrgChartPage /> : <Navigate to="/" replace />} />
+              <Route path="/dipendenti" element={effectiveUser?.can_access_organization ? <EmployeesPage onImpersonate={effectiveUser?.effective_role === "admin" ? startImpersonation : undefined} /> : <Navigate to="/" replace />} />
+              <Route path="/consegne" element={effectiveUser?.can_access_deliveries ? <ConsegnePage /> : <Navigate to="/" replace />} />
+              {/* Firma consegna dispositivo: accessibile a ogni utente autenticato,
+                  il backend verifica che la consegna appartenga al dipendente collegato. */}
+              <Route path="/le-mie-consegne/:deliveryId/firma" element={<DeliverySignaturePage />} />
               <Route path="/dipendenti-ldap" element={effectiveUser?.can_access_organization ? <LdapEmployeesPage /> : <Navigate to="/" replace />} />
               <Route path="/commesse" element={effectiveUser?.can_access_organization ? <ProjectsPage /> : <Navigate to="/" replace />} />
               <Route path="/aree-operative" element={effectiveUser?.can_access_organization ? <OperationalAreasPage /> : <Navigate to="/" replace />} />
+              <Route path="/formazione" element={(effectiveUser?.effective_role === "admin" || effectiveUser?.effective_role === "hr") ? <TrainingConfigPage /> : <Navigate to="/" replace />} />
               <Route path="/funzioni-dipartimenti" element={effectiveUser?.can_access_organization ? <FunctionsDepartmentsPage /> : <Navigate to="/" replace />} />
               <Route path="/planner" element={effectiveUser?.can_access_planning ? <PlannerPage /> : <Navigate to="/" replace />} />
+              <Route path="/carichi" element={effectiveUser?.can_access_workloads ? <WorkloadPage /> : <Navigate to="/" replace />} />
               <Route path="/squadre" element={effectiveUser?.can_access_organization ? <SquadrePage /> : <Navigate to="/" replace />} />
               <Route path="/calendario" element={effectiveUser?.can_access_calendar ? <CalendarPage /> : <Navigate to="/" replace />} />
-              <Route path="/modifiche-tool" element={<ToolChangesPage />} />
-              <Route path="/rendicontazioni/dashboard" element={effectiveUser?.can_access_timesheets ? <TimesheetDashboardPage /> : <Navigate to="/" replace />} />
-              <Route path="/rendicontazioni/elenco" element={effectiveUser?.can_access_timesheets ? <TimesheetListPage /> : <Navigate to="/" replace />} />
-              <Route path="/rendicontazioni/giorni/:dayId" element={effectiveUser?.can_access_timesheets ? <TimesheetDetailPage /> : <Navigate to="/" replace />} />
-              <Route path="/rendicontazioni/admin" element={effectiveUser?.can_access_timesheets ? <TimesheetAdminPage /> : <Navigate to="/" replace />} />
+              <Route path="/modifiche-tool" element={effectiveUser?.can_access_organization ? <ToolChangesPage /> : <Navigate to="/" replace />} />
+              <Route path="/rendicontazioni/dashboard" element={effectiveUser?.can_access_timesheets ? <ActivityDashboardPage /> : <Navigate to="/" replace />} />
+              <Route path="/rendicontazioni/elenco" element={effectiveUser?.can_access_timesheets ? <ActivityListPage /> : <Navigate to="/" replace />} />
+              <Route path="/rendicontazioni/presenze" element={effectiveUser?.can_access_timesheets ? <DailyRecordsPage /> : <Navigate to="/" replace />} />
+              <Route path="/rendicontazioni/timer-attivi" element={effectiveUser?.can_access_timesheets ? <ActiveActivitiesPage /> : <Navigate to="/" replace />} />
+              <Route
+                path="/rendicontazioni/operativa"
+                element={canAccessOperationalReporting ? <OperationalReportingPage /> : <Navigate to="/" replace />}
+              />
+              <Route
+                path="/rendicontazioni/operativa/dashboard"
+                element={canAccessOperationalReporting ? <OperationalReportingDashboardPage /> : <Navigate to="/" replace />}
+              />
+              <Route path="/endpoints" element={effectiveUser?.effective_role === "admin" ? <EndpointsPage /> : <Navigate to="/" replace />} />
+              <Route path="/audit" element={effectiveUser?.effective_role === "admin" ? <AuditLogPage /> : <Navigate to="/" replace />} />
+              <Route path="/stato-sistema" element={effectiveUser?.effective_role === "admin" ? <SystemStatusPage /> : <Navigate to="/" replace />} />
+              <Route path="/integrazioni" element={effectiveUser?.effective_role === "admin" ? <IntegrationsPage /> : <Navigate to="/" replace />} />
             </Routes>
+            </Suspense>
+            </ErrorBoundary>
           </Container>
         </Box>
       </Box>
@@ -660,6 +787,7 @@ function ProtectedLayout() {
 
 export default function App() {
   const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -669,10 +797,19 @@ export default function App() {
     );
   }
 
+  // Dopo il login si torna alla pagina richiesta in origine (es. il link di
+  // firma consegna ricevuto via email), non alla home.
   return (
     <Routes>
-      <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />} />
-      <Route path="/*" element={isAuthenticated ? <ProtectedLayout /> : <Navigate to="/login" replace />} />
+      <Route path="/login" element={isAuthenticated ? <Navigate to={location.state?.from || "/"} replace /> : <LoginPage />} />
+      <Route
+        path="/*"
+        element={
+          isAuthenticated
+            ? <ProtectedLayout />
+            : <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}` }} />
+        }
+      />
     </Routes>
   );
 }

@@ -1,16 +1,17 @@
 import dagre from "dagre";
 import { useQuery } from "@tanstack/react-query";
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, useReactFlow } from "@xyflow/react";
-import { Alert, Avatar, Box, Button, Chip, CircularProgress, Paper, Stack, Typography } from "@mui/material";
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, getViewportForBounds, useReactFlow } from "@xyflow/react";
+import { Alert, Avatar, Box, Button, Checkbox, Chip, CircularProgress, Divider, ListItemText, Menu, MenuItem, Paper, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { getEmployeePhoto, getEmployees, getOrgDepartments, getOrgFunctions } from "../api";
+import { getEmployeeCourseBadges, getEmployeePhoto, getEmployees, getOrgDepartments, getOrgFunctions } from "../api";
 
 const groupNodeWidth = 220;
 const functionNodeHeight = 86;
 const departmentNodeHeight = 74;
 const personNodeWidth = 180;
 const personNodeHeight = 126;
+const personNodeHeightWithBadges = 158;
 
 const resourceTone = {
   "Responsabile di funzione": { bg: "#007040", soft: "rgba(15, 76, 92, 0.12)", text: "#007040" },
@@ -19,7 +20,18 @@ const resourceTone = {
   "Responsabile": { bg: "#7a5c61", soft: "rgba(122, 92, 97, 0.12)", text: "#7a5c61" },
   Collaboratore: { bg: "#6b7280", soft: "rgba(107, 114, 128, 0.12)", text: "#4b5563" },
   "Team Leader": { bg: "rgba(212, 160, 23, 0.14)", soft: "rgba(212, 160, 23, 0.14)", text: "#a07808" },
+  BOARD: { bg: "#7a5a00", soft: "linear-gradient(135deg, rgba(202, 138, 4, 0.2), rgba(120, 53, 15, 0.14))", text: "#7a4b00" },
 };
+
+function getPersonDisplayLabel({ resourceLabel, isTeamLeader, isDirettivo }) {
+  if (isDirettivo) {
+    return "BOARD";
+  }
+  if (isTeamLeader && resourceLabel === "Collaboratore") {
+    return "Team Leader";
+  }
+  return resourceLabel;
+}
 
 function getInitials(fullName) {
   return fullName.split(" ").filter(Boolean).slice(0, 2).map((token) => token[0]).join("").toUpperCase() || "?";
@@ -119,7 +131,7 @@ function buildOrgChartModel(employees, orgDepartments = [], orgFunctions = []) {
   // Tutti i dipendenti vengono posizionati in base a organization_function/organization_department.
   const managerEmployeeIds = new Set(sortedEmployees.map((e) => e.manager_employee_id).filter(Boolean));
 
-  for (const employee of sortedEmployees) {
+  for (const employee of sortedEmployees.filter((e) => !e.is_direttivo)) {
     const rawDepartmentLabel = String(employee.organization_department ?? "").trim();
     const functionLabel = (rawDepartmentLabel && deptFunctionMap.get(rawDepartmentLabel))
       || String(employee.organization_function ?? "").trim()
@@ -400,7 +412,58 @@ function buildOrgChartModel(employees, orgDepartments = [], orgFunctions = []) {
       };
     });
 
-  return { functions, totalEmployees: sortedEmployees.length };
+  const direttivoEmployees = sortedEmployees.filter((e) => e.is_direttivo);
+  const direttivoTree = buildDirettivoTree(direttivoEmployees);
+
+  return { functions, totalEmployees: sortedEmployees.length, direttivoEmployees, direttivoTree };
+}
+
+// Gerarchia interna al Board: usa esclusivamente "Responsabile Diretto" (manager_employee_id)
+// per collegare i membri del board tra loro. Non ha alcun effetto fuori dal box Board.
+function buildDirettivoTree(direttivoEmployees) {
+  const idSet = new Set(direttivoEmployees.map((e) => e.id));
+  const nodeById = new Map(direttivoEmployees.map((employee) => [employee.id, {
+    id: "direttivo:person:" + employee.id,
+    employee,
+    resourceLabel: "Collaboratore",
+    crossGroupParentId: null,
+    reportsToEmployeeId: employee.manager_employee_id ?? null,
+    sameGroupChildren: [],
+    descendantCount: 0,
+  }]));
+
+  function wouldCreateCycle(node, parentNode) {
+    let current = parentNode;
+    const visited = new Set();
+    while (current) {
+      if (current === node) return true;
+      if (visited.has(current.employee.id)) return true;
+      visited.add(current.employee.id);
+      const managerId = current.reportsToEmployeeId;
+      current = managerId && idSet.has(managerId) ? nodeById.get(managerId) : null;
+    }
+    return false;
+  }
+
+  const roots = [];
+  for (const employee of direttivoEmployees) {
+    const node = nodeById.get(employee.id);
+    const managerId = employee.manager_employee_id;
+    const managerNode = managerId && managerId !== employee.id ? nodeById.get(managerId) : null;
+    if (managerNode && !wouldCreateCycle(node, managerNode)) {
+      managerNode.sameGroupChildren.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  roots.sort(compareOrgNodes);
+  roots.forEach((root) => {
+    sortOrgBranch(root);
+    root.descendantCount = countPersonDescendants(root);
+  });
+
+  return roots;
 }
 
 function GroupNode({ data }) {
@@ -476,47 +539,80 @@ function GroupNode({ data }) {
   );
 }
 
+const BADGE_STATUS_COLOR = {
+  valid: "#16a34a",
+  expiring: "#d97706",
+  expired: "#dc2626",
+  missing: "#9ca3af",
+};
+
+const COURSE_BADGES = [
+  { key: "antincendio", icon: "🔥", label: "Antincendio" },
+  { key: "preposto", icon: "🦺", label: "Preposto" },
+  { key: "primo_soccorso", icon: "🩹", label: "Primo soccorso" },
+  { key: "rls", icon: "🛡️", label: "RLS" },
+];
+
+function CourseBadges({ badges }) {
+  if (!badges) return null;
+  const visible = COURSE_BADGES.filter(({ key }) => (badges[key] ?? "missing") !== "missing");
+  if (visible.length === 0) return null;
+  return (
+    <Box sx={{ display: "flex", gap: 0.5, justifyContent: "center" }}>
+      {visible.map(({ key, icon, label }) => {
+        const status = badges[key];
+        const color = BADGE_STATUS_COLOR[status];
+        return (
+          <Box
+            key={key}
+            title={`${label}: ${status}`}
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 22,
+              height: 22,
+              borderRadius: "50%",
+              bgcolor: `${color}22`,
+              border: `1.5px solid ${color}`,
+              fontSize: 11,
+              lineHeight: 1,
+            }}
+          >
+            {icon}
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
 function PersonNode({ data }) {
-  const [photoUrl, setPhotoUrl] = useState(null);
-  const displayLabel = (data.isTeamLeader && data.resourceLabel === "Collaboratore") ? "Team Leader" : data.resourceLabel;
+  const isDirettivo = data.isDirettivo ?? false;
+  const displayLabel = getPersonDisplayLabel({
+    resourceLabel: data.resourceLabel,
+    isTeamLeader: data.isTeamLeader,
+    isDirettivo,
+  });
   const tone = resourceTone[displayLabel] ?? resourceTone.Collaboratore;
 
-  useEffect(() => {
-    if (!data.hasPhoto) {
-      setPhotoUrl(null);
-      return undefined;
-    }
-
-    let active = true;
-    let objectUrl = null;
-    getEmployeePhoto(data.employeeId)
-      .then((blob) => {
-        if (!active) {
-          return;
-        }
-        objectUrl = URL.createObjectURL(blob);
-        setPhotoUrl(objectUrl);
-      })
-      .catch(() => {
-        if (active) {
-          setPhotoUrl(null);
-        }
-      });
-
-    return () => {
-      active = false;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [data.employeeId, data.hasPhoto]);
+  // cache condivisa con le altre pagine (stessa queryKey): la foto non viene
+  // riscaricata per ogni nodo dell'organigramma né a ogni remount
+  const { data: photoUrl } = useQuery({
+    queryKey: ["employee-photo", data.employeeId],
+    queryFn: () => getEmployeePhoto(data.employeeId).then((blob) => URL.createObjectURL(blob)),
+    enabled: Boolean(data.hasPhoto),
+    staleTime: 1000 * 60 * 30,
+    gcTime: 1000 * 60 * 60,
+    retry: false,
+  });
 
   return (
     <Box
       className="nodrag nopan"
       sx={{
         width: personNodeWidth,
-        minHeight: personNodeHeight,
+        minHeight: data.height,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -547,14 +643,84 @@ function PersonNode({ data }) {
         size="small"
         label={displayLabel}
         sx={{
-          bgcolor: tone.soft,
+          bgcolor: isDirettivo ? undefined : tone.soft,
+          background: isDirettivo ? tone.soft : undefined,
           color: tone.text,
           fontWeight: 700,
+          letterSpacing: isDirettivo ? "0.08em" : "normal",
+          border: isDirettivo ? `1px solid ${tone.bg}` : "none",
+          boxShadow: isDirettivo ? "inset 0 0 0 1px rgba(255,255,255,0.26)" : "none",
           maxWidth: "100%",
           height: "auto",
           "& .MuiChip-label": { whiteSpace: "normal", textAlign: "center", py: 0.375, lineHeight: 1.25 },
         }}
       />
+      <CourseBadges badges={data.courseBadges} />
+      {data.hasChildren && (
+        <Box
+          sx={{
+            position: "absolute",
+            bottom: -13,
+            left: "50%",
+            transform: "translateX(-50%)",
+            minWidth: 28,
+            height: 20,
+            borderRadius: 10,
+            background: data.isCollapsed ? "#3b82f6" : "#e2e2ea",
+            border: "2px solid white",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            px: 0.75,
+            fontSize: 10,
+            fontWeight: 700,
+            color: data.isCollapsed ? "white" : "#40506b",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.18)",
+            pointerEvents: "none",
+          }}
+        >
+          {data.isCollapsed ? `+${data.hiddenCount}` : "−"}
+        </Box>
+      )}
+      <Handle type="source" position={Position.Bottom} isConnectable={false} style={{ opacity: 0 }} />
+    </Box>
+  );
+}
+
+function DirettivoNode({ data }) {
+  return (
+    <Box
+      className="nodrag nopan"
+      sx={{
+        width: data.width,
+        minHeight: 56,
+        borderRadius: 3,
+        px: 3,
+        py: 1.25,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 0.35,
+        textAlign: "center",
+        background: "linear-gradient(135deg, #3f454a, #383e42)",
+        color: "#f1ece1",
+        border: data.isCollapsed
+          ? "1.5px solid #3b82f6"
+          : "1px solid rgba(255,255,255,0.14)",
+        boxShadow: data.isCollapsed
+          ? "0 18px 34px rgba(30,30,49,0.16), 0 0 0 3px rgba(59,130,246,0.16)"
+          : "0 18px 34px rgba(30,30,49,0.22)",
+        cursor: data.hasChildren ? "pointer" : "default",
+        position: "relative",
+      }}
+    >
+      <Handle type="target" position={Position.Top} isConnectable={false} style={{ opacity: 0 }} />
+      <Box>
+        <Typography variant="overline" sx={{ fontSize: 9, opacity: 0.6, lineHeight: 1, color: "#f1ece1" }}>Organo</Typography>
+        <Typography sx={{ fontSize: 16, fontWeight: 900, lineHeight: 1.1, letterSpacing: "0.04em", color: "#f1ece1" }}>BOARD</Typography>
+      </Box>
+      <Typography sx={{ fontSize: 12, opacity: 0.82, color: "#f1ece1" }}>{data.employeeCount} membri</Typography>
       {data.hasChildren && (
         <Box
           sx={{
@@ -589,12 +755,42 @@ function PersonNode({ data }) {
 const nodeTypes = {
   group: GroupNode,
   person: PersonNode,
+  direttivo: DirettivoNode,
 };
 
-function buildGraph(model, collapsedIds) {
+// Allinea in alto i nodi dello stesso rango (stesso livello gerarchico): raggruppa per centro-Y
+// simile e sposta tutti i membri del gruppo in modo che i loro bordi superiori coincidano,
+// dando l'effetto "piramide pulita" a strati usato sia per i blocchi funzione/dipartimento
+// che per la gerarchia interna del Board.
+function computeTopAlignedY(entries) {
+  const RANK_TOLERANCE = 5;
+  const rankGroups = [];
+  for (const entry of entries) {
+    let placed = false;
+    for (const group of rankGroups) {
+      if (Math.abs(group.centerY - entry.centerY) <= RANK_TOLERANCE) {
+        group.members.push(entry);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) rankGroups.push({ centerY: entry.centerY, members: [entry] });
+  }
+  const topAlignedY = new Map();
+  for (const group of rankGroups) {
+    if (group.members.length <= 1) continue;
+    const minTop = Math.min(...group.members.map((m) => m.centerY - m.height / 2));
+    for (const m of group.members) topAlignedY.set(m.id, minTop + m.height / 2);
+  }
+  return topAlignedY;
+}
+
+function buildGraph(model, collapsedIds, badgesMap = new Map()) {
   const graph = new dagre.graphlib.Graph();
   graph.setGraph({ rankdir: "TB", nodesep: 44, ranksep: 96, marginx: 28, marginy: 28 });
   graph.setDefaultEdgeLabel(() => ({}));
+
+  const direttivoEmployees = model.direttivoEmployees ?? [];
 
   const nodes = [];
   const edges = [];
@@ -619,6 +815,9 @@ function buildGraph(model, collapsedIds) {
 
   function addPersonBranch(node, parentId, suppressedCrossGroupId = null) {
     const isCollapsed = collapsedIds.has(node.id);
+    const badge = badgesMap.get(node.employee.id) ?? null;
+    const hasBadges = badge !== null && COURSE_BADGES.some(({ key }) => (badge[key] ?? "missing") !== "missing");
+    const nodeHeight = hasBadges ? personNodeHeightWithBadges : personNodeHeight;
     addNode({
       id: node.id,
       type: "person",
@@ -629,16 +828,18 @@ function buildGraph(model, collapsedIds) {
         id: node.id,
         employeeId: node.employee.id,
         width: personNodeWidth,
-        height: personNodeHeight,
+        height: nodeHeight,
         fullName: node.employee.full_name,
         hasPhoto: node.employee.has_photo,
         initials: getInitials(node.employee.full_name || ""),
         color: getRoleColor(node.employee.tms_role_description),
         resourceLabel: node.resourceLabel,
+        isDirettivo: node.employee.is_direttivo ?? false,
         isTeamLeader: node.employee.is_team_leader ?? false,
         hasChildren: node.sameGroupChildren.length > 0,
         isCollapsed,
         hiddenCount: node.descendantCount,
+        courseBadges: badge,
       },
       style: {
         background: "transparent",
@@ -749,44 +950,213 @@ function buildGraph(model, collapsedIds) {
   dagre.layout(graph);
 
   // Top-align nodes within each rank: group by similar y-center, then shift so tops align
-  const RANK_TOLERANCE = 5;
-  const rankGroups = [];
-  for (const rfNode of nodes) {
-    const pos = graph.node(rfNode.id);
-    if (!pos) continue;
-    const h = rfNode.data.height ?? personNodeHeight;
-    let placed = false;
-    for (const group of rankGroups) {
-      if (Math.abs(group.centerY - pos.y) <= RANK_TOLERANCE) {
-        group.members.push({ id: rfNode.id, centerY: pos.y, height: h });
-        placed = true;
-        break;
+  const topAlignedY = computeTopAlignedY(
+    nodes
+      .map((rfNode) => {
+        const pos = graph.node(rfNode.id);
+        return pos ? { id: rfNode.id, centerY: pos.y, height: rfNode.data.height ?? personNodeHeight } : null;
+      })
+      .filter(Boolean),
+  );
+
+  const positionedNodes = nodes.map((node) => {
+    const position = graph.node(node.id) ?? { x: 0, y: 0 };
+    const width = node.data.width ?? personNodeWidth;
+    const height = node.data.height ?? personNodeHeight;
+    const adjustedY = topAlignedY.get(node.id) ?? position.y;
+    return {
+      ...node,
+      position: { x: position.x - width / 2, y: adjustedY - height / 2 },
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
+    };
+  });
+
+  // If there are direttivo employees, add the banner node + the board's internal hierarchy above the rest.
+  // La gerarchia interna al board (basata su "Responsabile Diretto") è solo estetica: viene
+  // calcolata con un dagre separato e non tocca il layout dell'organigramma sottostante.
+  if (direttivoEmployees.length > 0) {
+    const isBannerCollapsed = collapsedIds.has("direttivo:banner");
+    const nonDirettivoNodes = positionedNodes.filter((n) => !n.id.startsWith("direttivo:"));
+    const minX = nonDirettivoNodes.length > 0 ? Math.min(...nonDirettivoNodes.map((n) => n.position.x)) : 0;
+    const maxX = nonDirettivoNodes.length > 0 ? Math.max(...nonDirettivoNodes.map((n) => n.position.x + (n.data.width ?? personNodeWidth))) : 800;
+    const bannerH = 56;
+    const gapBanner = 92;
+    const gapPerson = 48;
+
+    let boardNodes = [];
+    let boardEdges = [];
+    let boardWidth = 0;
+    let boardHeight = personNodeHeight;
+
+    if (!isBannerCollapsed) {
+      const treeRoots = model.direttivoTree ?? [];
+      const boardGraph = new dagre.graphlib.Graph();
+      boardGraph.setGraph({ rankdir: "TB", nodesep: 44, ranksep: 64, marginx: 0, marginy: 0 });
+      boardGraph.setDefaultEdgeLabel(() => ({}));
+
+      // renderParentId è sempre il vero genitore visivo (banner per le radici) e serve solo per
+      // disegnare l'arco in React Flow; dagreParentId è null per le radici così dagre tratta
+      // ogni radice come componente separata invece di appiattirle tutte sullo stesso rango.
+      function addBoardBranch(node, renderParentId, dagreParentId) {
+        const isNodeCollapsed = collapsedIds.has(node.id);
+        const badge = badgesMap.get(node.employee.id) ?? null;
+        const hasBadges = badge !== null && COURSE_BADGES.some(({ key }) => (badge[key] ?? "missing") !== "missing");
+        const nodeHeight = hasBadges ? personNodeHeightWithBadges : personNodeHeight;
+        boardGraph.setNode(node.id, { width: personNodeWidth, height: nodeHeight });
+        if (dagreParentId) {
+          boardGraph.setEdge(dagreParentId, node.id);
+        }
+        boardNodes.push({
+          id: node.id,
+          type: "person",
+          position: { x: 0, y: 0 },
+          draggable: false,
+          selectable: false,
+          data: {
+            id: node.id,
+            employeeId: node.employee.id,
+            width: personNodeWidth,
+            height: nodeHeight,
+            fullName: node.employee.full_name,
+            hasPhoto: node.employee.has_photo,
+            initials: getInitials(node.employee.full_name || ""),
+            color: getRoleColor(node.employee.tms_role_description),
+            resourceLabel: node.resourceLabel,
+            isDirettivo: true,
+            isTeamLeader: node.employee.is_team_leader ?? false,
+            hasChildren: node.sameGroupChildren.length > 0,
+            isCollapsed: isNodeCollapsed,
+            hiddenCount: node.descendantCount,
+            courseBadges: badge,
+          },
+          style: { background: "transparent", border: "none", boxShadow: "none", padding: 0 },
+        });
+        boardEdges.push({ source: renderParentId, target: node.id });
+        if (isNodeCollapsed) {
+          return;
+        }
+        for (const child of node.sameGroupChildren) {
+          addBoardBranch(child, node.id, node.id);
+        }
+      }
+
+      treeRoots.forEach((root) => addBoardBranch(root, "direttivo:banner", null));
+      dagre.layout(boardGraph);
+
+      // Stessa logica "a piramide pulita" usata per i blocchi funzione/dipartimento: allinea
+      // in alto i membri del board che si trovano allo stesso livello gerarchico.
+      const boardTopAlignedY = computeTopAlignedY(
+        boardNodes.map((node) => {
+          const pos = boardGraph.node(node.id);
+          return { id: node.id, centerY: pos.y, height: node.data.height };
+        }),
+      );
+
+      let boardMinX = Infinity;
+      let boardMaxX = -Infinity;
+      let boardMaxBottom = 0;
+      for (const node of boardNodes) {
+        const pos = boardGraph.node(node.id);
+        const alignedY = boardTopAlignedY.get(node.id) ?? pos.y;
+        node.position = { x: pos.x, y: alignedY };
+        boardMinX = Math.min(boardMinX, pos.x - node.data.width / 2);
+        boardMaxX = Math.max(boardMaxX, pos.x + node.data.width / 2);
+        boardMaxBottom = Math.max(boardMaxBottom, alignedY + node.data.height / 2);
+      }
+      boardWidth = boardMaxX - boardMinX;
+      boardHeight = boardMaxBottom;
+
+      const chartWidthForCentering = Math.max(maxX - minX, boardWidth + 80);
+      const centerShiftX = (chartWidthForCentering - boardWidth) / 2 - boardMinX;
+      const yOffset = bannerH + gapBanner;
+      boardNodes.forEach((node) => {
+        node.position = {
+          x: minX + centerShiftX + node.position.x - node.data.width / 2,
+          y: yOffset + node.position.y - node.data.height / 2,
+        };
+        node.sourcePosition = Position.Bottom;
+        node.targetPosition = Position.Top;
+      });
+    }
+
+    const chartWidth = Math.max(maxX - minX, boardWidth + 80);
+
+    // Shift all existing nodes down (only if expanded — the board hierarchy takes space)
+    const shift = isBannerCollapsed ? bannerH + gapPerson : bannerH + gapBanner + boardHeight + gapPerson;
+    positionedNodes.forEach((n) => { n.position = { x: n.position.x, y: n.position.y + shift }; });
+
+    // Banner node
+    positionedNodes.unshift({
+      id: "direttivo:banner",
+      type: "direttivo",
+      position: { x: minX, y: 0 },
+      draggable: false,
+      selectable: false,
+      data: {
+        width: chartWidth,
+        height: bannerH,
+        employeeCount: direttivoEmployees.length,
+        hasChildren: true,
+        isCollapsed: isBannerCollapsed,
+        hiddenCount: direttivoEmployees.length,
+      },
+      style: { background: "transparent", border: "none", boxShadow: "none", padding: 0 },
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
+    });
+
+    if (!isBannerCollapsed) {
+      positionedNodes.push(...boardNodes);
+      for (const { source, target } of boardEdges) {
+        edges.push({
+          id: `${source}->${target}`,
+          source,
+          target,
+          type: "smoothstep",
+          markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#7a8899" },
+          style: { stroke: "#7a8899", strokeWidth: 1.45 },
+        });
       }
     }
-    if (!placed) rankGroups.push({ centerY: pos.y, members: [{ id: rfNode.id, centerY: pos.y, height: h }] });
-  }
-  const topAlignedY = new Map();
-  for (const group of rankGroups) {
-    if (group.members.length <= 1) continue;
-    const minTop = Math.min(...group.members.map((m) => m.centerY - m.height / 2));
-    for (const m of group.members) topAlignedY.set(m.id, minTop + m.height / 2);
   }
 
-  return {
-    nodes: nodes.map((node) => {
-      const position = graph.node(node.id) ?? { x: 0, y: 0 };
-      const width = node.data.width ?? personNodeWidth;
-      const height = node.data.height ?? personNodeHeight;
-      const adjustedY = topAlignedY.get(node.id) ?? position.y;
-      return {
-        ...node,
-        position: { x: position.x - width / 2, y: adjustedY - height / 2 },
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
-      };
-    }),
-    edges,
-  };
+  return { nodes: positionedNodes, edges };
+}
+
+function computeGraphBounds(nodes) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const node of nodes) {
+    const width = node.data.width ?? personNodeWidth;
+    const height = node.data.height ?? personNodeHeight;
+    minX = Math.min(minX, node.position.x);
+    minY = Math.min(minY, node.position.y);
+    maxX = Math.max(maxX, node.position.x + width);
+    maxY = Math.max(maxY, node.position.y + height);
+  }
+  const padding = 28;
+  return { x: minX - padding, y: minY - padding, width: maxX - minX + padding * 2, height: maxY - minY + padding * 2 };
+}
+
+function waitForNextFrames() {
+  return new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+}
+
+// Le foto dei nodi appena montati (prima compressi) partono in fetch dopo il mount:
+// attende che tutte le <img> presenti nel viewport siano caricate, con un timeout di sicurezza.
+async function waitForImages(container, timeoutMs = 5000) {
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const images = [...container.querySelectorAll("img")];
+    if (images.every((img) => img.complete)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
 }
 
 function OrgChartCanvas() {
@@ -803,6 +1173,19 @@ function OrgChartCanvas() {
     queryKey: ["org-functions", "org-chart"],
     queryFn: () => getOrgFunctions(),
   });
+  const badgesQuery = useQuery({
+    queryKey: ["employee-course-badges"],
+    queryFn: getEmployeeCourseBadges,
+    staleTime: 5 * 60_000,
+  });
+
+  const badgesMap = useMemo(() => {
+    const map = new Map();
+    for (const badge of (badgesQuery.data ?? [])) {
+      map.set(badge.employee_id, badge);
+    }
+    return map;
+  }, [badgesQuery.data]);
 
   const model = useMemo(
     () => buildOrgChartModel(
@@ -815,6 +1198,17 @@ function OrgChartCanvas() {
 
   const collapsibleIds = useMemo(() => {
     const ids = [];
+    if ((model.direttivoEmployees ?? []).length > 0) {
+      ids.push("direttivo:banner");
+      const boardQueue = [...(model.direttivoTree ?? [])];
+      while (boardQueue.length) {
+        const current = boardQueue.shift();
+        if ((current.sameGroupChildren?.length ?? 0) > 0) {
+          ids.push(current.id);
+          boardQueue.push(...current.sameGroupChildren);
+        }
+      }
+    }
     for (const section of model.functions) {
       if (section.roots.length > 0 || section.departments.length > 0) {
         ids.push(section.id);
@@ -851,7 +1245,193 @@ function OrgChartCanvas() {
     setCollapsedIds(new Set(collapsibleIds));
   }, [employeesQuery.isLoading, departmentsQuery.isLoading, functionsQuery.isLoading]);
 
-  const graph = useMemo(() => buildGraph(model, collapsedIds), [model, collapsedIds]);
+  const graph = useMemo(() => buildGraph(model, collapsedIds, badgesMap), [model, collapsedIds, badgesMap]);
+
+  // ── Stampa PDF ──────────────────────────────────────────────────────────
+  const flowWrapperRef = useRef(null);
+  const [printMenuAnchor, setPrintMenuAnchor] = useState(null);
+  const [printSelectionState, setPrintSelectionState] = useState(null); // null = intero organigramma
+  const [printGraph, setPrintGraph] = useState(null); // grafo temporaneo mostrato durante la cattura
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState(null);
+
+  const printSections = useMemo(() => {
+    const sections = [];
+    if ((model.direttivoEmployees ?? []).length > 0) {
+      sections.push({ id: "board", label: "Board", count: model.direttivoEmployees.length, departments: [] });
+    }
+    for (const section of model.functions) {
+      sections.push({
+        id: section.id,
+        label: section.label,
+        count: section.employeeCount,
+        departments: section.departments.map((department) => ({
+          id: department.id,
+          label: department.label,
+          count: department.employeeCount,
+        })),
+      });
+    }
+    return sections;
+  }, [model]);
+
+  // Le unità selezionabili ("foglie") sono i dipartimenti; per le sezioni senza
+  // dipartimenti (Board, funzioni piatte) è la sezione stessa.
+  function printLeafIds(section) {
+    return section.departments.length > 0 ? section.departments.map((department) => department.id) : [section.id];
+  }
+
+  const allPrintLeafIds = printSections.flatMap(printLeafIds);
+  const printSelection = printSelectionState ?? new Set(allPrintLeafIds);
+  const allPrintSelected = allPrintLeafIds.length > 0 && allPrintLeafIds.every((id) => printSelection.has(id));
+  const anyPrintSelected = allPrintLeafIds.some((id) => printSelection.has(id));
+  // Una pagina per ogni sezione con almeno una foglia selezionata
+  const selectedPageCount = printSections.filter((section) => printLeafIds(section).some((id) => printSelection.has(id))).length;
+
+  function togglePrintLeaf(id) {
+    const next = new Set(printSelection);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setPrintSelectionState(next);
+  }
+
+  function togglePrintSection(section) {
+    const leafIds = printLeafIds(section);
+    const allSelected = leafIds.every((id) => printSelection.has(id));
+    const next = new Set(printSelection);
+    for (const id of leafIds) {
+      if (allSelected) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+    }
+    setPrintSelectionState(next);
+  }
+
+  function togglePrintAll() {
+    setPrintSelectionState(allPrintSelected ? new Set() : null);
+  }
+
+  async function handleGeneratePdf() {
+    // Una pagina A4 orizzontale per ogni sezione selezionata (Board e/o funzioni)
+    const pageSpecs = [];
+    if (printSelection.has("board") && (model.direttivoEmployees ?? []).length > 0) {
+      pageSpecs.push({
+        functions: [],
+        totalEmployees: model.totalEmployees,
+        direttivoEmployees: model.direttivoEmployees,
+        direttivoTree: model.direttivoTree,
+      });
+    }
+    for (const section of model.functions) {
+      let pageSection = null;
+      if (section.departments.length === 0) {
+        if (printSelection.has(section.id)) {
+          pageSection = section;
+        }
+      } else {
+        const selectedDepartments = section.departments.filter((department) => printSelection.has(department.id));
+        if (selectedDepartments.length === section.departments.length) {
+          pageSection = section;
+        } else if (selectedDepartments.length > 0) {
+          // Funzione filtrata sui soli dipartimenti selezionati (le persone a livello
+          // funzione restano incluse per mantenere il contesto gerarchico)
+          const excludedCount = section.departments
+            .filter((department) => !printSelection.has(department.id))
+            .reduce((total, department) => total + department.employeeCount, 0);
+          pageSection = { ...section, departments: selectedDepartments, employeeCount: section.employeeCount - excludedCount };
+        }
+      }
+      if (pageSection) {
+        pageSpecs.push({ functions: [pageSection], totalEmployees: model.totalEmployees, direttivoEmployees: [], direttivoTree: [] });
+      }
+    }
+    if (pageSpecs.length === 0) {
+      return;
+    }
+
+    setPrintMenuAnchor(null);
+    setPrinting(true);
+    setPrintError(null);
+    try {
+      // Come per l'export del planner, le librerie vengono caricate solo al momento della stampa
+      const [{ toPng }, { PDFDocument }] = await Promise.all([
+        import("html-to-image"),
+        import("pdf-lib"),
+      ]);
+      const pdfDoc = await PDFDocument.create();
+      const a3Long = 1190.55; // A3 in punti
+      const a3Short = 841.89;
+      const pageMargin = 24;
+
+      for (const spec of pageSpecs) {
+        // Grafo della sola sezione, con tutti i rami espansi
+        const pageGraph = buildGraph(spec, new Set(), badgesMap);
+        setPrintGraph(pageGraph);
+        await waitForNextFrames();
+        const viewportEl = flowWrapperRef.current?.querySelector(".react-flow__viewport");
+        if (!viewportEl) {
+          continue;
+        }
+        await waitForImages(viewportEl);
+
+        const bounds = computeGraphBounds(pageGraph.nodes);
+        // Cattura ad alta risoluzione (fino a 3x, max 8000px per lato) per una stampa nitida
+        const scale = Math.min(3, 8000 / bounds.width, 8000 / bounds.height);
+        const imageWidth = Math.max(1, Math.round(bounds.width * scale));
+        const imageHeight = Math.max(1, Math.round(bounds.height * scale));
+        const viewport = getViewportForBounds(bounds, imageWidth, imageHeight, 0.05, 3, 0);
+        const dataUrl = await toPng(viewportEl, {
+          backgroundColor: "#fdfbf8",
+          width: imageWidth,
+          height: imageHeight,
+          pixelRatio: 1,
+          style: {
+            width: `${imageWidth}px`,
+            height: `${imageHeight}px`,
+            transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+          },
+        });
+
+        const png = await pdfDoc.embedPng(dataUrl);
+        // Orientamento della pagina A3 in base alle proporzioni del grafico
+        const isPortrait = imageHeight > imageWidth;
+        const pageWidth = isPortrait ? a3Short : a3Long;
+        const pageHeight = isPortrait ? a3Long : a3Short;
+        const page = pdfDoc.addPage([pageWidth, pageHeight]);
+        const fitScale = Math.min((pageWidth - pageMargin * 2) / png.width, (pageHeight - pageMargin * 2) / png.height);
+        const drawWidth = png.width * fitScale;
+        const drawHeight = png.height * fitScale;
+        page.drawImage(png, {
+          x: (pageWidth - drawWidth) / 2,
+          y: (pageHeight - drawHeight) / 2,
+          width: drawWidth,
+          height: drawHeight,
+        });
+      }
+
+      const pdfBytes = await pdfDoc.save();
+      const blob = new Blob([pdfBytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `organigramma-${new Date().toISOString().slice(0, 10)}.pdf`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setPrintError(error?.message || "Errore durante la generazione del PDF");
+    } finally {
+      setPrintGraph(null);
+      setPrinting(false);
+      window.requestAnimationFrame(() => {
+        fitView({ padding: 0.22, minZoom: 0.2, maxZoom: 1.2 });
+      });
+    }
+  }
 
   useEffect(() => {
     if (employeesQuery.isLoading || departmentsQuery.isLoading || functionsQuery.isLoading || graph.nodes.length === 0) {
@@ -927,16 +1507,101 @@ function OrgChartCanvas() {
           >
             Espandi tutto{collapsedIds.size > 0 ? ` (${collapsedIds.size})` : ""}
           </Button>
+          <Box sx={{ flexGrow: 1 }} />
+          <Button
+            variant="contained"
+            onClick={(event) => setPrintMenuAnchor(event.currentTarget)}
+            disabled={loading || printing || printSections.length === 0}
+            sx={{
+              borderRadius: 2,
+              textTransform: "none",
+              fontWeight: 700,
+              bgcolor: "rgba(255,255,255,0.14)",
+              color: "white",
+              boxShadow: "none",
+              "&:hover": { bgcolor: "rgba(255,255,255,0.22)", boxShadow: "none" },
+              "&.Mui-disabled": { color: "rgba(255,255,255,0.4)", bgcolor: "rgba(255,255,255,0.08)" },
+            }}
+          >
+            {printing ? "Generazione PDF…" : "Stampa PDF ▾"}
+          </Button>
         </Stack>
+
+        <Menu
+          anchorEl={printMenuAnchor}
+          open={Boolean(printMenuAnchor)}
+          onClose={() => setPrintMenuAnchor(null)}
+          anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+          transformOrigin={{ vertical: "top", horizontal: "right" }}
+          slotProps={{ paper: { sx: { minWidth: 280, maxHeight: 440 } } }}
+        >
+          <MenuItem dense onClick={togglePrintAll}>
+            <Checkbox
+              size="small"
+              checked={allPrintSelected}
+              indeterminate={!allPrintSelected && anyPrintSelected}
+              sx={{ p: 0.5, mr: 1 }}
+            />
+            <ListItemText primary="Intero organigramma" primaryTypographyProps={{ fontWeight: 700 }} />
+          </MenuItem>
+          <Divider />
+          {printSections.flatMap((section) => {
+            const leafIds = printLeafIds(section);
+            const selectedLeafCount = leafIds.filter((id) => printSelection.has(id)).length;
+            const sectionChecked = selectedLeafCount === leafIds.length;
+            return [
+              <MenuItem key={section.id} dense onClick={() => togglePrintSection(section)}>
+                <Checkbox
+                  size="small"
+                  checked={sectionChecked}
+                  indeterminate={!sectionChecked && selectedLeafCount > 0}
+                  sx={{ p: 0.5, mr: 1 }}
+                />
+                <ListItemText
+                  primary={section.label}
+                  secondary={`${section.count} risorse`}
+                  primaryTypographyProps={{ fontWeight: 600 }}
+                />
+              </MenuItem>,
+              ...section.departments.map((department) => (
+                <MenuItem key={department.id} dense onClick={() => togglePrintLeaf(department.id)} sx={{ pl: 4.5 }}>
+                  <Checkbox size="small" checked={printSelection.has(department.id)} sx={{ p: 0.5, mr: 1 }} />
+                  <ListItemText primary={department.label} secondary={`${department.count} risorse`} />
+                </MenuItem>
+              )),
+            ];
+          })}
+          <Divider />
+          <Box sx={{ px: 2, py: 1 }}>
+            <Button
+              fullWidth
+              variant="contained"
+              disabled={selectedPageCount === 0}
+              onClick={handleGeneratePdf}
+              sx={{ borderRadius: 2, textTransform: "none", fontWeight: 700 }}
+            >
+              Genera PDF{selectedPageCount > 0 ? ` (${selectedPageCount} ${selectedPageCount === 1 ? "pagina" : "pagine"})` : ""}
+            </Button>
+          </Box>
+        </Menu>
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2.25 }}>
           <Chip size="small" label={`${model.totalEmployees} risorse`} sx={{ bgcolor: "rgba(255,255,255,0.16)", color: "white" }} />
         </Stack>
+
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mt: 1.5, opacity: 0.82 }}>
+          {COURSE_BADGES.map(({ icon, label }) => (
+            <Typography key={label} sx={{ fontSize: 12 }}>{icon} {label}</Typography>
+          ))}
+          <Typography sx={{ fontSize: 11, opacity: 0.7 }}>· verde valido · arancio in scadenza · rosso scaduto · grigio assente</Typography>
+        </Stack>
       </Paper>
 
       {error && <Alert severity="error">{employeesQuery.error?.message || departmentsQuery.error?.message}</Alert>}
+      {printError && <Alert severity="error" onClose={() => setPrintError(null)}>{printError}</Alert>}
 
       <Paper
+        ref={flowWrapperRef}
         sx={{
           height: "calc(100vh - 280px)",
           minHeight: 640,
@@ -954,8 +1619,8 @@ function OrgChartCanvas() {
           </Box>
         ) : (
           <ReactFlow
-            nodes={graph.nodes}
-            edges={graph.edges}
+            nodes={(printGraph ?? graph).nodes}
+            edges={(printGraph ?? graph).edges}
             nodeTypes={nodeTypes}
             onNodeClick={handleNodeClick}
             fitView
@@ -970,6 +1635,23 @@ function OrgChartCanvas() {
             <Background color="#d8cfc3" gap={24} size={1} />
             <Controls showInteractive={false} />
           </ReactFlow>
+        )}
+        {printing && (
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 10,
+              display: "grid",
+              placeItems: "center",
+              bgcolor: "rgba(246,241,235,0.94)",
+            }}
+          >
+            <Stack alignItems="center" spacing={1.5}>
+              <CircularProgress />
+              <Typography sx={{ fontWeight: 700, color: "#40506b" }}>Generazione PDF in corso…</Typography>
+            </Stack>
+          </Box>
         )}
       </Paper>
     </Stack>

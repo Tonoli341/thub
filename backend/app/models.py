@@ -1,11 +1,12 @@
 from datetime import date, datetime, time
+from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, JSON, LargeBinary, String, Text, Time, UniqueConstraint, func
+from sqlalchemy import Boolean, Column, Date, DateTime, Enum, ForeignKey, Integer, JSON, LargeBinary, Numeric, String, Table, Text, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db import Base
-from app.enums import AppRole, AssignmentCause, JustificationApprovalStatus, JustificationType, PlannerScope, UserRole
+from app.enums import AssignmentCause, JustificationApprovalStatus, JustificationType, UserRole
 from app.services.normalization import normalize_phone
 
 
@@ -33,6 +34,32 @@ class OperationalArea(TimestampMixin, Base):
     employees: Mapped[list["Employee"]] = relationship(back_populates="default_operational_area")
 
 
+class TrainingMacroArea(TimestampMixin, Base):
+    __tablename__ = "training_macro_areas"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    courses: Mapped[list["TrainingCourse"]] = relationship(
+        back_populates="macro_area",
+        order_by="TrainingCourse.title",
+    )
+
+
+class TrainingCourse(TimestampMixin, Base):
+    __tablename__ = "training_courses"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    title: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    macro_area_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("training_macro_areas.id"), index=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    macro_area: Mapped["TrainingMacroArea | None"] = relationship(back_populates="courses")
+
+
 class LocalProject(TimestampMixin, Base):
     __tablename__ = "local_projects"
 
@@ -41,6 +68,92 @@ class LocalProject(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class InfinityBillingItem(TimestampMixin, Base):
+    __tablename__ = "infinity_billing_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class FieldDefinition(TimestampMixin, Base):
+    __tablename__ = "field_definitions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    field_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    field_label: Mapped[str] = mapped_column(String(120), nullable=False)
+    field_type: Mapped[str] = mapped_column(String(16), nullable=False, default="text")
+    options: Mapped[list] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    # Configurazione dei tipi che non si esprimono con `options`: per
+    # "mssql_list" contiene {source, key_column, columns} — mai la SQL, che
+    # vive solo nel registro server-side (services/value_list_sources.py).
+    config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    assignments: Mapped[list["InfinityMapFieldAssignment"]] = relationship(back_populates="field_definition")
+
+
+class InfinityBillingCustomerSupplierMap(TimestampMixin, Base):
+    __tablename__ = "infinity_billing_customer_supplier_map"
+    __table_args__ = (
+        UniqueConstraint(
+            "infinity_billing_item_id",
+            "customer_supplier_code",
+            "jupiter_description",
+            name="uq_infinity_billing_customer_supplier_map_pair",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    infinity_billing_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("infinity_billing_items.id"), nullable=False, index=True)
+    customer_supplier_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    customer_supplier_description: Mapped[str] = mapped_column(String(160), nullable=False)
+    jupiter_description: Mapped[str | None] = mapped_column(Text)
+    operational_area_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("operational_areas.id"))
+    buildings: Mapped[list] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    infinity_billing_item: Mapped["InfinityBillingItem"] = relationship()
+    operational_area: Mapped["OperationalArea | None"] = relationship()
+    field_assignments: Mapped[list["InfinityMapFieldAssignment"]] = relationship(
+        back_populates="map",
+        cascade="all, delete-orphan",
+        order_by="InfinityMapFieldAssignment.sort_order",
+    )
+
+    @property
+    def infinity_billing_item_name(self) -> str | None:
+        return self.infinity_billing_item.name if self.infinity_billing_item else None
+
+    @property
+    def operational_area_name(self) -> str | None:
+        return self.operational_area.name if self.operational_area else None
+
+
+class InfinityMapFieldAssignment(TimestampMixin, Base):
+    __tablename__ = "infinity_map_field_assignments"
+    __table_args__ = (
+        UniqueConstraint("map_id", "field_definition_id", name="uq_infinity_map_field_assignment"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    map_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("infinity_billing_customer_supplier_map.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    field_definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("field_definitions.id"), nullable=False, index=True
+    )
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    map: Mapped["InfinityBillingCustomerSupplierMap"] = relationship(back_populates="field_assignments")
+    field_definition: Mapped["FieldDefinition"] = relationship(back_populates="assignments")
 
 
 class Employee(TimestampMixin, Base):
@@ -67,6 +180,8 @@ class Employee(TimestampMixin, Base):
     absence_can_request_for_self: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     absence_can_request_for_reports: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     absence_can_request_for_all: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    absence_can_view_all: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    absence_can_edit_balances: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     absence_allowed_role_descriptions: Mapped[str | None] = mapped_column(Text)
     absence_requires_approval: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     absence_approver_1_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
@@ -74,12 +189,23 @@ class Employee(TimestampMixin, Base):
     absence_approver_3_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     config_can_access_planning: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     config_can_access_organization: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    config_can_access_timesheets: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    config_can_access_workloads: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    config_can_access_expirations: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    config_expirations_scope: Mapped[str] = mapped_column(String(16), default="all", nullable=False)
+    config_can_access_deliveries: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     app_role: Mapped[str | None] = mapped_column(String(16))
-    planner_scope: Mapped[str] = mapped_column(String(16), default=PlannerScope.self_.value, nullable=False)
+    planner_access_level: Mapped[str | None] = mapped_column(String(32))
     default_operational_area_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("operational_areas.id"))
     default_immobile: Mapped[str | None] = mapped_column(String(32))
     default_schedule: Mapped[list | None] = mapped_column(JSON)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    local_user_username: Mapped[str | None] = mapped_column(String(120), index=True)
+    local_user_password_hash: Mapped[str | None] = mapped_column(Text)
+    local_user_password_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    local_user_password_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_direttivo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     default_operational_area: Mapped[OperationalArea | None] = relationship(back_populates="employees")
     manager: Mapped["Employee | None"] = relationship(
@@ -99,10 +225,42 @@ class Employee(TimestampMixin, Base):
         back_populates="employee",
         foreign_keys="Justification.employee_id",
     )
+    equipment_deliveries: Mapped[list["EquipmentDelivery"]] = relationship(back_populates="employee")
+    device_deliveries: Mapped[list["DeviceDelivery"]] = relationship(back_populates="employee")
+    absence_balance: Mapped["EmployeeAbsenceBalance | None"] = relationship(
+        back_populates="employee",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     @validates("phone")
     def validate_phone(self, _key: str, value: str | None) -> str | None:
         return normalize_phone(value)
+
+
+class EmployeeAbsenceBalance(TimestampMixin, Base):
+    __tablename__ = "employee_absence_balances"
+
+    employee_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    permission_hours: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0, nullable=False)
+    vacation_days: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0, nullable=False)
+    updated_by_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
+    updated_by_name: Mapped[str | None] = mapped_column(String(120))
+
+    employee: Mapped["Employee"] = relationship(back_populates="absence_balance")
+
+
+class EmployeeAbsenceBalanceStatus(TimestampMixin, Base):
+    __tablename__ = "employee_absence_balance_status"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    updated_through: Mapped[date | None] = mapped_column(Date)
+    updated_by_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
+    updated_by_name: Mapped[str | None] = mapped_column(String(120))
 
 
 class Site(TimestampMixin, Base):
@@ -114,6 +272,131 @@ class Site(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class SizeGroup(TimestampMixin, Base):
+    __tablename__ = "size_groups"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    options: Mapped[list["SizeOption"]] = relationship(
+        back_populates="group",
+        order_by="SizeOption.sort_order",
+        cascade="all, delete-orphan",
+    )
+
+
+class SizeOption(TimestampMixin, Base):
+    __tablename__ = "size_options"
+    __table_args__ = (UniqueConstraint("group_id", "value", name="uq_size_option_group_value"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    group_id: Mapped[str] = mapped_column(String(36), ForeignKey("size_groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    value: Mapped[str] = mapped_column(String(40), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    group: Mapped["SizeGroup"] = relationship(back_populates="options")
+
+
+equipment_item_sizes = Table(
+    "equipment_item_sizes",
+    Base.metadata,
+    Column("item_id", String(36), ForeignKey("equipment_items.id", ondelete="CASCADE"), primary_key=True),
+    Column("size_option_id", String(36), ForeignKey("size_options.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class EquipmentItem(TimestampMixin, Base):
+    __tablename__ = "equipment_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    deliveries: Mapped[list["EquipmentDelivery"]] = relationship(back_populates="item")
+    available_size_options: Mapped[list["SizeOption"]] = relationship("SizeOption", secondary=equipment_item_sizes)
+
+
+class EquipmentDelivery(TimestampMixin, Base):
+    __tablename__ = "equipment_deliveries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    employee_id: Mapped[str] = mapped_column(String(36), ForeignKey("employees.id"), nullable=False, index=True)
+    item_id: Mapped[str] = mapped_column(String(36), ForeignKey("equipment_items.id"), nullable=False, index=True)
+    item_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    item_category: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    item_size: Mapped[str | None] = mapped_column(String(40))
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    delivered_by: Mapped[str | None] = mapped_column(String(120))
+    delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    signature_b64: Mapped[str] = mapped_column(Text, nullable=False)
+
+    employee: Mapped[Employee] = relationship(back_populates="equipment_deliveries")
+    item: Mapped[EquipmentItem] = relationship(back_populates="deliveries")
+
+
+class DeviceAsset(TimestampMixin, Base):
+    __tablename__ = "device_assets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    asset_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    brand: Mapped[str | None] = mapped_column(String(80))
+    model: Mapped[str | None] = mapped_column(String(80))
+    serial_number: Mapped[str | None] = mapped_column(String(120), index=True)
+    imei: Mapped[str | None] = mapped_column(String(40))
+    iccid: Mapped[str | None] = mapped_column(String(40))
+    phone_number: Mapped[str | None] = mapped_column(String(30))
+    notes: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    ninja_device_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    system_name: Mapped[str | None] = mapped_column(String(160))
+    node_class: Mapped[str | None] = mapped_column(String(60))
+
+    deliveries: Mapped[list["DeviceDelivery"]] = relationship(back_populates="device")
+
+
+class DeviceDelivery(TimestampMixin, Base):
+    __tablename__ = "device_deliveries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    employee_id: Mapped[str] = mapped_column(String(36), ForeignKey("employees.id"), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(String(36), ForeignKey("device_assets.id"), nullable=False, index=True)
+    redelivered_to_delivery_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("device_deliveries.id"), index=True)
+    device_label: Mapped[str] = mapped_column(String(160), nullable=False)
+    delivered_by: Mapped[str | None] = mapped_column(String(120))
+    delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    return_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    signature_b64: Mapped[str | None] = mapped_column(Text)
+    # Fonte dell'ultima firma di consegna: "tablet" (raccolta in presenza) o "web"
+    # (firmata dal dipendente autenticato dalla pagina "Le mie consegne").
+    signature_source: Mapped[str | None] = mapped_column(String(20))
+    signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    signature_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    return_signature_b64: Mapped[str | None] = mapped_column(Text)
+
+    employee: Mapped[Employee] = relationship(back_populates="device_deliveries")
+    device: Mapped[DeviceAsset] = relationship(back_populates="deliveries")
+
+
+class DeviceDeliveryPolicy(TimestampMixin, Base):
+    """Policy (es. Information Security) che il dipendente deve leggere prima di
+    firmare la consegna di un dispositivo IT. Riga unica, contenuto HTML incollato
+    dall'IT nel tab Consegne > Dispositivi IT > Policy."""
+
+    __tablename__ = "device_delivery_policies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="Information Security Tonoli")
+    content_html: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(120))
+
+
 class Assignment(TimestampMixin, Base):
     __tablename__ = "assignments"
 
@@ -122,6 +405,8 @@ class Assignment(TimestampMixin, Base):
     work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     start_time: Mapped[time] = mapped_column(Time, nullable=False)
     end_time: Mapped[time] = mapped_column(Time, nullable=False)
+    break_start: Mapped[time | None] = mapped_column(Time)
+    break_end: Mapped[time | None] = mapped_column(Time)
     cause: Mapped[AssignmentCause] = mapped_column(
         Enum(AssignmentCause, name="assignment_cause"),
         nullable=False,
@@ -133,8 +418,13 @@ class Assignment(TimestampMixin, Base):
     customer: Mapped[str | None] = mapped_column(String(120))
     activity: Mapped[str | None] = mapped_column(String(120))
     notes: Mapped[str | None] = mapped_column(Text)
+    workload: Mapped[str | None] = mapped_column(Text)
+    training_course_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("training_courses.id"), index=True
+    )
 
     employee: Mapped[Employee] = relationship(back_populates="assignments")
+    training_course: Mapped["TrainingCourse | None"] = relationship()
 
 
 class Justification(TimestampMixin, Base):
@@ -161,12 +451,25 @@ class Justification(TimestampMixin, Base):
     approver_1_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     approver_2_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     approver_3_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
+    # tracciabilità diretta sulla richiesta: chi l'ha materialmente inserita e chi ha
+    # deciso. decided_by_employee_id/decided_by_user_id sono i riferimenti "propri"
+    # a chi ha deciso quando l'identità è risolvibile (dipendente TMS o utente
+    # autenticato); decided_by_name resta come fallback testuale denormalizzato
+    # perché copre anche i casi senza riferimento risolvibile: utenti portale/LDAP
+    # senza dipendente collegato e le approvazioni via link email.
+    created_by_name: Mapped[str | None] = mapped_column(String(255))
+    decided_by_name: Mapped[str | None] = mapped_column(String(255))
+    decided_by_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
+    decided_by_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     employee: Mapped[Employee] = relationship(back_populates="justifications", foreign_keys=[employee_id])
     requested_by_employee: Mapped[Employee | None] = relationship(foreign_keys=[requested_by_employee_id])
     approver_1_employee: Mapped[Employee | None] = relationship(foreign_keys=[approver_1_employee_id])
     approver_2_employee: Mapped[Employee | None] = relationship(foreign_keys=[approver_2_employee_id])
     approver_3_employee: Mapped[Employee | None] = relationship(foreign_keys=[approver_3_employee_id])
+    decided_by_employee: Mapped[Employee | None] = relationship(foreign_keys=[decided_by_employee_id])
+    decided_by_user: Mapped["User | None"] = relationship(foreign_keys=[decided_by_user_id])
 
 
 class User(TimestampMixin, Base):
@@ -192,6 +495,7 @@ class LdapEmployee(TimestampMixin, Base):
     tms_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     first_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_ad_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     auth_user: Mapped[User | None] = relationship(back_populates="ldap_employee")
@@ -210,11 +514,37 @@ class Team(TimestampMixin, Base):
     team_leader_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     team_leader_2_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     reports_to_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
+    workload_owner_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
+    operational_reporting_owner_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
+    operational_reporting_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
     members: Mapped[list["TeamMember"]] = relationship(back_populates="team", cascade="all, delete-orphan")
     team_leader: Mapped[Employee | None] = relationship(foreign_keys=[team_leader_employee_id])
     team_leader_2: Mapped[Employee | None] = relationship(foreign_keys=[team_leader_2_employee_id])
     reports_to_employee: Mapped[Employee | None] = relationship(foreign_keys=[reports_to_employee_id])
+    workload_owner: Mapped[Employee | None] = relationship(foreign_keys=[workload_owner_employee_id])
+    operational_reporting_owner: Mapped[Employee | None] = relationship(
+        foreign_keys=[operational_reporting_owner_employee_id]
+    )
+
+
+class TeamDailyNote(TimestampMixin, Base):
+    __tablename__ = "team_daily_notes"
+    __table_args__ = (UniqueConstraint("team_id", "work_date", name="uq_team_daily_note"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
+    work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    workload: Mapped[str | None] = mapped_column(Text)
+    table_rows: Mapped[list] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    owner_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
+
+    team: Mapped["Team"] = relationship()
+    owner_employee: Mapped[Employee | None] = relationship(foreign_keys=[owner_employee_id])
+
+    @property
+    def owner_employee_name(self) -> str | None:
+        return self.owner_employee.full_name if self.owner_employee else None
 
 
 class TeamMember(Base):
@@ -283,6 +613,23 @@ class AuditLog(Base):
     entity: Mapped[str] = mapped_column(String(120), nullable=False)
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AppSetting(TimestampMixin, Base):
+    """Impostazioni applicative modificabili a caldo dalla GUI.
+
+    Chiave/valore volutamente generico: il `.env` resta per la configurazione
+    infrastrutturale (database, LDAP, chiavi), qui vive ciò che un
+    amministratore deve poter cambiare senza riavviare il backend. I valori
+    booleani sono serializzati come "true"/"false"; i segreti sono cifrati da
+    `app.services.crypto` prima di arrivare in questa colonna.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(String(120))
 
 
 class TimesheetWorker(TimestampMixin, Base):
@@ -383,3 +730,84 @@ class TimesheetMapping(TimestampMixin, Base):
     internal_label: Mapped[str | None] = mapped_column(String(255))
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ActivityRecord(Base):
+    __tablename__ = "activity_records"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "mapping_id", "started_at", name="uq_activity_employee_mapping_start"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    employee_id: Mapped[str] = mapped_column(String(36), ForeignKey("employees.id"), nullable=False, index=True)
+    mapping_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    operational_area_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    building: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    field_values: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    employee: Mapped["Employee"] = relationship(foreign_keys=[employee_id])
+
+
+class ActiveActivity(Base):
+    """Stato di un'attività in corso (timer realtime) per un dipendente.
+
+    Un dipendente può avere più attività attive in parallelo, ognuna con il
+    proprio timer/pausa indipendente: il backend è il punto di verità, così
+    l'app mobile può ricostruirle dopo chiusura/riapertura o perdita di
+    connessione. Vincolo di unicità su (employee_id, mapping_id, conflict_key):
+    sullo stesso incrocio possono convivere più timer solo se i campi
+    obbligatori hanno valori diversi (conflict_key, vedi
+    services.active_activities). Alla chiusura la riga viene convertita in un
+    ActivityRecord ed eliminata da qui.
+    """
+
+    __tablename__ = "active_activities"
+    __table_args__ = (
+        UniqueConstraint(
+            "employee_id",
+            "mapping_id",
+            "conflict_key",
+            name="uq_active_activity_employee_mapping_conflict",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    employee_id: Mapped[str] = mapped_column(String(36), ForeignKey("employees.id"), nullable=False, index=True)
+    mapping_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    conflict_key: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default="")
+    operational_area_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    building: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pause_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    field_values: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    client_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    employee: Mapped["Employee"] = relationship(foreign_keys=[employee_id])
+
+
+class DailyRecord(Base):
+    __tablename__ = "daily_records"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "date", name="uq_daily_record_employee_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    employee_id: Mapped[str] = mapped_column(String(36), ForeignKey("employees.id"), nullable=False, index=True)
+    operational_area_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    building: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pauses: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    work_seconds: Mapped[int | None] = mapped_column(Integer)
+    pause_seconds: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    employee: Mapped["Employee"] = relationship(foreign_keys=[employee_id])

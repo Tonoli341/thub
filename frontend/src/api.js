@@ -8,7 +8,7 @@ export function setImpersonateEmployeeId(id) {
   _impersonateEmployeeId = id ?? null;
 }
 
-async function request(path, options = {}) {
+export async function request(path, options = {}) {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {
@@ -24,7 +24,8 @@ async function request(path, options = {}) {
     let detail = "Request failed";
     try {
       const payload = await response.json();
-      detail = payload.detail ?? detail;
+      const raw = payload.detail ?? detail;
+      detail = Array.isArray(raw) ? raw.map((e) => e.msg ?? JSON.stringify(e)).join(", ") : String(raw);
     } catch {
       detail = response.statusText || detail;
     }
@@ -39,6 +40,43 @@ async function request(path, options = {}) {
   }
 
   return response.json();
+}
+
+async function download(path, fallbackFilename = "download") {
+  const token = getAccessToken();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(_impersonateEmployeeId ? { "X-Impersonate-Employee": _impersonateEmployeeId } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    let detail = "Request failed";
+    try {
+      const payload = await response.json();
+      detail = String(payload.detail ?? detail);
+    } catch {
+      detail = response.statusText || detail;
+    }
+    if (response.status === 401) {
+      clearAccessToken();
+    }
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  const contentDisposition = response.headers.get("Content-Disposition") || "";
+  const match = contentDisposition.match(/filename="?([^"]+)"?/i);
+  const filename = match?.[1] || fallbackFilename;
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
 }
 
 export function getAccessToken() {
@@ -70,6 +108,10 @@ export function getCurrentUser() {
   return request("/auth/me");
 }
 
+export function refreshSession() {
+  return request("/auth/refresh", { method: "POST" });
+}
+
 export function getImpersonationView(employeeId) {
   return request(`/auth/impersonate/${employeeId}`);
 }
@@ -86,8 +128,12 @@ export function getDashboardApprover(employeeId) {
   return request(`/dashboard/approver?employee_id=${employeeId}`);
 }
 
-export function getEmployees(search = "", roles = []) {
-  const params = new URLSearchParams({ active_only: "true" });
+export function getDashboardExpirations(days = 30) {
+  return request(`/dashboard/expirations?days=${days}`);
+}
+
+export function getEmployees(search = "", roles = [], activeOnly = true) {
+  const params = new URLSearchParams({ active_only: String(activeOnly) });
   if (search.trim()) {
     params.set("search", search.trim());
   }
@@ -95,6 +141,17 @@ export function getEmployees(search = "", roles = []) {
     params.append("roles", role);
   }
   return request(`/employees?${params.toString()}`);
+}
+
+export function getPlannerEmployees(search = "", roles = []) {
+  const params = new URLSearchParams({ active_only: "true" });
+  if (search.trim()) {
+    params.set("search", search.trim());
+  }
+  for (const role of roles) {
+    params.append("roles", role);
+  }
+  return request(`/employees/planner?${params.toString()}`);
 }
 
 export async function getEmployeePhoto(employeeId) {
@@ -117,6 +174,10 @@ export function getEmployeeExpirations(employeeId) {
   return request(`/employees/${employeeId}/expirations`);
 }
 
+export function getEmployeeCourseBadges() {
+  return request("/employees/course-badges");
+}
+
 export function getEmployeeOptions({ authorizedForAbsence = false } = {}) {
   const params = new URLSearchParams({ active_only: "true" });
   if (authorizedForAbsence) {
@@ -137,6 +198,12 @@ export function updateLdapEmployeeTmsLink(ldapEmployeeId, payload) {
   return request(`/ldap-employees/${ldapEmployeeId}/tms-link`, {
     method: "PATCH",
     body: JSON.stringify(payload),
+  });
+}
+
+export function unlockLdapEmployeeLogin(ldapEmployeeId) {
+  return request(`/ldap-employees/${ldapEmployeeId}/unlock-login`, {
+    method: "POST",
   });
 }
 
@@ -196,8 +263,156 @@ export function updateEmployeeSchedule(employeeId, payload) {
   });
 }
 
+export function updateEmployeeLocalUser(employeeId, payload) {
+  return request(`/employees/${employeeId}/local-user`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function syncEmployees() {
   return request("/employees/sync", { method: "POST" });
+}
+
+export function getDeliveries({ status = "open", employeeId = "", search = "", page = 1, size = 200 } = {}) {
+  const params = new URLSearchParams({ status, page: String(page), size: String(size) });
+  if (employeeId) params.set("employee_id", employeeId);
+  if (search.trim()) params.set("search", search.trim());
+  return request(`/deliveries?${params.toString()}`);
+}
+
+export function markDeliveryReturned(deliveryId, payload = {}) {
+  return request(`/deliveries/${deliveryId}/return`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteDelivery(deliveryId) {
+  return request(`/deliveries/${deliveryId}`, {
+    method: "DELETE",
+  });
+}
+
+export function getEquipmentItems({ includeInactive = false } = {}) {
+  const params = new URLSearchParams({ include_inactive: String(includeInactive) });
+  return request(`/equipment-items?${params.toString()}`);
+}
+
+export function createEquipmentItem(payload) {
+  return request("/equipment-items", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateEquipmentItem(itemId, payload) {
+  return request(`/equipment-items/${itemId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getDeliverySizeGroups() {
+  return request("/equipment-items/size-groups");
+}
+
+export function downloadDeliveriesExport({ status = "open", employeeId = "", search = "" } = {}) {
+  const params = new URLSearchParams({ status });
+  if (employeeId) params.set("employee_id", employeeId);
+  if (search.trim()) params.set("search", search.trim());
+  return download(`/deliveries/export?${params.toString()}`, "consegne.xlsx");
+}
+
+export function downloadEmployeeDeliverySheet(employeeId, { includeReturned = false } = {}) {
+  const params = new URLSearchParams({ include_returned: String(includeReturned) });
+  return download(`/deliveries/export/employee/${employeeId}?${params.toString()}`, "scheda-consegna.docx");
+}
+
+export function getDeviceAssets({ includeInactive = false } = {}) {
+  const params = new URLSearchParams({ include_inactive: String(includeInactive) });
+  return request(`/device-assets?${params.toString()}`);
+}
+
+export function syncDeviceAssets() {
+  return request("/device-assets/sync", { method: "POST" });
+}
+
+export function createDeviceAsset(payload) {
+  return request("/device-assets", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateDeviceAsset(deviceId, payload) {
+  return request(`/device-assets/${deviceId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getDeviceDeliveries({ status = "open", employeeId = "", search = "", page = 1, size = 200 } = {}) {
+  const params = new URLSearchParams({ status, page: String(page), size: String(size) });
+  if (employeeId) params.set("employee_id", employeeId);
+  if (search.trim()) params.set("search", search.trim());
+  return request(`/device-deliveries?${params.toString()}`);
+}
+
+export function createDeviceDeliveryAssignment(payload) {
+  return request("/device-deliveries", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function redeliverDeviceDelivery(deliveryId) {
+  return request(`/device-deliveries/${deliveryId}/redeliver`, {
+    method: "POST",
+  });
+}
+
+export function deleteDeviceDeliveryAssignment(deliveryId) {
+  return request(`/device-deliveries/${deliveryId}`, {
+    method: "DELETE",
+  });
+}
+
+export function markDeviceDeliveryReturned(deliveryId) {
+  return request(`/device-deliveries/${deliveryId}/return`, { method: "POST" });
+}
+
+export function requestDeviceDeliverySignature(deliveryId) {
+  return request(`/device-deliveries/${deliveryId}/request-signature`, { method: "POST" });
+}
+
+export function getMyDeviceDelivery(deliveryId) {
+  return request(`/device-deliveries/my/${deliveryId}`);
+}
+
+export function signMyDeviceDelivery(deliveryId, imageB64, { policyAccepted = false } = {}) {
+  return request(`/device-deliveries/my/${deliveryId}/sign`, {
+    method: "POST",
+    body: JSON.stringify({ signature: { image_b64: imageB64 }, policy_accepted: policyAccepted }),
+  });
+}
+
+export function getDeviceDeliveryPolicy() {
+  return request("/device-deliveries/policy");
+}
+
+export function updateDeviceDeliveryPolicy(payload) {
+  return request("/device-deliveries/policy", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function downloadDeviceDeliveriesExport({ status = "open", employeeId = "", search = "" } = {}) {
+  const params = new URLSearchParams({ status });
+  if (employeeId) params.set("employee_id", employeeId);
+  if (search.trim()) params.set("search", search.trim());
+  return download(`/device-deliveries/export?${params.toString()}`, "consegne-dispositivi.xlsx");
 }
 
 export function getOperationalAreas({ activeOnly = false, operationalOnly = false, search = "" } = {}) {
@@ -231,6 +446,98 @@ export function deleteLocalProject(projectId) {
   return request(`/projects/${projectId}`, {
     method: "DELETE",
   });
+}
+
+export function getInfinityBillingItems({ activeOnly = false } = {}) {
+  const params = new URLSearchParams({ active_only: String(activeOnly) });
+  return request(`/infinity-billing-items?${params.toString()}`);
+}
+
+export function createInfinityBillingItem(payload) {
+  return request("/infinity-billing-items", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateInfinityBillingItem(itemId, payload) {
+  return request(`/infinity-billing-items/${itemId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteInfinityBillingItem(itemId) {
+  return request(`/infinity-billing-items/${itemId}`, {
+    method: "DELETE",
+  });
+}
+
+export function getInfinityBillingCustomerSupplierMap() {
+  return request("/infinity-billing-customer-supplier-map");
+}
+
+export function createInfinityBillingCustomerSupplierMap(payload) {
+  return request("/infinity-billing-customer-supplier-map", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateInfinityBillingCustomerSupplierMap(mapId, payload) {
+  return request(`/infinity-billing-customer-supplier-map/${mapId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteInfinityBillingCustomerSupplierMap(mapId) {
+  return request(`/infinity-billing-customer-supplier-map/${mapId}`, {
+    method: "DELETE",
+  });
+}
+
+export function replaceInfinityMapFieldAssignments(mapId, assignments) {
+  return request(`/infinity-billing-customer-supplier-map/${mapId}/field-assignments`, {
+    method: "PUT",
+    body: JSON.stringify({ assignments }),
+  });
+}
+
+// ── Field Definitions ─────────────────────────────────────────────────────────
+
+export function getFieldDefinitions() {
+  return request("/field-definitions");
+}
+
+export function createFieldDefinition(payload) {
+  return request("/field-definitions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateFieldDefinition(fieldDefId, payload) {
+  return request(`/field-definitions/${fieldDefId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteFieldDefinition(fieldDefId) {
+  return request(`/field-definitions/${fieldDefId}`, {
+    method: "DELETE",
+  });
+}
+
+// Sorgenti value-list: insieme chiuso definito lato server. La UI sceglie una
+// sorgente per chiave, la SQL non passa mai di qui.
+export function getValueListSources() {
+  return request("/field-definitions/value-list-sources");
+}
+
+export function getValueListSourceColumns(sourceKey) {
+  return request(`/field-definitions/value-list-sources/${sourceKey}/columns`);
 }
 
 export function createOperationalArea(payload) {
@@ -275,12 +582,91 @@ export function deleteAssignment(assignmentId) {
   return request(`/assignments/${assignmentId}`, { method: "DELETE" });
 }
 
+// ── Formazione ────────────────────────────────────────────────────────────
+export function getTrainingMacroAreas({ activeOnly = false } = {}) {
+  const params = new URLSearchParams();
+  if (activeOnly) params.set("active_only", "true");
+  return request(`/training-macro-areas?${params.toString()}`);
+}
+
+export function createTrainingMacroArea(payload) {
+  return request("/training-macro-areas", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateTrainingMacroArea(areaId, payload) {
+  return request(`/training-macro-areas/${areaId}`, { method: "PUT", body: JSON.stringify(payload) });
+}
+
+export function deleteTrainingMacroArea(areaId) {
+  return request(`/training-macro-areas/${areaId}`, { method: "DELETE" });
+}
+
+export function getTrainingCourses({ activeOnly = false } = {}) {
+  const params = new URLSearchParams();
+  if (activeOnly) params.set("active_only", "true");
+  return request(`/training-courses?${params.toString()}`);
+}
+
+export function createTrainingCourse(payload) {
+  return request("/training-courses", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateTrainingCourse(courseId, payload) {
+  return request(`/training-courses/${courseId}`, { method: "PUT", body: JSON.stringify(payload) });
+}
+
+export function deleteTrainingCourse(courseId) {
+  return request(`/training-courses/${courseId}`, { method: "DELETE" });
+}
+
+export function getTrainingHoursReport(start, end, employeeId = "") {
+  const params = new URLSearchParams({ start, end });
+  if (employeeId) params.set("employee_id", employeeId);
+  return request(`/training/hours-report?${params.toString()}`);
+}
+
+export function downloadTrainingHoursReport(start, end, employeeId = "") {
+  const params = new URLSearchParams({ start, end });
+  if (employeeId) params.set("employee_id", employeeId);
+  return download(`/training/hours-report.csv?${params.toString()}`, `formazione_${start}_${end}.csv`);
+}
+
 export function getJustifications(start, end, employeeId = "") {
   const params = new URLSearchParams({ start, end });
   if (employeeId) {
     params.set("employee_id", employeeId);
   }
   return request(`/justifications?${params.toString()}`);
+}
+
+export function getAbsenceBalances() {
+  return request("/absence-balances");
+}
+
+export function getAbsenceBalanceStatus() {
+  return request("/absence-balances/status");
+}
+
+export function getAbsenceBalance(employeeId) {
+  return request(`/absence-balances/${employeeId}`);
+}
+
+export function updateAbsenceBalance(employeeId, payload) {
+  return request(`/absence-balances/${employeeId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function commitAbsenceBalances(payload) {
+  return request("/absence-balances/commit", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function exportAbsenceBalances() {
+  return download("/absence-balances/export", "residui-assenze.xlsx");
 }
 
 export function createJustification(payload) {
@@ -334,6 +720,70 @@ export function removeTeamMember(teamId, employeeId) {
   return request(`/teams/${teamId}/members/${employeeId}`, { method: "DELETE" });
 }
 
+export function getTeamDailyNotes(workDate) {
+  return request(`/teams/daily-notes?work_date=${workDate}`);
+}
+
+export function upsertTeamDailyNote(teamId, workDate, workload) {
+  return request(`/teams/${teamId}/daily-notes/${workDate}`, {
+    method: "PUT",
+    body: JSON.stringify({ workload: workload ?? null }),
+  });
+}
+
+export function getWorkloadTeams(workDate) {
+  return request(`/workloads/teams?work_date=${workDate}`);
+}
+
+export function upsertStructuredWorkload(teamId, workDate, payload) {
+  return request(`/workloads/teams/${teamId}/daily-notes/${workDate}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getWorkloadCustomerSuppliers() {
+  return request("/workloads/customer-suppliers");
+}
+
+export function getAuditLogs({ entity = "", action = "", actor = "", search = "", start = "", end = "", limit = 100, offset = 0 } = {}) {
+  const params = new URLSearchParams();
+  if (entity) params.set("entity", entity);
+  if (action) params.set("action", action);
+  if (actor) params.set("actor", actor);
+  if (search) params.set("search", search);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  return request(`/audit-logs?${params.toString()}`);
+}
+
+export function getAuditLogFilters() {
+  return request("/audit-logs/filters");
+}
+
+export function getSystemStatus() {
+  return request("/system/status");
+}
+
+export function getOffice365Integration() {
+  return request("/system/integrations/office365");
+}
+
+// Il client secret non viene mai riletto dal server: ometterlo dal payload
+// significa "lascia invariato quello salvato".
+export function updateOffice365Integration(payload) {
+  return request("/system/integrations/office365", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getGesapPrenotazioni(date) {
+  return request(`/gesap/prenotazioni?data=${date}`);
+}
+
 export function getToolChanges() {
   return request("/tool-changes");
 }
@@ -350,162 +800,72 @@ export function deleteToolChange(changeId) {
   return request(`/tool-changes/${changeId}`, { method: "DELETE" });
 }
 
-export function getTimesheetDashboard(day) {
-  return request(`/timesheets/dashboard?day=${day}`);
-}
+// ── Activity Records (admin portal) ──────────────────────────────────────────
 
-export function getTimesheetStats(start, end) {
-  return request(`/timesheets/stats?start=${start}&end=${end}`);
-}
-
-export function getTimesheetFilters(start = "", end = "") {
+export function getActivityRecordsAdmin({ employeeId = "", mappingId = "", startDate = "", endDate = "", limit = 200 } = {}) {
   const params = new URLSearchParams();
-  if (start) params.set("start", start);
-  if (end) params.set("end", end);
-  return request(`/timesheets/filters?${params.toString()}`);
+  if (employeeId) params.set("employee_id", employeeId);
+  if (mappingId) params.set("mapping_id", mappingId);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  if (limit !== 200) params.set("limit", String(limit));
+  return request(`/activity-records/admin?${params.toString()}`);
 }
 
-export function getTimesheets({ start = "", end = "", workerId = "", department = "", project = "", costCenter = "", status = "", approvalStatus = "", search = "" } = {}) {
+export function getActivityRecordStats({ startDate = "", endDate = "" } = {}) {
   const params = new URLSearchParams();
-  if (start) params.set("start", start);
-  if (end) params.set("end", end);
-  if (workerId) params.set("worker_id", workerId);
-  if (department) params.set("department", department);
-  if (project) params.set("project", project);
-  if (costCenter) params.set("cost_center", costCenter);
-  if (status) params.set("status", status);
-  if (approvalStatus) params.set("approval_status", approvalStatus);
-  if (search.trim()) params.set("search", search.trim());
-  return request(`/timesheets?${params.toString()}`);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  return request(`/activity-records/admin/stats?${params.toString()}`);
 }
 
-export async function exportTimesheetsCsv({ start = "", end = "", workerId = "", department = "", project = "", costCenter = "", status = "", approvalStatus = "", search = "" } = {}) {
-  const token = getAccessToken();
+export function getActiveActivitiesAdmin({ startDate = "", endDate = "" } = {}) {
   const params = new URLSearchParams();
-  if (start) params.set("start", start);
-  if (end) params.set("end", end);
-  if (workerId) params.set("worker_id", workerId);
-  if (department) params.set("department", department);
-  if (project) params.set("project", project);
-  if (costCenter) params.set("cost_center", costCenter);
-  if (status) params.set("status", status);
-  if (approvalStatus) params.set("approval_status", approvalStatus);
-  if (search.trim()) params.set("search", search.trim());
-
-  const response = await fetch(`${API_BASE_URL}/timesheets/export?${params.toString()}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) clearAccessToken();
-    throw new Error(response.statusText || "Export failed");
-  }
-
-  return response.blob();
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  return request(`/activity-records/active/admin?${params.toString()}`);
 }
 
-export function getTimesheetDetail(dayId) {
-  return request(`/timesheets/${dayId}`);
-}
-
-export function approveTimesheet(dayId, payload) {
-  return request(`/timesheets/${dayId}/approve`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function requestTimesheetCorrection(dayId, payload) {
-  return request(`/timesheets/${dayId}/request-correction`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function manualUpdateTimesheet(dayId, payload) {
-  return request(`/timesheets/${dayId}/manual-update`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function getTimesheetAdminOverview() {
-  return request("/timesheets/admin/overview");
-}
-
-export function getTimesheetSyncRuns() {
-  return request("/timesheets/admin/sync-runs");
-}
-
-export function getTimesheetProjects() {
-  return request("/timesheets/admin/projects");
-}
-
-export function getTimesheetWorkers(search = "") {
-  const params = new URLSearchParams();
-  if (search.trim()) params.set("search", search.trim());
-  return request(`/timesheets/admin/workers?${params.toString()}`);
-}
-
-export function runTimesheetManualSync() {
-  return request("/timesheets/admin/sync", { method: "POST" });
-}
-
-export function updateTimesheetWorkerEmployeeLink(workerId, payload) {
-  return request(`/timesheets/admin/workers/${workerId}/employee-link`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function deleteTimesheetWorker(workerId) {
-  return request(`/timesheets/admin/workers/${workerId}`, {
-    method: "DELETE",
-  });
-}
-
-export function updateTimesheetProjectLink(externalKey, payload) {
-  return request(`/timesheets/admin/projects/${encodeURIComponent(externalKey)}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function getTimesheetCostCenters() {
-  return request("/timesheets/admin/cost-centers");
-}
-
-export function updateTimesheetCostCenterLink(externalKey, payload) {
-  return request(`/timesheets/admin/cost-centers/${encodeURIComponent(externalKey)}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function getTimesheetMappings(mappingType = "") {
-  const params = new URLSearchParams();
-  if (mappingType) params.set("mapping_type", mappingType);
-  return request(`/timesheets/admin/mappings?${params.toString()}`);
-}
-
-export function createTimesheetMapping(payload) {
-  return request("/timesheets/admin/mappings", {
+export function closeActiveActivityAdmin(activityId, payload = {}) {
+  return request(`/activity-records/active/admin/${activityId}/close`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
-export function updateTimesheetMapping(mappingId, payload) {
-  return request(`/timesheets/admin/mappings/${mappingId}`, {
-    method: "PUT",
+export function discardActiveActivityAdmin(activityId) {
+  return request(`/activity-records/active/admin/${activityId}`, { method: "DELETE" });
+}
+
+export function updateActivityRecordAdmin(recordId, payload) {
+  return request(`/activity-records/admin/${recordId}`, {
+    method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
 
-export function deleteTimesheetMapping(mappingId) {
-  return request(`/timesheets/admin/mappings/${mappingId}`, {
-    method: "DELETE",
+export function deleteActivityRecordAdmin(recordId) {
+  return request(`/activity-records/admin/${recordId}`, { method: "DELETE" });
+}
+
+export function getDailyRecords({ employeeId = "", startDate = "", endDate = "", limit = 200 } = {}) {
+  const params = new URLSearchParams();
+  if (employeeId) params.set("employee_id", employeeId);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  params.set("limit", String(limit));
+  return request(`/daily-records?${params.toString()}`);
+}
+
+export function updateDailyRecordAdmin(recordId, payload) {
+  return request(`/daily-records/admin/${recordId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
   });
+}
+
+export function deleteDailyRecordAdmin(recordId) {
+  return request(`/daily-records/admin/${recordId}`, { method: "DELETE" });
 }
 
 export function getOrgFunctions({ activeOnly = false } = {}) {

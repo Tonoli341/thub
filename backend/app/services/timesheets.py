@@ -2,28 +2,21 @@ from __future__ import annotations
 
 import csv
 import io
-import json
-import threading
 from datetime import date, datetime, time, timedelta, timezone
-from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
-from urllib.request import Request, urlopen
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import settings
-from app.db import SessionLocal
 from app.models import Employee, LocalProject, OperationalArea, TimesheetDay, TimesheetMapping, TimesheetSlot, TimesheetSyncRun, TimesheetWorker, User
 from app.services.audit import record_audit_log
+from app.services.absence_permissions import get_linked_tms_employee
+from app.services.errors import DomainError
+from app.services.hierarchy import collect_report_ids
+from app.services.portal_auth import build_auth_user_read
 
 SOURCE_STATUS_VALUES = ["COMPILED", "CONFIRMED", "APPROVED", "UNKNOWN"]
 APPROVAL_STATUS_VALUES = ["PENDING", "APPROVED", "CORRECTION_REQUESTED"]
 MAPPING_TYPES = {"worker", "project", "cost_center"}
-
-_scheduler_thread: threading.Thread | None = None
-_scheduler_stop = threading.Event()
-_scheduler_lock = threading.Lock()
 
 
 def utcnow() -> datetime:
@@ -364,6 +357,35 @@ def _worker_display_role(worker: TimesheetWorker) -> str | None:
     return worker.role_name
 
 
+def _timesheets_visible_employee_ids(db: Session, current_user: User) -> set[str] | None:
+    auth = build_auth_user_read(db, current_user)
+    if auth.effective_role in ("admin", "hr"):
+        return None
+    if auth.effective_role != "manager":
+        return set()
+
+    linked_employee = get_linked_tms_employee(db, current_user)
+    if linked_employee is None:
+        return set()
+    return collect_report_ids(db, linked_employee.id)
+
+
+def _query_accessible_workers(db: Session, current_user: User, *, active_only: bool = False) -> list[TimesheetWorker]:
+    allowed_employee_ids = _timesheets_visible_employee_ids(db, current_user)
+    stmt = (
+        select(TimesheetWorker)
+        .options(selectinload(TimesheetWorker.tms_employee))
+        .order_by(TimesheetWorker.full_name.asc())
+    )
+    if active_only:
+        stmt = stmt.where(TimesheetWorker.is_active.is_(True))
+    if allowed_employee_ids is not None:
+        if not allowed_employee_ids:
+            return []
+        stmt = stmt.where(TimesheetWorker.tms_employee_id.in_(allowed_employee_ids))
+    return list(db.scalars(stmt).all())
+
+
 def _link_worker_to_matching_employee(db: Session, worker: TimesheetWorker) -> bool:
     if worker.tms_employee_id is not None:
         return False
@@ -577,16 +599,9 @@ def _build_day_payload(
 ) -> dict:
     projects = sorted({_project_reference(project_lookup, slot.project_code, slot.project_description)[2] for slot in day.slots if slot.project_code})
     cost_centers = sorted({_cost_center_reference(area_lookup, slot.cost_center_code, slot.cost_center_description)[2] for slot in day.slots if slot.cost_center_code})
-    anomaly_reasons = _anomaly_reasons(
-        day.worker,
-        {
-            "check_in": day.check_in,
-            "check_out": day.check_out,
-            "total_minutes": day.total_minutes,
-            "slots": [{"project_code": slot.project_code, "cost_center_code": slot.cost_center_code} for slot in day.slots],
-        },
-        mapping_lookup,
-    )
+    # le anomalie sono già persistite e mantenute aggiornate dai punti di scrittura
+    # (upsert, manual update, cambio mapping): riusarle evita di ricalcolarle a ogni lettura
+    anomaly_reasons = list(day.anomaly_reasons or [])
     return {
         "id": day.id,
         "worker_id": day.worker.id,
@@ -612,12 +627,11 @@ def _build_day_payload(
     }
 
 
-def _build_calendar_rows(db: Session, days: list[TimesheetDay], worker_ids: list[str], start_date: date, end_date: date) -> list[dict]:
+def _calendar_context(db: Session, days: list[TimesheetDay], start_date: date, end_date: date, all_worker_ids: set[str]) -> dict:
+    """Lookup condiviso per le griglie calendario della dashboard, calcolato una sola volta."""
     lookup: dict[tuple[str, date], TimesheetDay] = {(day.worker_id, day.work_date): day for day in days}
-    workers_by_id: dict[str, TimesheetWorker] = {}
-    for day in days:
-        workers_by_id[day.worker_id] = day.worker
-    missing_worker_ids = [worker_id for worker_id in worker_ids if worker_id not in workers_by_id]
+    workers_by_id: dict[str, TimesheetWorker] = {day.worker_id: day.worker for day in days}
+    missing_worker_ids = [worker_id for worker_id in all_worker_ids if worker_id not in workers_by_id]
     if missing_worker_ids:
         for worker in db.scalars(
             select(TimesheetWorker)
@@ -625,12 +639,19 @@ def _build_calendar_rows(db: Session, days: list[TimesheetDay], worker_ids: list
             .where(TimesheetWorker.id.in_(missing_worker_ids))
         ).all():
             workers_by_id[worker.id] = worker
-    rows = []
+    dates: list[date] = []
     current = start_date
-    dates = []
     while current <= end_date:
         dates.append(current)
         current += timedelta(days=1)
+    return {"lookup": lookup, "workers_by_id": workers_by_id, "dates": dates}
+
+
+def _build_calendar_rows_from_context(context: dict, worker_ids: list[str]) -> list[dict]:
+    lookup = context["lookup"]
+    workers_by_id = context["workers_by_id"]
+    dates = context["dates"]
+    rows = []
     for worker_id in worker_ids:
         worker = workers_by_id.get(worker_id)
         if worker is None:
@@ -656,7 +677,15 @@ def _build_calendar_rows(db: Session, days: list[TimesheetDay], worker_ids: list
     return rows
 
 
-def _query_days(db: Session, *, start: date | None = None, end: date | None = None, worker_id: str | None = None) -> list[TimesheetDay]:
+def _query_days(
+    db: Session,
+    *,
+    current_user: User,
+    start: date | None = None,
+    end: date | None = None,
+    worker_id: str | None = None,
+) -> list[TimesheetDay]:
+    allowed_employee_ids = _timesheets_visible_employee_ids(db, current_user)
     stmt = (
         select(TimesheetDay)
         .options(
@@ -673,26 +702,18 @@ def _query_days(db: Session, *, start: date | None = None, end: date | None = No
         stmt = stmt.where(TimesheetDay.work_date <= end)
     if worker_id:
         stmt = stmt.where(or_(TimesheetDay.worker_id == worker_id, TimesheetWorker.tms_employee_id == worker_id))
+    if allowed_employee_ids is not None:
+        if not allowed_employee_ids:
+            return []
+        stmt = stmt.where(TimesheetWorker.tms_employee_id.in_(allowed_employee_ids))
     return list(db.scalars(stmt).unique().all())
 
 
-def build_timesheet_dashboard(db: Session, target_date: date) -> dict:
-    active_workers = list(
-        db.scalars(
-            select(TimesheetWorker)
-            .options(selectinload(TimesheetWorker.tms_employee))
-            .where(TimesheetWorker.is_active.is_(True))
-            .order_by(TimesheetWorker.full_name.asc())
-        ).all()
-    )
+def build_timesheet_dashboard(db: Session, current_user: User, target_date: date) -> dict:
+    active_workers = _query_accessible_workers(db, current_user, active_only=True)
     days = list(
-        db.scalars(
-            select(TimesheetDay)
-            .options(selectinload(TimesheetDay.worker).selectinload(TimesheetWorker.tms_employee), selectinload(TimesheetDay.slots))
-            .where(TimesheetDay.work_date == target_date)
-            .join(TimesheetDay.worker)
-            .order_by(TimesheetWorker.full_name.asc())
-        ).unique().all()
+        day for day in _query_days(db, current_user=current_user, start=target_date, end=target_date)
+        if day.work_date == target_date
     )
     days_by_worker = {day.worker_id: day for day in days}
 
@@ -703,7 +724,15 @@ def build_timesheet_dashboard(db: Session, target_date: date) -> dict:
     missing_workers = [worker for worker in active_workers if worker.id not in days_by_worker]
 
     range_start = target_date - timedelta(days=13)
-    calendar_days = _query_days(db, start=range_start, end=target_date)
+    calendar_days = _query_days(db, current_user=current_user, start=range_start, end=target_date)
+    bucket_worker_ids = (
+        {day.worker_id for day in compiled_days}
+        | {day.worker_id for day in confirmed_days}
+        | {day.worker_id for day in approved_days}
+        | {day.worker_id for day in anomaly_days}
+        | {worker.id for worker in missing_workers}
+    )
+    calendar_ctx = _calendar_context(db, calendar_days, range_start, target_date, bucket_worker_ids)
 
     def day_item(day: TimesheetDay) -> dict:
         return {
@@ -750,42 +779,34 @@ def build_timesheet_dashboard(db: Session, target_date: date) -> dict:
             "giornate_compilate": {
                 "count": len(compiled_days),
                 "items": [day_item(day) for day in compiled_days],
-                "calendar": _build_calendar_rows(db, calendar_days, [day.worker_id for day in compiled_days], range_start, target_date),
+                "calendar": _build_calendar_rows_from_context(calendar_ctx, [day.worker_id for day in compiled_days]),
             },
             "giornate_confermate": {
                 "count": len(confirmed_days),
                 "items": [day_item(day) for day in confirmed_days],
-                "calendar": _build_calendar_rows(db, calendar_days, [day.worker_id for day in confirmed_days], range_start, target_date),
+                "calendar": _build_calendar_rows_from_context(calendar_ctx, [day.worker_id for day in confirmed_days]),
             },
             "giornate_approvate": {
                 "count": len(approved_days),
                 "items": [day_item(day) for day in approved_days],
-                "calendar": _build_calendar_rows(db, calendar_days, [day.worker_id for day in approved_days], range_start, target_date),
+                "calendar": _build_calendar_rows_from_context(calendar_ctx, [day.worker_id for day in approved_days]),
             },
             "giornate_mancanti": {
                 "count": len(missing_workers),
                 "items": [missing_item(worker) for worker in missing_workers],
-                "calendar": _build_calendar_rows(db, calendar_days, [worker.id for worker in missing_workers], range_start, target_date),
+                "calendar": _build_calendar_rows_from_context(calendar_ctx, [worker.id for worker in missing_workers]),
             },
             "anomalie": {
                 "count": len(anomaly_days),
                 "items": [day_item(day) for day in anomaly_days],
-                "calendar": _build_calendar_rows(db, calendar_days, [day.worker_id for day in anomaly_days], range_start, target_date),
+                "calendar": _build_calendar_rows_from_context(calendar_ctx, [day.worker_id for day in anomaly_days]),
             },
         },
     }
 
 
-def build_timesheet_stats(db: Session, *, start: date, end: date) -> dict:
-    days = list(
-        db.scalars(
-            select(TimesheetDay)
-            .options(selectinload(TimesheetDay.worker).selectinload(TimesheetWorker.tms_employee), selectinload(TimesheetDay.slots))
-            .where(TimesheetDay.work_date >= start, TimesheetDay.work_date <= end)
-            .join(TimesheetDay.worker)
-            .order_by(TimesheetWorker.full_name.asc())
-        ).unique().all()
-    )
+def build_timesheet_stats(db: Session, current_user: User, *, start: date, end: date) -> dict:
+    days = _query_days(db, current_user=current_user, start=start, end=end)
     mapping_lookup = _mapping_lookup(db)
     project_lookup = _project_lookup_by_external_key(db)
 
@@ -876,6 +897,7 @@ def build_timesheet_stats(db: Session, *, start: date, end: date) -> dict:
 
 def list_timesheet_days_payload(
     db: Session,
+    current_user: User,
     *,
     start: date | None,
     end: date | None,
@@ -887,7 +909,7 @@ def list_timesheet_days_payload(
     approval_status: str | None,
     search: str | None,
 ) -> list[dict]:
-    days = _query_days(db, start=start, end=end, worker_id=worker_id)
+    days = _query_days(db, current_user=current_user, start=start, end=end, worker_id=worker_id)
     mapping_lookup = _mapping_lookup(db)
     project_lookup = _project_lookup_by_external_key(db)
     area_lookup = _cost_center_lookup_by_external_key(db)
@@ -944,8 +966,8 @@ def list_timesheet_days_payload(
     return items
 
 
-def build_timesheet_filters(db: Session, *, start: date | None, end: date | None) -> dict:
-    days = _query_days(db, start=start, end=end)
+def build_timesheet_filters(db: Session, current_user: User, *, start: date | None, end: date | None) -> dict:
+    days = _query_days(db, current_user=current_user, start=start, end=end)
     project_lookup = _project_lookup_by_external_key(db)
     area_lookup = _cost_center_lookup_by_external_key(db)
     workers = {}
@@ -990,9 +1012,12 @@ def _timesheet_day_by_id(db: Session, day_id: str) -> TimesheetDay | None:
     ).first()
 
 
-def build_timesheet_detail(db: Session, day_id: str) -> dict | None:
+def build_timesheet_detail(db: Session, current_user: User, day_id: str) -> dict | None:
     day = _timesheet_day_by_id(db, day_id)
     if day is None:
+        return None
+    allowed_employee_ids = _timesheets_visible_employee_ids(db, current_user)
+    if allowed_employee_ids is not None and day.worker.tms_employee_id not in allowed_employee_ids:
         return None
 
     week_start = day.work_date - timedelta(days=day.work_date.weekday())
@@ -1004,8 +1029,8 @@ def build_timesheet_detail(db: Session, day_id: str) -> dict | None:
     project_lookup = _project_lookup_by_external_key(db)
     area_lookup = _cost_center_lookup_by_external_key(db)
 
-    week_days = _query_days(db, start=week_start, end=week_end, worker_id=day.worker_id)
-    month_days = _query_days(db, start=month_start, end=month_end, worker_id=day.worker_id)
+    week_days = _query_days(db, current_user=current_user, start=week_start, end=week_end, worker_id=day.worker_id)
+    month_days = _query_days(db, current_user=current_user, start=month_start, end=month_end, worker_id=day.worker_id)
 
     payload = _build_day_payload(day, project_lookup, area_lookup, mapping_lookup)
     payload.update(
@@ -1030,6 +1055,9 @@ def approve_timesheet_day(db: Session, day_id: str, current_user: User, note: st
     day = _timesheet_day_by_id(db, day_id)
     if day is None:
         return None
+    allowed_employee_ids = _timesheets_visible_employee_ids(db, current_user)
+    if allowed_employee_ids is not None and day.worker.tms_employee_id not in allowed_employee_ids:
+        return None
     day.approval_status = "APPROVED"
     day.approved_at = utcnow()
     day.approved_by_user_id = current_user.id
@@ -1044,12 +1072,15 @@ def approve_timesheet_day(db: Session, day_id: str, current_user: User, note: st
         detail={"timesheet_day_id": day.id, "note": note},
     )
     db.commit()
-    return build_timesheet_detail(db, day.id)
+    return build_timesheet_detail(db, current_user, day.id)
 
 
 def request_timesheet_correction(db: Session, day_id: str, current_user: User, note: str) -> dict | None:
     day = _timesheet_day_by_id(db, day_id)
     if day is None:
+        return None
+    allowed_employee_ids = _timesheets_visible_employee_ids(db, current_user)
+    if allowed_employee_ids is not None and day.worker.tms_employee_id not in allowed_employee_ids:
         return None
     day.approval_status = "CORRECTION_REQUESTED"
     day.correction_note = note
@@ -1062,12 +1093,15 @@ def request_timesheet_correction(db: Session, day_id: str, current_user: User, n
         detail={"timesheet_day_id": day.id, "note": note},
     )
     db.commit()
-    return build_timesheet_detail(db, day.id)
+    return build_timesheet_detail(db, current_user, day.id)
 
 
 def manual_update_timesheet_day(db: Session, day_id: str, current_user: User, payload: dict) -> dict | None:
     day = _timesheet_day_by_id(db, day_id)
     if day is None:
+        return None
+    allowed_employee_ids = _timesheets_visible_employee_ids(db, current_user)
+    if allowed_employee_ids is not None and day.worker.tms_employee_id not in allowed_employee_ids:
         return None
 
     if payload.get("status"):
@@ -1137,11 +1171,12 @@ def manual_update_timesheet_day(db: Session, day_id: str, current_user: User, pa
         detail={"timesheet_day_id": day.id},
     )
     db.commit()
-    return build_timesheet_detail(db, day.id)
+    return build_timesheet_detail(db, current_user, day.id)
 
 
 def build_timesheets_csv(
     db: Session,
+    current_user: User,
     *,
     start: date | None,
     end: date | None,
@@ -1155,6 +1190,7 @@ def build_timesheets_csv(
 ) -> str:
     rows = list_timesheet_days_payload(
         db,
+        current_user=current_user,
         start=start,
         end=end,
         worker_id=worker_id,
@@ -1282,7 +1318,7 @@ def update_worker_link(db: Session, worker_id: str, tms_employee_id: str | None,
     else:
         employee = db.get(Employee, tms_employee_id)
         if employee is None:
-            raise RuntimeError("Dipendente locale non trovato.")
+            raise DomainError("Dipendente locale non trovato.")
 
         existing_link = db.scalar(
             select(TimesheetWorker).where(
@@ -1291,7 +1327,7 @@ def update_worker_link(db: Session, worker_id: str, tms_employee_id: str | None,
             )
         )
         if existing_link is not None:
-            raise RuntimeError("Dipendente locale gia collegato a un altro operatore AWS.")
+            raise DomainError("Dipendente locale gia collegato a un altro operatore AWS.")
 
         worker.tms_employee_id = employee.id
 
@@ -1335,10 +1371,6 @@ def delete_worker(db: Session, worker_id: str, current_user: User) -> bool:
     return True
 
 
-def scheduler_running() -> bool:
-    return _scheduler_thread is not None and _scheduler_thread.is_alive()
-
-
 def build_admin_overview(db: Session) -> dict:
     workers = list(db.scalars(select(TimesheetWorker)).all())
     days_total = db.scalar(select(func.count(TimesheetDay.id))) or 0
@@ -1347,15 +1379,18 @@ def build_admin_overview(db: Session) -> dict:
     mapping_lookup = _mapping_lookup(db)
 
     unmapped_workers = sum(1 for worker in workers if worker.is_active and worker.tms_employee_id is None)
-    all_slots = list(db.scalars(select(TimesheetSlot)).all())
-    project_codes = {slot.project_code for slot in all_slots if slot.project_code}
-    cost_center_codes = {slot.cost_center_code for slot in all_slots if slot.cost_center_code}
+    project_codes = set(
+        db.scalars(select(TimesheetSlot.project_code).where(TimesheetSlot.project_code.is_not(None)).distinct()).all()
+    )
+    cost_center_codes = set(
+        db.scalars(select(TimesheetSlot.cost_center_code).where(TimesheetSlot.cost_center_code.is_not(None)).distinct()).all()
+    )
 
     last_sync = db.scalars(select(TimesheetSyncRun).order_by(TimesheetSyncRun.started_at.desc()).limit(1)).first()
     return {
-        "sync_configured": settings.aws_sync_is_configured,
-        "scheduler_running": scheduler_running(),
-        "sync_interval_minutes": settings.aws_sync_interval_minutes,
+        "sync_configured": False,
+        "scheduler_running": False,
+        "sync_interval_minutes": 0,
         "total_workers": len(workers),
         "active_workers": sum(1 for worker in workers if worker.is_active),
         "total_days": int(days_total),
@@ -1405,12 +1440,15 @@ def list_project_links_payload(db: Session) -> list[dict]:
         for project in db.scalars(select(LocalProject)).all()
     }
     labels_by_code: dict[str, str | None] = {}
-    for slot in db.scalars(select(TimesheetSlot).where(TimesheetSlot.project_code.is_not(None))).all():
-        code = _clean_text(slot.project_code)
-        if not code:
-            continue
-        if code not in labels_by_code or not labels_by_code[code]:
-            labels_by_code[code] = _clean_text(slot.project_description)
+    label_rows = db.execute(
+        select(TimesheetSlot.project_code, func.min(TimesheetSlot.project_description))
+        .where(TimesheetSlot.project_code.is_not(None))
+        .group_by(TimesheetSlot.project_code)
+    ).all()
+    for raw_code, raw_label in label_rows:
+        code = _clean_text(raw_code)
+        if code and (code not in labels_by_code or not labels_by_code[code]):
+            labels_by_code[code] = _clean_text(raw_label)
 
     rows = []
     for code in sorted(labels_by_code):
@@ -1433,7 +1471,7 @@ def list_project_links_payload(db: Session) -> list[dict]:
 def upsert_project_link(db: Session, external_key: str, local_project_id: str | None, current_user: User) -> dict:
     normalized_external_key = str(external_key).strip()
     if not normalized_external_key:
-        raise RuntimeError("Commessa AWS non valida.")
+        raise DomainError("Commessa AWS non valida.")
 
     mapping = db.scalar(
         select(TimesheetMapping).where(
@@ -1457,12 +1495,12 @@ def upsert_project_link(db: Session, external_key: str, local_project_id: str | 
             db.commit()
         row = next((item for item in list_project_links_payload(db) if item["external_key"] == normalized_external_key), None)
         if row is None:
-            raise RuntimeError("Commessa AWS non trovata.")
+            raise DomainError("Commessa AWS non trovata.")
         return row
 
     project = db.get(LocalProject, local_project_id)
     if project is None:
-        raise RuntimeError("Commessa locale non trovata.")
+        raise DomainError("Commessa locale non trovata.")
 
     external_label = db.scalar(
         select(TimesheetSlot.project_description)
@@ -1505,7 +1543,7 @@ def upsert_project_link(db: Session, external_key: str, local_project_id: str | 
     db.commit()
     row = next((item for item in list_project_links_payload(db) if item["external_key"] == normalized_external_key), None)
     if row is None:
-        raise RuntimeError("Commessa AWS non trovata.")
+        raise DomainError("Commessa AWS non trovata.")
     return row
 
 
@@ -1524,12 +1562,15 @@ def list_cost_center_links_payload(db: Session) -> list[dict]:
         for area in db.scalars(select(OperationalArea)).all()
     }
     labels_by_code: dict[str, str | None] = {}
-    for slot in db.scalars(select(TimesheetSlot).where(TimesheetSlot.cost_center_code.is_not(None))).all():
-        code = _clean_text(slot.cost_center_code)
-        if not code:
-            continue
-        if code not in labels_by_code or not labels_by_code[code]:
-            labels_by_code[code] = _clean_text(slot.cost_center_description)
+    label_rows = db.execute(
+        select(TimesheetSlot.cost_center_code, func.min(TimesheetSlot.cost_center_description))
+        .where(TimesheetSlot.cost_center_code.is_not(None))
+        .group_by(TimesheetSlot.cost_center_code)
+    ).all()
+    for raw_code, raw_label in label_rows:
+        code = _clean_text(raw_code)
+        if code and (code not in labels_by_code or not labels_by_code[code]):
+            labels_by_code[code] = _clean_text(raw_label)
 
     rows = []
     for code in sorted(labels_by_code):
@@ -1551,7 +1592,7 @@ def list_cost_center_links_payload(db: Session) -> list[dict]:
 def upsert_cost_center_link(db: Session, external_key: str, operational_area_code: str | None, current_user: User) -> dict:
     normalized_external_key = str(external_key).strip()
     if not normalized_external_key:
-        raise RuntimeError("Centro di costo AWS non valido.")
+        raise DomainError("Centro di costo AWS non valido.")
 
     mapping = db.scalar(
         select(TimesheetMapping).where(
@@ -1575,7 +1616,7 @@ def upsert_cost_center_link(db: Session, external_key: str, operational_area_cod
             db.commit()
         row = next((item for item in list_cost_center_links_payload(db) if item["external_key"] == normalized_external_key), None)
         if row is None:
-            raise RuntimeError("Centro di costo AWS non trovato.")
+            raise DomainError("Centro di costo AWS non trovato.")
         return row
 
     area = db.scalar(
@@ -1584,7 +1625,7 @@ def upsert_cost_center_link(db: Session, external_key: str, operational_area_cod
         )
     )
     if area is None:
-        raise RuntimeError("Area Operativa non trovata.")
+        raise DomainError("Area Operativa non trovata.")
 
     external_label = db.scalar(
         select(TimesheetSlot.cost_center_description)
@@ -1627,7 +1668,7 @@ def upsert_cost_center_link(db: Session, external_key: str, operational_area_cod
     db.commit()
     row = next((item for item in list_cost_center_links_payload(db) if item["external_key"] == normalized_external_key), None)
     if row is None:
-        raise RuntimeError("Centro di costo AWS non trovato.")
+        raise DomainError("Centro di costo AWS non trovato.")
     return row
 
 
@@ -1699,33 +1740,6 @@ def delete_mapping(db: Session, mapping_id: str, current_user: User) -> bool:
     db.commit()
     return True
 
-
-def _resolve_endpoint(override: str, default_path: str) -> str:
-    if override and override.startswith("http"):
-        return override
-    base_url = settings.aws_sync_base_url.strip()
-    if not base_url:
-        raise RuntimeError("AWS sync non configurata.")
-    path = override.strip() if override.strip() else default_path
-    return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
-
-
-def _fetch_remote_json(url: str) -> object:
-    headers: dict[str, str] = {"Accept": "application/json"}
-    api_key = settings.aws_sync_api_key.strip()
-    if api_key:
-        headers["x-api-key"] = api_key
-        headers["Authorization"] = f"Bearer {api_key}"
-    request = Request(url, headers=headers, method="GET")
-    try:
-        with urlopen(request, timeout=30) as response:
-            charset = response.headers.get_content_charset("utf-8")
-            return json.loads(response.read().decode(charset))
-    except HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"AWS sync HTTP {exc.code}: {message or exc.reason}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"AWS sync non raggiungibile: {exc.reason}") from exc
 
 
 def _upsert_workers(db: Session, user_records: list[dict]) -> int:
@@ -1819,91 +1833,3 @@ def _upsert_days(db: Session, day_records: list[dict]) -> int:
         day.has_anomalies = bool(reasons)
         upserted += 1
     return upserted
-
-
-def sync_timesheets(db: Session, *, trigger_source: str, actor_name: str | None = None, user_id: str | None = None) -> dict:
-    if not settings.aws_sync_is_configured:
-        raise RuntimeError("AWS sync non configurata.")
-
-    run = TimesheetSyncRun(trigger_source=trigger_source, status="RUNNING")
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-
-    try:
-        users_url = _resolve_endpoint(settings.aws_sync_users_endpoint, "/sync/users")
-        timesheets_url = _resolve_endpoint(settings.aws_sync_timesheets_endpoint, "/sync/timesheets")
-
-        users_payload = _fetch_remote_json(users_url)
-        timesheets_payload = _fetch_remote_json(timesheets_url)
-
-        user_records = [item for item in (_normalize_user_record(record) for record in _extract_list(users_payload, ("users",))) if item]
-        day_records = [item for item in (_normalize_timesheet_record(record) for record in _extract_list(timesheets_payload, ("timesheets",))) if item]
-
-        run.users_read = len(user_records)
-        run.users_upserted = _upsert_workers(db, user_records)
-        run.timesheets_read = len(day_records)
-        run.timesheets_upserted = _upsert_days(db, day_records)
-        run.status = "SUCCESS"
-        run.raw_summary = {"users_endpoint": users_url, "timesheets_endpoint": timesheets_url}
-        run.finished_at = utcnow()
-
-        if trigger_source == "manual":
-            record_audit_log(
-                db,
-                action="manual_sync",
-                entity="timesheets",
-                actor_name=actor_name,
-                user_id=user_id,
-                detail={
-                    "timesheet_sync_run_id": run.id,
-                    "users_read": run.users_read,
-                    "timesheets_read": run.timesheets_read,
-                },
-            )
-
-        db.commit()
-        db.refresh(run)
-        return _serialize_sync_run(run)
-    except Exception as exc:
-        db.rollback()
-        failed_run = db.get(TimesheetSyncRun, run.id)
-        if failed_run is not None:
-            failed_run.status = "FAILED"
-            failed_run.errors_count = 1
-            failed_run.error_message = str(exc)
-            failed_run.finished_at = utcnow()
-            db.commit()
-        raise
-
-
-def _scheduler_loop() -> None:
-    while not _scheduler_stop.is_set():
-        with SessionLocal() as session:
-            try:
-                sync_timesheets(session, trigger_source="scheduled")
-            except Exception:
-                session.rollback()
-        if _scheduler_stop.wait(max(settings.aws_sync_interval_minutes, 1) * 60):
-            break
-
-
-def start_timesheet_sync_scheduler() -> None:
-    global _scheduler_thread
-    if not settings.aws_sync_is_configured:
-        return
-    with _scheduler_lock:
-        if _scheduler_thread is not None and _scheduler_thread.is_alive():
-            return
-        _scheduler_stop.clear()
-        _scheduler_thread = threading.Thread(target=_scheduler_loop, name="timesheet-sync", daemon=True)
-        _scheduler_thread.start()
-
-
-def stop_timesheet_sync_scheduler() -> None:
-    global _scheduler_thread
-    with _scheduler_lock:
-        _scheduler_stop.set()
-        if _scheduler_thread is not None and _scheduler_thread.is_alive():
-            _scheduler_thread.join(timeout=2)
-        _scheduler_thread = None

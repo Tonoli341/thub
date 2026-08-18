@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 160
+target-version = "py312"
+
+[tool.ruff.lint]
+# regole "bloccanti": errori di sintassi e nomi non definiti; lo stile resta advisory
+select = ["E9", "F63", "F7", "F82", "F401", "F811"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/api/__init__.py" = ["F401"]
+"migrations/*" = ["F401"]

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -12,6 +12,7 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  InputAdornment,
   Paper,
   Snackbar,
   Stack,
@@ -20,7 +21,9 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
 
 import { addTeamMember, createTeam, deleteTeam, getEmployeeOptions, getTeams, removeTeamMember, updateTeam } from "../api";
 
@@ -88,15 +91,84 @@ function TeamAvatar({ team, size = 40 }) {
   );
 }
 
-function InfoTile({ label, value, icon }) {
+function InfoIcon() {
   return (
-    <Box sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "action.hover" }}>
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
-        {label}
-      </Typography>
-      <Typography variant="body2" fontWeight={600}>
-        {value ? (icon ? `${icon} ${value}` : value) : "—"}
-      </Typography>
+    <Box component="svg" viewBox="0 0 24 24" aria-hidden="true" sx={{ width: 17, height: 17, display: "block" }}>
+      <circle cx="12" cy="12" r="9.1" fill="none" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="12" cy="7.6" r="1.15" fill="currentColor" />
+      <path d="M12 11.1v5.6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </Box>
+  );
+}
+
+function InfoHint({ title }) {
+  return (
+    <Tooltip title={title} placement="top" arrow enterDelay={150} enterTouchDelay={0}>
+      <Box
+        component="span"
+        role="img"
+        tabIndex={0}
+        aria-label={title}
+        sx={{
+          display: "inline-flex",
+          flexShrink: 0,
+          color: "text.disabled",
+          cursor: "help",
+          borderRadius: "50%",
+          transition: "color .15s",
+          "&:hover, &:focus-visible": { color: "primary.main" },
+          "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 },
+        }}
+      >
+        <InfoIcon />
+      </Box>
+    </Tooltip>
+  );
+}
+
+function SectionLabel({ children }) {
+  return (
+    <Typography
+      variant="caption"
+      sx={{
+        display: "block",
+        mb: 1,
+        fontWeight: 700,
+        fontSize: 11,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        color: "text.secondary",
+      }}
+    >
+      {children}
+    </Typography>
+  );
+}
+
+function NotificationBellIcon({ enabled }) {
+  return (
+    <Box
+      component="svg"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      sx={{ width: 21, height: 21, display: "block", "--bell-halo": (theme) => theme.palette.background.paper }}
+    >
+      <path
+        d="M18 8.8a6 6 0 0 0-12 0c0 6.2-2.5 6.7-2.5 6.7h17S18 15 18 8.8Z"
+        fill={enabled ? "currentColor" : "none"}
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.6 18.5a2.6 2.6 0 0 0 4.8 0"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      {enabled && <circle cx="18.5" cy="5.5" r="2.25" fill="currentColor" stroke="var(--bell-halo)" strokeWidth="1.2" />}
     </Box>
   );
 }
@@ -203,86 +275,109 @@ function TeamRow({ team, onManage }) {
   );
 }
 
-function IconPicker({ icon, color, onChange }) {
-  const [open, setOpen] = useState(false);
+function IconPickerTrigger({ icon, color, open, onToggle, onRandom }) {
   return (
-    <Box>
-      <Stack direction="row" alignItems="center" spacing={1}>
+    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+      <Tooltip title="Scegli icona">
         <Button
-          size="small"
-          onClick={() => setOpen((v) => !v)}
-          sx={{ textTransform: "none", fontWeight: 600, color: "text.secondary", px: 0.5, minWidth: 0 }}
+          onClick={onToggle}
+          aria-expanded={open}
+          sx={{
+            minWidth: 0,
+            height: 40,
+            px: 1,
+            gap: 0.5,
+            fontSize: 18,
+            lineHeight: 1,
+            border: "1px solid",
+            borderColor: open ? color : "divider",
+            bgcolor: open ? alpha(color, 0.1) : "transparent",
+            color: "text.secondary",
+          }}
         >
-          Icona {icon} {open ? "▲" : "▼"}
+          {icon}
+          <Box component="span" sx={{ fontSize: 9 }}>{open ? "▲" : "▼"}</Box>
         </Button>
-        <Tooltip title="Icona casuale">
-          <Button variant="text" size="small" onClick={() => onChange(rand(TEAM_ICONS))} sx={{ minWidth: 32, px: 0.5, fontSize: 16 }}>
-            🎲
-          </Button>
-        </Tooltip>
-      </Stack>
-      <Collapse in={open}>
-        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 1, maxHeight: 180, overflowY: "auto", p: 0.5 }}>
-          {TEAM_ICONS.map((teamIcon) => (
-            <Box
-              key={teamIcon}
-              onClick={() => { onChange(teamIcon); setOpen(false); }}
-              sx={{
-                width: 36,
-                height: 36,
-                display: "grid",
-                placeItems: "center",
-                fontSize: 20,
-                cursor: "pointer",
-                borderRadius: 1.5,
-                border: "2px solid",
-                borderColor: icon === teamIcon ? color : "transparent",
-                background: icon === teamIcon ? `${color}18` : "transparent",
-                "&:hover": { background: "#f5f5f5" },
-              }}
-            >
-              {teamIcon}
-            </Box>
-          ))}
+      </Tooltip>
+      <Tooltip title="Icona casuale">
+        <Button
+          onClick={onRandom}
+          aria-label="Icona casuale"
+          sx={{ minWidth: 40, height: 40, px: 0.5, fontSize: 16, border: "1px solid", borderColor: "divider" }}
+        >
+          🎲
+        </Button>
+      </Tooltip>
+      <InfoHint title="Emoji mostrata nell'avatar della squadra in elenco, planner e riepiloghi. Usa il dado per sceglierne una a caso." />
+    </Stack>
+  );
+}
+
+function IconGrid({ icon, color, onSelect }) {
+  return (
+    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 1.5, maxHeight: 168, overflowY: "auto", p: 0.5, borderRadius: 1.5, bgcolor: "action.hover" }}>
+      {TEAM_ICONS.map((teamIcon) => (
+        <Box
+          key={teamIcon}
+          role="button"
+          onClick={() => onSelect(teamIcon)}
+          sx={{
+            width: 34,
+            height: 34,
+            display: "grid",
+            placeItems: "center",
+            fontSize: 19,
+            cursor: "pointer",
+            borderRadius: 1.5,
+            border: "2px solid",
+            borderColor: icon === teamIcon ? color : "transparent",
+            background: icon === teamIcon ? alpha(color, 0.12) : "transparent",
+            "&:hover": { bgcolor: "action.selected" },
+          }}
+        >
+          {teamIcon}
         </Box>
-      </Collapse>
+      ))}
     </Box>
   );
 }
 
 function ColorPicker({ color, onChange }) {
   return (
-    <Stack direction="row" alignItems="center" spacing={1.5}>
-      <Typography variant="body2" fontWeight={600} color="text.secondary" sx={{ flexShrink: 0 }}>
-        Colore
-      </Typography>
-      <Box
-        component="input"
-        type="color"
-        value={color}
-        onChange={(e) => onChange(e.target.value)}
-        sx={{
-          width: 36,
-          height: 32,
-          border: "1px solid rgba(0,0,0,0.23)",
-          borderRadius: 1,
-          cursor: "pointer",
-          padding: "2px",
-          background: "none",
-          "&::-webkit-color-swatch-wrapper": { padding: 0 },
-          "&::-webkit-color-swatch": { borderRadius: "4px", border: "none" },
-        }}
-      />
+    <Stack direction="row" alignItems="center" spacing={0.5} sx={{ flexShrink: 0 }}>
+      <Tooltip title="Colore squadra">
+        <Box
+          component="input"
+          type="color"
+          aria-label="Colore squadra"
+          value={color}
+          onChange={(e) => onChange(e.target.value)}
+          sx={{
+            width: 40,
+            height: 40,
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: 1,
+            cursor: "pointer",
+            padding: "3px",
+            background: "none",
+            "&::-webkit-color-swatch-wrapper": { padding: 0 },
+            "&::-webkit-color-swatch": { borderRadius: "3px", border: "none" },
+          }}
+        />
+      </Tooltip>
       <TextField
         size="small"
+        aria-label="Codice colore"
         value={color}
         onChange={(e) => {
           const v = e.target.value;
           if (/^#[0-9a-fA-F]{0,6}$/.test(v)) onChange(v);
         }}
         inputProps={{ maxLength: 7, style: { fontFamily: "monospace", fontSize: 13 } }}
-        sx={{ width: 100 }}
+        sx={{ width: 92 }}
       />
+      <InfoHint title="Colore identificativo della squadra: tinge avatar, badge dei ruoli e le fasce nel planner. Accetta un codice esadecimale (es. #3b82f6)." />
     </Stack>
   );
 }
@@ -305,21 +400,40 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
   const [color, setColor] = useState("#3b82f6");
   const [teamLeaderId, setTeamLeaderId] = useState(null);
   const [teamLeader2Id, setTeamLeader2Id] = useState(null);
+  const [workloadOwnerId, setWorkloadOwnerId] = useState(null);
+  const [operationalReportingOwnerId, setOperationalReportingOwnerId] = useState(null);
+  const [operationalReportingNotificationsEnabled, setOperationalReportingNotificationsEnabled] = useState(false);
   const [addEmployee, setAddEmployee] = useState(null);
   const [snackbar, setSnackbar] = useState(null);
   const [saveError, setSaveError] = useState(null);
+  const [iconOpen, setIconOpen] = useState(false);
+  const syncedTeamRef = useRef(null);
 
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
+
+  // Sincronizza il form solo quando il dialog si apre su una squadra diversa:
+  // i refetch di ["teams"] (add/remove membro) non devono resettare tab e modifiche.
   useEffect(() => {
-    if (!open || !team) return;
+    if (!open) {
+      syncedTeamRef.current = null;
+      return;
+    }
+    if (!team || syncedTeamRef.current === team.id) return;
+    syncedTeamRef.current = team.id;
     setName(team.name);
     setIcon(team.icon ?? "🦁");
     setColor(team.color ?? "#3b82f6");
     setTeamLeaderId(team.team_leader_employee_id ?? null);
     setTeamLeader2Id(team.team_leader_2_employee_id ?? null);
+    setWorkloadOwnerId(team.workload_owner_employee_id ?? null);
+    setOperationalReportingOwnerId(team.operational_reporting_owner_employee_id ?? null);
+    setOperationalReportingNotificationsEnabled(!!team.operational_reporting_notifications_enabled);
     setAddEmployee(null);
     setSaveError(null);
     setActiveTab(0);
-  }, [open, teamId, team]);
+    setIconOpen(false);
+  }, [open, team]);
 
   const memberIds = new Set(team?.members.map((m) => m.employee_id) ?? []);
   const available = (employeesQuery.data ?? []).filter((e) => !memberIds.has(e.id));
@@ -358,6 +472,9 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
         color,
         team_leader_employee_id: teamLeaderId,
         team_leader_2_employee_id: teamLeader2Id,
+        workload_owner_employee_id: workloadOwnerId,
+        operational_reporting_owner_employee_id: operationalReportingOwnerId,
+        operational_reporting_notifications_enabled: operationalReportingNotificationsEnabled,
       },
     });
   }
@@ -366,20 +483,28 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
 
   return (
     <>
-      <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      <Dialog
+        open={open}
+        onClose={onClose}
+        maxWidth="md"
+        fullWidth
+        fullScreen={fullScreen}
+        aria-labelledby="team-dialog-title"
+        PaperProps={{ sx: { borderRadius: fullScreen ? 0 : 3 } }}
+      >
         {/* Header */}
         <Box sx={{ px: 3, pt: 2, pb: 2, borderBottom: "1px solid", borderColor: "divider" }}>
           <Stack direction="row" spacing={2} alignItems="center">
             <TeamAvatar team={{ ...team, icon, color }} size={48} />
             <Box flex={1} minWidth={0}>
-              <Typography variant="h6" fontWeight={800} noWrap>
+              <Typography id="team-dialog-title" variant="h6" fontWeight={800} noWrap>
                 {name || team.name}
               </Typography>
               <Typography variant="body2" color="text.secondary">
                 {team.members.length} {team.members.length === 1 ? "membro" : "membri"}
               </Typography>
             </Box>
-            <IconButton onClick={onClose} size="small" sx={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>
+            <IconButton onClick={onClose} size="small" aria-label="Chiudi" sx={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>
               ✕
             </IconButton>
           </Stack>
@@ -402,64 +527,188 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
           {/* Tab 0: Dettaglio */}
           {activeTab === 0 && (
             <Box sx={{ pt: 2.5, pb: 3 }}>
-              {/* Info tile read-only */}
-              <Box sx={{ mb: 2.5, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
-                <InfoTile label="Team leader 1" value={team.team_leader_employee_name} icon="⭐" />
-                <InfoTile label="Team leader 2" value={team.team_leader_2_employee_name} icon="⭐" />
-              </Box>
-
-              <Stack spacing={2}>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <TextField
-                    label="Nome team"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    fullWidth
-                    size="small"
-                  />
-                  <Tooltip title="Nome casuale">
-                    <Button variant="outlined" size="small" onClick={() => setName(rand(TEAM_NAMES))} sx={{ minWidth: 40, px: 1, fontSize: 18, flexShrink: 0 }}>
-                      🎲
-                    </Button>
-                  </Tooltip>
-                </Stack>
-
-                <IconPicker icon={icon} color={color} onChange={setIcon} />
-                <ColorPicker color={color} onChange={setColor} />
-
-                <Autocomplete
-                  options={leaderOptions}
-                  getOptionLabel={(o) => o.employee_name}
-                  value={leaderOptions.find((m) => m.employee_id === teamLeaderId) ?? null}
-                  onChange={(_, v) => setTeamLeaderId(v?.employee_id ?? null)}
-                  size="small"
-                  clearOnEscape
-                  disabled={leaderOptions.length === 0}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      label="Team leader 1"
-                      placeholder={leaderOptions.length === 0 ? "Aggiungi prima un membro" : "Seleziona il leader 1"}
+              <Stack spacing={2.5}>
+                {/* Identità */}
+                <Box>
+                  <SectionLabel>Identità</SectionLabel>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    alignItems={{ xs: "stretch", sm: "center" }}
+                  >
+                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
+                      <TextField
+                        label="Nome team"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        size="small"
+                        fullWidth
+                        InputProps={{
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <Tooltip title="Nome casuale">
+                                <IconButton
+                                  aria-label="Nome casuale"
+                                  size="small"
+                                  edge="end"
+                                  onClick={() => setName(rand(TEAM_NAMES))}
+                                  sx={{ fontSize: 16 }}
+                                >
+                                  🎲
+                                </IconButton>
+                              </Tooltip>
+                            </InputAdornment>
+                          ),
+                        }}
+                      />
+                      <InfoHint title="Nome con cui la squadra compare in tutta l'applicazione: elenco squadre, planner, rendicontazione e report. Deve essere univoco." />
+                    </Stack>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap", rowGap: 1 }}>
+                      <ColorPicker color={color} onChange={setColor} />
+                      <IconPickerTrigger
+                        icon={icon}
+                        color={color}
+                        open={iconOpen}
+                        onToggle={() => setIconOpen((v) => !v)}
+                        onRandom={() => setIcon(rand(TEAM_ICONS))}
+                      />
+                    </Stack>
+                  </Stack>
+                  <Collapse in={iconOpen}>
+                    <IconGrid
+                      icon={icon}
+                      color={color}
+                      onSelect={(teamIcon) => { setIcon(teamIcon); setIconOpen(false); }}
                     />
-                  )}
-                />
+                  </Collapse>
+                </Box>
 
-                <Autocomplete
-                  options={leaderOptions}
-                  getOptionLabel={(o) => o.employee_name}
-                  value={leaderOptions.find((m) => m.employee_id === teamLeader2Id) ?? null}
-                  onChange={(_, v) => setTeamLeader2Id(v?.employee_id ?? null)}
-                  size="small"
-                  clearOnEscape
-                  disabled={leaderOptions.length === 0}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      label="Team leader 2"
-                      placeholder={leaderOptions.length === 0 ? "Aggiungi prima un membro" : "Seleziona il leader 2"}
-                    />
-                  )}
-                />
+                {/* Referenti */}
+                <Box>
+                  <SectionLabel>Referenti</SectionLabel>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                      columnGap: 1.5,
+                      rowGap: 2,
+                    }}
+                  >
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <Autocomplete
+                        options={leaderOptions}
+                        getOptionLabel={(o) => o.employee_name}
+                        value={leaderOptions.find((m) => m.employee_id === teamLeaderId) ?? null}
+                        onChange={(_, v) => setTeamLeaderId(v?.employee_id ?? null)}
+                        size="small"
+                        clearOnEscape
+                        fullWidth
+                        disabled={leaderOptions.length === 0}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Team leader 1"
+                            placeholder={leaderOptions.length === 0 ? "Aggiungi prima un membro" : "Seleziona il leader 1"}
+                          />
+                        )}
+                      />
+                      <InfoHint title="Referente principale della squadra: viene evidenziato con il badge «Team leader 1» nell'elenco membri e compare come capo squadra nelle altre viste. Selezionabile solo fra i membri del team." />
+                    </Stack>
+
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <Autocomplete
+                        options={leaderOptions}
+                        getOptionLabel={(o) => o.employee_name}
+                        value={leaderOptions.find((m) => m.employee_id === teamLeader2Id) ?? null}
+                        onChange={(_, v) => setTeamLeader2Id(v?.employee_id ?? null)}
+                        size="small"
+                        clearOnEscape
+                        fullWidth
+                        disabled={leaderOptions.length === 0}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Team leader 2"
+                            placeholder={leaderOptions.length === 0 ? "Aggiungi prima un membro" : "Seleziona il leader 2"}
+                          />
+                        )}
+                      />
+                      <InfoHint title="Secondo referente della squadra, in affiancamento al leader 1: riceve il badge «Team leader 2» nell'elenco membri. Selezionabile solo fra i membri del team." />
+                    </Stack>
+
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <Autocomplete
+                        options={employeesQuery.data ?? []}
+                        getOptionLabel={(o) => o.full_name}
+                        value={(employeesQuery.data ?? []).find((e) => e.id === workloadOwnerId) ?? null}
+                        onChange={(_, v) => setWorkloadOwnerId(v?.id ?? null)}
+                        size="small"
+                        clearOnEscape
+                        fullWidth
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Owner carichi di lavoro"
+                            placeholder="Owner predefinito nel report carichi"
+                          />
+                        )}
+                      />
+                      <InfoHint title="Compare come OWNER nel riepilogo PDF del planner; se lasciato vuoto viene usato chi ha compilato il carico. Può essere un dipendente qualsiasi, anche esterno alla squadra." />
+                    </Stack>
+
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Autocomplete
+                        options={employeesQuery.data ?? []}
+                        getOptionLabel={(o) => o.full_name}
+                        value={(employeesQuery.data ?? []).find((e) => e.id === operationalReportingOwnerId) ?? null}
+                        onChange={(_, v) => setOperationalReportingOwnerId(v?.id ?? null)}
+                        size="small"
+                        clearOnEscape
+                        fullWidth
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Owner Rendicontazione Operativa"
+                            placeholder="Seleziona l'owner"
+                          />
+                        )}
+                      />
+                      <Tooltip
+                        title={
+                          operationalReportingNotificationsEnabled
+                            ? "Notifiche attive: l'owner riceve gli avvisi della rendicontazione operativa. Clicca per disattivarle."
+                            : "Notifiche disattivate: l'owner non riceve avvisi sulla rendicontazione operativa. Clicca per attivarle."
+                        }
+                      >
+                        <IconButton
+                          aria-label={operationalReportingNotificationsEnabled ? "Disattiva notifiche" : "Attiva notifiche"}
+                          aria-pressed={operationalReportingNotificationsEnabled}
+                          onClick={() => setOperationalReportingNotificationsEnabled((enabled) => !enabled)}
+                          sx={{
+                            width: 40,
+                            height: 40,
+                            flexShrink: 0,
+                            borderRadius: 1,
+                            border: "1px solid",
+                            borderColor: operationalReportingNotificationsEnabled ? "primary.main" : "divider",
+                            bgcolor: operationalReportingNotificationsEnabled
+                              ? (t) => alpha(t.palette.primary.main, 0.12)
+                              : "transparent",
+                            color: operationalReportingNotificationsEnabled ? "primary.main" : "text.secondary",
+                            "&:hover": {
+                              bgcolor: operationalReportingNotificationsEnabled
+                                ? (t) => alpha(t.palette.primary.main, 0.2)
+                                : "action.hover",
+                            },
+                          }}
+                        >
+                          <NotificationBellIcon enabled={operationalReportingNotificationsEnabled} />
+                        </IconButton>
+                      </Tooltip>
+                      <InfoHint title="Responsabile della rendicontazione operativa della squadra. Può essere un dipendente qualsiasi, anche esterno al team; con la campanella attiva riceve le relative notifiche." />
+                    </Stack>
+                  </Box>
+                </Box>
 
                 {saveError && <Alert severity="error">{saveError}</Alert>}
               </Stack>
@@ -510,14 +759,23 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
                           label="Responsabile"
                           size="small"
                           variant="outlined"
-                          sx={{ fontSize: 11, height: 20, fontWeight: 700, color: "#5c3d6e", borderColor: "#5c3d6e", bgcolor: "rgba(92,61,110,0.10)", flexShrink: 0 }}
+                          sx={{
+                            fontSize: 11,
+                            height: 20,
+                            fontWeight: 700,
+                            color: (t) => (t.palette.mode === "dark" ? "#c9a9e0" : "#5c3d6e"),
+                            borderColor: (t) => (t.palette.mode === "dark" ? "#c9a9e0" : "#5c3d6e"),
+                            bgcolor: (t) => alpha(t.palette.mode === "dark" ? "#c9a9e0" : "#5c3d6e", 0.12),
+                            flexShrink: 0,
+                          }}
                         />
                       )}
                       {!isLeader && !isLeader2 && !isResponsabile && (
                         <Chip
                           label="Collaboratore"
                           size="small"
-                          sx={{ fontSize: 11, height: 20, fontWeight: 600, color: "#4b5563", bgcolor: "rgba(107,114,128,0.10)", flexShrink: 0 }}
+                          variant="outlined"
+                          sx={{ fontSize: 11, height: 20, fontWeight: 600, color: "text.secondary", borderColor: "divider", bgcolor: "action.hover", flexShrink: 0 }}
                         />
                       )}
                     </Stack>
@@ -549,7 +807,7 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
                   variant="contained"
                   disabled={!addEmployee || addMemberMutation.isPending}
                   onClick={() => addEmployee && addMemberMutation.mutate({ tid: teamId, eid: addEmployee.id })}
-                  sx={{ whiteSpace: "nowrap", flexShrink: 0, textTransform: "none", bgcolor: "#007040", "&:hover": { bgcolor: "#005a32" } }}
+                  sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
                 >
                   Aggiungi
                 </Button>
@@ -562,16 +820,13 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
           <Button color="error" onClick={() => onRequestDelete(team)} sx={{ textTransform: "none" }}>
             Elimina squadra
           </Button>
-          {activeTab === 0 && (
-            <Button
-              variant="contained"
-              onClick={handleSave}
-              disabled={!name.trim() || updateMutation.isPending}
-              sx={{ textTransform: "none", bgcolor: "#007040", "&:hover": { bgcolor: "#005a32" } }}
-            >
-              {updateMutation.isPending ? "Salvataggio..." : "Salva modifiche"}
-            </Button>
-          )}
+          <Button
+            variant="contained"
+            onClick={handleSave}
+            disabled={!name.trim() || updateMutation.isPending}
+          >
+            {updateMutation.isPending ? "Salvataggio..." : "Salva modifiche"}
+          </Button>
         </DialogActions>
       </Dialog>
 
@@ -591,12 +846,14 @@ function TeamCreateDialog({ open, onClose }) {
   const [name, setName] = useState("");
   const [icon, setIcon] = useState(() => rand(TEAM_ICONS));
   const [color, setColor] = useState("#3b82f6");
+  const [iconOpen, setIconOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setName("");
     setIcon(rand(TEAM_ICONS));
     setColor("#3b82f6");
+    setIconOpen(false);
   }, [open]);
 
   const createMutation = useMutation({
@@ -612,23 +869,40 @@ function TeamCreateDialog({ open, onClose }) {
       <DialogTitle sx={{ fontWeight: 700 }}>Nuova squadra</DialogTitle>
       <DialogContent>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <TextField
-              label="Nome team"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              fullWidth
-              size="small"
-            />
-            <Tooltip title="Nome casuale">
-              <Button variant="outlined" size="small" onClick={() => setName(rand(TEAM_NAMES))} sx={{ minWidth: 42, px: 1.5, fontSize: 18 }}>
-                🎲
-              </Button>
-            </Tooltip>
-          </Stack>
+          <TextField
+            label="Nome team"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            fullWidth
+            size="small"
+            InputProps={{
+              endAdornment: (
+                <InputAdornment position="end">
+                  <Tooltip title="Nome casuale">
+                    <IconButton aria-label="Nome casuale" size="small" edge="end" onClick={() => setName(rand(TEAM_NAMES))} sx={{ fontSize: 16 }}>
+                      🎲
+                    </IconButton>
+                  </Tooltip>
+                </InputAdornment>
+              ),
+            }}
+          />
 
-          <IconPicker icon={icon} color={color} onChange={setIcon} />
-          <ColorPicker color={color} onChange={setColor} />
+          <Box>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap", rowGap: 1 }}>
+              <ColorPicker color={color} onChange={setColor} />
+              <IconPickerTrigger
+                icon={icon}
+                color={color}
+                open={iconOpen}
+                onToggle={() => setIconOpen((v) => !v)}
+                onRandom={() => setIcon(rand(TEAM_ICONS))}
+              />
+            </Stack>
+            <Collapse in={iconOpen}>
+              <IconGrid icon={icon} color={color} onSelect={(teamIcon) => { setIcon(teamIcon); setIconOpen(false); }} />
+            </Collapse>
+          </Box>
 
           <Stack direction="row" alignItems="center" spacing={1.5} sx={{ p: 1.5, borderRadius: 2, bgcolor: "action.hover" }}>
             <TeamAvatar team={{ name, icon, color }} size={36} />
@@ -646,7 +920,6 @@ function TeamCreateDialog({ open, onClose }) {
           variant="contained"
           onClick={() => createMutation.mutate({ name: name.trim(), icon, color })}
           disabled={!name.trim() || createMutation.isPending}
-          sx={{ textTransform: "none", bgcolor: "#007040", "&:hover": { bgcolor: "#005a32" } }}
         >
           {createMutation.isPending ? "Creazione..." : "Crea squadra"}
         </Button>

@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Employee
+from app.models import Assignment, Employee, OrgDepartment, OrgFunction, Team, TeamMember
 from app.schemas import EmployeeSyncResult
 from app.services.audit import record_audit_log
 from app.services.normalization import normalize_phone
@@ -22,6 +22,7 @@ class TmsEmployeeRecord:
     tms_role_description: str | None
     contract_type: str | None
     datore_lavoro: str | None
+    birth_date: date | None
     photo_jpeg: bytes | None
 
 
@@ -118,6 +119,7 @@ def fetch_employees_from_tms() -> list[TmsEmployeeRecord]:
         raise RuntimeError("TMS credentials missing. Configure TMS_USERNAME and TMS_PASSWORD in .env.")
 
     query = settings.resolved_tms_employee_query
+    excluded_tms_ids = settings.tms_excluded_employee_ids_set
     rows_by_tms_id: dict[str, TmsEmployeeRecord] = {}
 
     with pytds.connect(
@@ -134,35 +136,44 @@ def fetch_employees_from_tms() -> list[TmsEmployeeRecord]:
             rows = cursor.fetchall()
 
         for row in rows:
-            if len(row) == 8:
+            if len(row) == 9:
+                code, full_name, phone, role_code, role_description, contract_type_raw, datore_lavoro_code, birth_date_raw, photo_blob = row
+            elif len(row) == 8:
                 code, full_name, phone, role_code, role_description, contract_type_raw, datore_lavoro_code, photo_blob = row
+                birth_date_raw = None
             elif len(row) == 7:
                 code, full_name, phone, role_code, role_description, datore_lavoro_code, photo_blob = row
                 contract_type_raw = None
+                birth_date_raw = None
             elif len(row) == 6:
                 code, full_name, phone, role_code, role_description, photo_blob = row
                 datore_lavoro_code = None
                 contract_type_raw = None
+                birth_date_raw = None
             elif len(row) == 5:
                 full_name, phone, code, datore_lavoro_code, photo_blob = row
                 role_code = None
                 role_description = None
                 contract_type_raw = None
+                birth_date_raw = None
             elif len(row) == 4:
                 full_name, phone, code, photo_blob = row
                 role_code = None
                 role_description = None
                 datore_lavoro_code = None
                 contract_type_raw = None
+                birth_date_raw = None
             else:
                 raise RuntimeError(
-                    "Unexpected TMS employee row format: expected 4–8 columns including FOTO, "
+                    "Unexpected TMS employee row format: expected 4–9 columns including FOTO, "
                     f"got {len(row)}."
                 )
 
             if code is None:
                 continue
             tms_id = str(code).strip()
+            if tms_id in excluded_tms_ids:
+                continue
             candidate = TmsEmployeeRecord(
                 tms_id=tms_id,
                 full_name=str(full_name or "").strip(),
@@ -171,6 +182,7 @@ def fetch_employees_from_tms() -> list[TmsEmployeeRecord]:
                 tms_role_description=str(role_description).strip() if role_description else "ALTRO",
                 contract_type=str(contract_type_raw).strip() if contract_type_raw else None,
                 datore_lavoro=resolve_datore_lavoro(datore_lavoro_code),
+                birth_date=normalize_tms_date(birth_date_raw),
                 photo_jpeg=convert_tms_photo_to_jpeg(photo_blob),
             )
             current = rows_by_tms_id.get(tms_id)
@@ -248,6 +260,119 @@ def fetch_employee_expirations_from_tms(employee_code: str) -> list[TmsEmployeeE
     return records
 
 
+def fetch_all_employee_expirations_from_tms(employee_codes: list[str]) -> dict[str, list[TmsEmployeeExpirationRecord]]:
+    """Scadenze per un insieme di dipendenti in una sola connessione/query.
+
+    Evita il pattern una-connessione-per-dipendente dell'endpoint course-badges.
+    """
+    if not settings.tms_username or not settings.tms_password:
+        raise RuntimeError("TMS credentials missing. Configure TMS_USERNAME and TMS_PASSWORD in .env.")
+
+    codes = [code.strip() for code in employee_codes if code and code.strip()]
+    if not codes:
+        return {}
+
+    query = settings.resolve_tms_employee_expirations_bulk_query(codes)
+    grouped: dict[str, list[TmsEmployeeExpirationRecord]] = {}
+
+    with pytds.connect(
+        server=settings.tms_host,
+        database=settings.tms_database,
+        user=settings.tms_username,
+        password=settings.tms_password,
+        port=settings.tms_port,
+        timeout=30,
+        login_timeout=10,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            rows = cursor.fetchall()
+
+        for row in rows:
+            if len(row) != 7:
+                raise RuntimeError(
+                    "Unexpected TMS employee expirations row format: expected 7 columns, "
+                    f"got {len(row)}."
+                )
+            (
+                code,
+                type_code,
+                type_description,
+                expiration_date,
+                issue_date,
+                issuing_authority,
+                document_number,
+            ) = row
+            if code is None:
+                continue
+            normalized_code = str(code).strip()
+            grouped.setdefault(normalized_code, []).append(
+                TmsEmployeeExpirationRecord(
+                    code=normalized_code,
+                    type_code=str(type_code).strip() if type_code else None,
+                    type_description=str(type_description).strip() if type_description else None,
+                    expiration_date=normalize_tms_date(expiration_date),
+                    issue_date=normalize_tms_date(issue_date),
+                    issuing_authority=str(issuing_authority).strip() if issuing_authority else None,
+                    document_number=str(document_number).strip() if document_number else None,
+                )
+            )
+
+    return grouped
+
+
+def _detach_inactive_employee_from_org_and_teams(db: Session, employee: Employee) -> None:
+    memberships = db.scalars(select(TeamMember).where(TeamMember.employee_id == employee.id)).all()
+    for membership in memberships:
+        db.delete(membership)
+
+    teams = db.scalars(
+        select(Team).where(
+            (Team.team_leader_employee_id == employee.id)
+            | (Team.team_leader_2_employee_id == employee.id)
+            | (Team.reports_to_employee_id == employee.id)
+            | (Team.operational_reporting_owner_employee_id == employee.id)
+        )
+    ).all()
+    for team in teams:
+        if team.team_leader_employee_id == employee.id:
+            team.team_leader_employee_id = None
+        if team.team_leader_2_employee_id == employee.id:
+            team.team_leader_2_employee_id = None
+        if team.reports_to_employee_id == employee.id:
+            team.reports_to_employee_id = None
+        if team.operational_reporting_owner_employee_id == employee.id:
+            team.operational_reporting_owner_employee_id = None
+
+    reports = db.scalars(select(Employee).where(Employee.manager_employee_id == employee.id)).all()
+    for report in reports:
+        report.manager_employee_id = None
+        report.manager_name = None
+
+    functions = db.scalars(
+        select(OrgFunction).where(OrgFunction.responsible_employee_id == employee.id)
+    ).all()
+    for org_function in functions:
+        org_function.responsible_employee_id = None
+
+    departments = db.scalars(
+        select(OrgDepartment).where(OrgDepartment.responsible_employee_id == employee.id)
+    ).all()
+    for org_department in departments:
+        org_department.responsible_employee_id = None
+
+    # Le allocazioni Planner future non hanno più senso per un dipendente disattivato dal TMS;
+    # quelle passate restano invariate come storico.
+    future_assignments = db.scalars(
+        select(Assignment).where(
+            Assignment.employee_id == employee.id,
+            Assignment.work_date >= date.today(),
+        )
+    ).all()
+    for assignment in future_assignments:
+        db.delete(assignment)
+
+
 def sync_employees(db: Session) -> EmployeeSyncResult:
     records = fetch_employees_from_tms()
     existing_total = db.scalar(select(func.count()).select_from(Employee)) or 0
@@ -280,6 +405,7 @@ def sync_employees(db: Session) -> EmployeeSyncResult:
                 tms_role_description=record.tms_role_description,
                 contract_type=record.contract_type,
                 datore_lavoro=record.datore_lavoro,
+                birth_date=record.birth_date,
                 photo_jpeg=record.photo_jpeg,
                 is_active=True,
             )
@@ -297,6 +423,8 @@ def sync_employees(db: Session) -> EmployeeSyncResult:
         employee.tms_role_description = record.tms_role_description
         employee.contract_type = record.contract_type
         employee.datore_lavoro = record.datore_lavoro
+        if record.birth_date is not None:
+            employee.birth_date = record.birth_date
         if record.photo_jpeg:
             employee.photo_jpeg = record.photo_jpeg
         employee.is_active = True
@@ -307,6 +435,7 @@ def sync_employees(db: Session) -> EmployeeSyncResult:
         employees_to_deactivate = db.scalars(select(Employee).where(~Employee.tms_id.in_(tms_ids), Employee.is_active.is_(True))).all()
         for employee in employees_to_deactivate:
             employee.is_active = False
+            _detach_inactive_employee_from_org_and_teams(db, employee)
             deactivated += 1
 
     synced_at = datetime.now(timezone.utc)

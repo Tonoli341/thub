@@ -1,3 +1,4 @@
+import hmac
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request, status
@@ -14,18 +15,66 @@ from app.services.security import create_access_token
 
 
 PORTAL_DISPLAY_NAME = "Portale Rendicontazioni"
+PLANNER_ACCESS_LEVELS = {
+    "self_read",
+    "team_read",
+    "team_write",
+    "all_read",
+    "all_write",
+}
+
+
+def planner_level_can_write(level: str | None) -> bool:
+    return level in {"team_write", "all_write"}
+
+
+def planner_level_scope(level: str | None) -> str | None:
+    if level == "self_read":
+        return "self"
+    if level in {"team_read", "team_write"}:
+        return "team"
+    if level in {"all_read", "all_write"}:
+        return "all"
+    return None
+
+
+def resolve_planner_access_level(employee: Employee | None, effective_role: str, *, is_portal: bool = False) -> str | None:
+    if is_portal:
+        return None
+    if effective_role == "admin":
+        return "all_write"
+    if employee is None:
+        return None
+    stored_level = employee.planner_access_level
+    if stored_level in PLANNER_ACCESS_LEVELS:
+        return stored_level
+    if effective_role == "hr":
+        return "all_read"
+    if effective_role == "manager":
+        return "team_read"
+    return "self_read"
 
 
 def is_portal_user(user: User) -> bool:
     return bool(settings.app_username.strip()) and user.username.lower() == settings.app_username.strip().lower()
 
 
-def _compute_effective_role(db: Session, linked_employee: Employee | None, is_system_admin: bool) -> tuple[str, bool]:
+def _compute_effective_role(
+    db: Session,
+    linked_employee: Employee | None,
+    *,
+    force_admin: bool = False,
+    fallback_role: UserRole | None = None,
+) -> tuple[str, bool]:
     """Return (effective_role, is_manager)."""
-    if is_system_admin:
+    if force_admin:
         return "admin", False
 
     if linked_employee is None:
+        if fallback_role == UserRole.admin:
+            return "admin", False
+        if fallback_role == UserRole.manager:
+            return "manager", True
         return "collaboratore", False
 
     app_role = (linked_employee.app_role or "").upper()
@@ -53,22 +102,44 @@ def _build_permission_fields(
 ) -> dict:
     """Compute all permission-related fields for an AuthUserRead."""
     is_admin_or_hr = effective_role in ("admin", "hr")
-    is_manager_or_above = effective_role in ("admin", "hr", "manager")
+    timesheets_enabled = bool(employee and employee.config_can_access_timesheets)
+    organization_enabled = bool(employee and employee.config_can_access_organization)
+    workloads_enabled = bool(employee is None or employee.config_can_access_workloads)
+    if effective_role == "admin" or employee is None:
+        expirations_scope = "all"
+    else:
+        stored_expirations_scope = employee.config_expirations_scope
+        expirations_scope = stored_expirations_scope if stored_expirations_scope in {"none", "reports", "all"} else (
+            "all" if employee.config_can_access_expirations else "none"
+        )
+    expirations_enabled = expirations_scope != "none"
+    deliveries_enabled = bool(employee and employee.config_can_access_deliveries)
 
     if is_portal:
         can_access_timesheets = True
         can_access_planning = False
         can_access_calendar = False
         can_access_organization = False
+        can_access_workloads = False
+        can_access_expirations = False
+        can_access_deliveries = False
         timesheets_scope = "all"
     else:
-        can_access_timesheets = is_manager_or_above
-        can_access_planning = is_manager_or_above
+        can_access_timesheets = effective_role == "admin" or (
+            effective_role in ("hr", "manager") and timesheets_enabled
+        )
+        planner_access_level = resolve_planner_access_level(employee, effective_role, is_portal=is_portal)
+        can_access_planning = planner_access_level is not None
         can_access_calendar = True
-        can_access_organization = is_admin_or_hr
+        can_access_organization = effective_role in ("admin", "hr") or (
+            effective_role == "manager" and organization_enabled
+        )
+        can_access_workloads = effective_role == "admin" or workloads_enabled
+        can_access_expirations = effective_role == "admin" or expirations_enabled
+        can_access_deliveries = is_admin_or_hr or deliveries_enabled
         timesheets_scope = "all" if is_admin_or_hr else "team"
 
-    planner_scope = (employee.planner_scope or "self") if employee else "all"
+    planner_access_level = resolve_planner_access_level(employee, effective_role, is_portal=is_portal)
 
     if employee is None:
         absence_scope = "all"
@@ -86,18 +157,33 @@ def _build_permission_fields(
         can_access_calendar=can_access_calendar,
         can_access_organization=can_access_organization,
         can_access_timesheets=can_access_timesheets,
+        can_access_workloads=can_access_workloads,
+        can_access_expirations=can_access_expirations,
+        expirations_scope=expirations_scope,
+        can_access_deliveries=can_access_deliveries,
         timesheets_scope=timesheets_scope,
-        planner_scope=planner_scope,
+        planner_access_level=planner_access_level,
         absence_scope=absence_scope,
+        can_edit_absence_balances=(
+            is_admin_or_hr
+            and bool(employee and employee.absence_can_edit_balances)
+        ),
     )
 
 
 def build_auth_user_read(db: Session, user: User) -> AuthUserRead:
     linked_employee = get_linked_tms_employee(db, user)
     portal_user = is_portal_user(user)
-    is_system_admin = portal_user or user.role == UserRole.admin
 
-    effective_role, is_manager = _compute_effective_role(db, linked_employee, is_system_admin)
+    # Per gli account collegati a un dipendente, ruolo applicativo e gerarchia
+    # del dipendente sono la fonte autorevole. users.role resta un fallback per
+    # gli account senza collegamento; l'utenza tecnica del portale fa eccezione.
+    effective_role, is_manager = _compute_effective_role(
+        db,
+        linked_employee,
+        force_admin=portal_user,
+        fallback_role=user.role,
+    )
     perms = _build_permission_fields(db, linked_employee, effective_role, is_manager, is_portal=portal_user)
 
     return AuthUserRead(
@@ -116,7 +202,7 @@ def build_auth_user_read(db: Session, user: User) -> AuthUserRead:
 
 def build_impersonation_view(db: Session, employee: Employee) -> AuthUserRead:
     """Compute the AuthUserRead a given employee would have if they logged in."""
-    effective_role, is_manager = _compute_effective_role(db, employee, is_system_admin=False)
+    effective_role, is_manager = _compute_effective_role(db, employee)
     perms = _build_permission_fields(db, employee, effective_role, is_manager, is_portal=False)
 
     now = datetime.now(timezone.utc)
@@ -160,7 +246,7 @@ def authenticate_with_env_credentials(data: AuthLoginRequest, request: Request, 
     if username.lower() != configured_username.lower():
         return None
 
-    if data.password != settings.app_password:
+    if not hmac.compare_digest(data.password.encode("utf-8"), settings.app_password.encode("utf-8")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenziali non valide.")
 
     user = ensure_portal_user(db)

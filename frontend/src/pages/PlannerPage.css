@@ -16,13 +16,14 @@
 .planner-topbar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px 24px;
+  gap: 8px 16px;
+  padding: 14px 20px;
   border: 1px solid var(--pl-border);
   border-radius: 18px;
   box-shadow: var(--pl-shadow);
   background: var(--pl-surface);
   flex-wrap: wrap;
+  container-type: inline-size;
 }
 
 .planner-topbar-left {
@@ -30,6 +31,14 @@
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+}
+
+/* Forced line break between date nav and filters/actions; enabled below the
+   single-row breakpoint so the collapse point is deterministic. */
+.planner-topbar-break {
+  display: none;
+  flex-basis: 100%;
+  height: 0;
 }
 
 .planner-title-badge {
@@ -52,8 +61,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 240px;
 }
 
 .planner-nav-btn {
@@ -95,25 +104,87 @@
   overflow: hidden;
   text-overflow: ellipsis;
   text-transform: capitalize;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-.planner-topbar-right {
+/* Secondary controls: view toggles + filter selects.
+   nowrap while sharing a row with other groups: the group moves to a new
+   row as a whole instead of spilling its controls one by one. */
+.planner-topbar-filters {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: nowrap;
   flex-shrink: 0;
-  flex-wrap: wrap;
+}
+
+/* Primary actions, visually separated from the filters */
+.planner-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 14px;
+  border-left: 1px solid var(--pl-border);
+}
+
+.planner-role-filter {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .planner-role-filter .MuiOutlinedInput-root {
   border-radius: 12px;
   height: 36px;
-  min-width: 160px;
+  min-width: 150px;
+  /* con la selezione multipla delle squadre il testo lungo va troncato,
+     non deve allargare la topbar */
+  max-width: 260px;
   font-size: 14px;
 }
 
 .planner-role-filter .MuiOutlinedInput-notchedOutline {
   border-color: var(--pl-border);
+}
+
+/* Ricerca dipendente: stessa altezza/raggio degli altri filtri della topbar */
+.planner-search-filter {
+  /* può restringersi fino a ~130px prima di mandare a capo la riga filtri */
+  flex: 0 1 200px;
+  min-width: 0;
+}
+
+.planner-search-filter .MuiOutlinedInput-root {
+  border-radius: 12px;
+  height: 36px;
+  width: 100%;
+  min-width: 130px;
+  font-size: 14px;
+  padding-right: 6px;
+}
+
+.planner-search-filter .MuiOutlinedInput-notchedOutline {
+  border-color: var(--pl-border);
+}
+
+.planner-search-icon {
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.planner-search-filter .MuiIconButton-root {
+  font-size: 12px;
+  color: var(--pl-subtle);
+  width: 22px;
+  height: 22px;
+}
+
+.planner-view-toggle {
+  flex-shrink: 0;
 }
 
 .planner-view-toggle .MuiToggleButton-root {
@@ -133,6 +204,70 @@
   text-transform: none !important;
   color: var(--pl-subtle) !important;
   white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Mid width: filters + actions drop onto their own row (filters left,
+   actions right), keeping the title + date nav alone on the first row. */
+@container (max-width: 1700px) {
+  .planner-topbar-break {
+    display: block;
+  }
+
+  .planner-topbar-filters {
+    flex: 1 1 auto;
+  }
+}
+
+/* Narrow width: filters and actions each take a full row and may wrap
+   internally; the vertical divider becomes a horizontal one. */
+@container (max-width: 1320px) {
+  .planner-topbar-filters,
+  .planner-topbar-actions {
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    margin-left: 0;
+  }
+
+  .planner-topbar-actions {
+    padding-left: 0;
+    border-left: none;
+    padding-top: 8px;
+    border-top: 1px solid var(--pl-border);
+  }
+}
+
+/* Phone width: date nav gets its own row; selects, toggles and action
+   buttons stretch to share the available space instead of overflowing. */
+@container (max-width: 620px) {
+  .planner-date-nav {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .planner-role-filter,
+  .planner-search-filter {
+    flex: 1 1 140px;
+  }
+
+  .planner-role-filter .MuiOutlinedInput-root,
+  .planner-search-filter .MuiOutlinedInput-root {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .planner-view-toggle {
+    flex: 1 1 auto;
+    display: flex;
+  }
+
+  .planner-view-toggle .MuiToggleButton-root {
+    flex: 1;
+  }
+
+  .planner-copy-btn {
+    flex: 1 1 auto !important;
+  }
 }
 
 /* ── Shell (main timeline container) ───────────────────────────────────── */
@@ -142,6 +277,29 @@
   box-shadow: var(--pl-shadow);
   background: var(--pl-surface);
   overflow: hidden;
+  max-height: calc(100vh - 220px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.planner-header-row {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--pl-border);
+}
+
+.planner-header-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.planner-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* ── Layout: sticky name col + scrollable tracks ───────────────────────── */
@@ -156,12 +314,66 @@
   border-right: 1px solid var(--pl-border);
   background: var(--pl-surface);
   z-index: 2;
+  position: relative;
+}
+
+.planner-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.planner-resize-handle:hover {
+  background: rgba(0, 112, 64, 0.18);
+}
+
+[data-theme="dark"] .planner-resize-handle:hover {
+  background: rgba(0, 200, 100, 0.2);
 }
 
 .planner-name-header-cell {
+  flex-shrink: 0;
+  width: var(--pl-name-w);
   height: var(--pl-hdr-h);
-  border-bottom: 1px solid var(--pl-border);
+  border-right: 1px solid var(--pl-border);
   background: #fbfbfc;
+  z-index: 4;
+}
+
+.planner-header-collapse-btn {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--pl-border);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--pl-subtle);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.planner-header-collapse-btn:hover {
+  background: rgba(0, 112, 64, 0.12);
+  color: var(--pl-text);
+}
+
+[data-theme="dark"] .planner-header-collapse-btn {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .planner-header-collapse-btn:hover {
+  background: rgba(0, 200, 100, 0.18);
 }
 
 .planner-name-cell {
@@ -197,6 +409,66 @@
   border-bottom: none;
 }
 
+.planner-team-header {
+  cursor: pointer;
+  user-select: none;
+  overflow: hidden;
+}
+
+.planner-team-header-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.planner-team-header-name {
+  min-width: 0;
+  flex: 1;
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.planner-team-header-count {
+  flex-shrink: 0;
+  font-size: 10px !important;
+  color: var(--pl-faded);
+  line-height: 1 !important;
+}
+
+.planner-team-collapse-btn {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.65);
+  color: var(--pl-subtle);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.14s ease, background 0.14s ease;
+}
+
+.planner-team-collapse-btn:hover {
+  background: rgba(255,255,255,0.92);
+}
+
+.planner-team-collapse-btn.is-collapsed {
+  transform: rotate(-90deg);
+}
+
 .planner-emp-name {
   font-size: 12.5px !important;
   font-weight: 600 !important;
@@ -218,19 +490,20 @@
 /* ── Scrollable area ────────────────────────────────────────────────────── */
 .planner-scroll {
   flex: 1;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  min-width: 0;
 }
 
 /* ── Hour header ────────────────────────────────────────────────────────── */
 .planner-hour-header {
   position: relative;
   height: var(--pl-hdr-h);
-  border-bottom: 2px solid var(--pl-border);
   background: #fbfbfc;
   flex-shrink: 0;
   user-select: none;
+  z-index: 3;
+  box-shadow: 0 1px 0 rgba(226, 226, 229, 0.9);
 }
 
 .planner-hour-label {
@@ -249,6 +522,17 @@
   pointer-events: none;
 }
 
+.planner-half-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 6px;
+  background: var(--pl-faded);
+  opacity: 0.5;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 /* ── Track row ──────────────────────────────────────────────────────────── */
 .planner-track {
   position: relative;
@@ -262,6 +546,10 @@
   background-image: repeating-linear-gradient(
     to right,
     transparent 0px,
+    transparent 31px,
+    rgba(226,226,229,0.6) 31px,
+    rgba(226,226,229,0.6) 32px,
+    transparent 32px,
     transparent 63px,
     var(--pl-border) 63px,
     var(--pl-border) 64px
@@ -286,6 +574,7 @@
   position: absolute;
   top: 5px;
   bottom: 5px;
+  z-index: 3;
   border-radius: 5px;
   display: flex;
   align-items: center;
@@ -309,6 +598,18 @@
   background: rgba(245,158,11,0.08);
   border: 1.5px dashed rgba(217,119,6,0.35);
   color: #78350f;
+}
+
+.planner-absence.altro {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(220,38,38,0.06),
+    rgba(220,38,38,0.06) 4px,
+    rgba(220,38,38,0.02) 4px,
+    rgba(220,38,38,0.02) 10px
+  );
+  border: 1.5px dashed rgba(220,38,38,0.35);
+  color: #991b1b;
 }
 
 .planner-absence-label {
@@ -368,6 +669,93 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: rgba(120, 53, 15, 0.9);
+}
+
+/* ── Segmented block (Mattina / Pausa / Pomeriggio) ────────────────────── */
+.planner-block-body--segmented {
+  flex-direction: row !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  align-items: stretch !important;
+}
+
+.planner-segment {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  min-width: 0;
+  padding: 1px 3px;
+}
+
+.planner-segment-work {
+  /* transparent — inherits the block's background */
+}
+
+.planner-segment-break {
+  position: relative;
+  border-left: 1px dashed rgba(146, 64, 14, 0.5);
+  border-right: 1px dashed rgba(146, 64, 14, 0.5);
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(245,158,11,0.28) 0 6px,
+    rgba(245,158,11,0.12) 6px 12px
+  );
+  flex-shrink: 0;
+}
+
+.planner-segment-break.is-editable {
+  overflow: visible;
+}
+
+.planner-break-drag-zone {
+  position: absolute;
+  inset: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+
+.planner-break-drag-zone:active {
+  cursor: grabbing;
+}
+
+.planner-break-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ew-resize;
+}
+
+.planner-break-handle-left {
+  left: 0;
+}
+
+.planner-break-handle-right {
+  right: 0;
+}
+
+.planner-break-handle::after {
+  content: "";
+  width: 2px;
+  height: 12px;
+  border-radius: 2px;
+  background: rgba(120, 53, 15, 0.75);
+}
+
+.planner-segment-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.5;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 /* resize handles */
@@ -608,10 +996,18 @@
   background: #1f2937;
 }
 
+[data-theme="dark"] .planner-hour-header {
+  box-shadow: 0 1px 0 rgba(17, 24, 39, 0.9);
+}
+
 [data-theme="dark"] .planner-track {
   background-image: repeating-linear-gradient(
     to right,
     transparent 0px,
+    transparent 31px,
+    rgba(75,85,99,0.5) 31px,
+    rgba(75,85,99,0.5) 32px,
+    transparent 32px,
     transparent 63px,
     #374151 63px,
     #374151 64px
@@ -635,6 +1031,18 @@
   color: #f5c870;
 }
 
+[data-theme="dark"] .planner-absence.altro {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(220,38,38,0.12),
+    rgba(220,38,38,0.12) 4px,
+    rgba(220,38,38,0.04) 4px,
+    rgba(220,38,38,0.04) 10px
+  );
+  border-color: rgba(220,38,38,0.35);
+  color: #fca5a5;
+}
+
 [data-theme="dark"] .planner-nav-btn:hover {
   border-color: #4b5563;
 }
@@ -650,4 +1058,14 @@
 
 [data-theme="dark"] .planner-break-label {
   color: rgba(250,185,90,0.9);
+}
+
+[data-theme="dark"] .planner-segment-break {
+  border-left-color: rgba(200,130,60,0.4);
+  border-right-color: rgba(200,130,60,0.4);
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(245,158,11,0.12) 0 6px,
+    rgba(245,158,11,0.04) 6px 12px
+  );
 }

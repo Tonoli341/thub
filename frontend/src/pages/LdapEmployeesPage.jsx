@@ -1,15 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   MenuItem,
   Paper,
-  Select,
   Stack,
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -17,7 +18,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 
-import { getEmployeeOptions, getLdapEmployees, updateLdapEmployeeTmsLink } from "../api";
+import { getEmployeeOptions, getLdapEmployees, unlockLdapEmployeeLogin, updateLdapEmployeeTmsLink } from "../api";
 
 function formatDateTime(value) {
   if (!value) {
@@ -31,7 +32,7 @@ function roleIcon(role) {
     return "💻";
   }
   if (role === "MAGAZZINIERE") {
-    return "🚜";
+    return "📦";
   }
   if (role === "AUTISTA") {
     return "🚚";
@@ -45,8 +46,11 @@ function roleIcon(role) {
   return "👤";
 }
 
-function LinkableRow({ employee, employeeOptions, onSave, isSaving }) {
+function LinkableRow({ employee, employeeOptions, onSave, isSaving, onUnlock, isUnlocking }) {
   const [selectedTmsEmployeeId, setSelectedTmsEmployeeId] = useState(employee.tms_employee_id || "");
+
+  const selectedOption =
+    employeeOptions.find((option) => option.id === selectedTmsEmployeeId) || null;
 
   return (
     <TableRow>
@@ -64,25 +68,31 @@ function LinkableRow({ employee, employeeOptions, onSave, isSaving }) {
       <TableCell>{employee.email || "-"}</TableCell>
       <TableCell>{formatDateTime(employee.first_login_at)}</TableCell>
       <TableCell>{formatDateTime(employee.last_login_at)}</TableCell>
-      <TableCell sx={{ minWidth: 360 }}>
+      <TableCell sx={{ minWidth: 320, maxWidth: 420 }}>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ xs: "stretch", md: "center" }}>
-          <Select
+          <Autocomplete
             size="small"
             fullWidth
-            value={selectedTmsEmployeeId}
-            onChange={(event) => setSelectedTmsEmployeeId(event.target.value)}
-          >
-            <MenuItem value="">Nessun collegamento</MenuItem>
-            {employeeOptions.map((option) => (
-              <MenuItem key={option.id} value={option.id}>
+            options={employeeOptions}
+            value={selectedOption}
+            onChange={(event, newValue) => setSelectedTmsEmployeeId(newValue ? newValue.id : "")}
+            getOptionLabel={(option) => option.full_name || ""}
+            isOptionEqualToValue={(option, value) => option.id === value.id}
+            noOptionsText="Nessun dipendente trovato"
+            renderOption={(props, option) => (
+              <MenuItem {...props} key={option.id}>
                 {roleIcon(option.tms_role_description)} {option.full_name} ({option.tms_id})
               </MenuItem>
-            ))}
-          </Select>
+            )}
+            renderInput={(params) => (
+              <TextField {...params} placeholder="Cerca dipendente..." />
+            )}
+          />
           <Button
             variant="outlined"
             onClick={() => onSave(employee.id, selectedTmsEmployeeId)}
             disabled={isSaving}
+            sx={{ flexShrink: 0 }}
           >
             Salva
           </Button>
@@ -95,7 +105,38 @@ function LinkableRow({ employee, employeeOptions, onSave, isSaving }) {
           </Box>
         )}
       </TableCell>
-      <TableCell>{employee.is_active ? "Attivo" : "Inattivo"}</TableCell>
+      <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
+        <Stack spacing={0.5} alignItems="center">
+          {employee.is_login_locked && (
+            <Typography variant="caption" sx={{ color: "#d97706", fontWeight: 600 }}>
+              🔒 Bloccato
+            </Typography>
+          )}
+          <Button
+            size="small"
+            variant={employee.is_login_locked ? "contained" : "text"}
+            color={employee.is_login_locked ? "warning" : "inherit"}
+            onClick={() => onUnlock(employee.id)}
+            disabled={isUnlocking}
+            title="Azzera i tentativi di login falliti (rate limit) per questo utente"
+          >
+            Sblocca
+          </Button>
+        </Stack>
+      </TableCell>
+      <TableCell align="center">
+        <Box
+          title={employee.is_active ? "Attivo" : "Inattivo"}
+          sx={{
+            width: 12,
+            height: 12,
+            borderRadius: "50%",
+            mx: "auto",
+            bgcolor: employee.is_active ? "#22c55e" : "#9e9e9e",
+            boxShadow: employee.is_active ? "0 0 4px rgba(34,197,94,0.7)" : "none",
+          }}
+        />
+      </TableCell>
     </TableRow>
   );
 }
@@ -117,6 +158,13 @@ export default function LdapEmployeesPage() {
   const linkMutation = useMutation({
     mutationFn: ({ ldapEmployeeId, tmsEmployeeId }) =>
       updateLdapEmployeeTmsLink(ldapEmployeeId, { tms_employee_id: tmsEmployeeId || null }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ldap-employees"] });
+    },
+  });
+
+  const unlockMutation = useMutation({
+    mutationFn: (ldapEmployeeId) => unlockLdapEmployeeLogin(ldapEmployeeId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ldap-employees"] });
     },
@@ -144,36 +192,48 @@ export default function LdapEmployeesPage() {
           {ldapEmployeesQuery.error && <Alert severity="error">{ldapEmployeesQuery.error.message}</Alert>}
           {employeeOptionsQuery.error && <Alert severity="error">{employeeOptionsQuery.error.message}</Alert>}
           {linkMutation.error && <Alert severity="error">{linkMutation.error.message}</Alert>}
+          {unlockMutation.error && <Alert severity="error">{unlockMutation.error.message}</Alert>}
+          {unlockMutation.data && (
+            <Alert severity="success" onClose={() => unlockMutation.reset()}>
+              Accesso sbloccato per <strong>{unlockMutation.data.username}</strong>
+              {unlockMutation.data.cleared_keys === 0 && " (non risultava bloccato)"}.
+            </Alert>
+          )}
 
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Username</TableCell>
-                <TableCell>Nome visualizzato</TableCell>
-                <TableCell>Email</TableCell>
-                <TableCell>Primo login</TableCell>
-                <TableCell>Ultimo login</TableCell>
-                <TableCell>Dipendente TMS</TableCell>
-                <TableCell>Stato</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {(ldapEmployeesQuery.data ?? []).map((employee) => (
-                <LinkableRow
-                  key={employee.id}
-                  employee={employee}
-                  employeeOptions={employeeOptionsQuery.data ?? []}
-                  isSaving={linkMutation.isPending}
-                  onSave={(ldapEmployeeId, tmsEmployeeId) => linkMutation.mutate({ ldapEmployeeId, tmsEmployeeId })}
-                />
-              ))}
-              {!ldapEmployeesQuery.isLoading && !ldapEmployeesQuery.data?.length && (
+          <TableContainer sx={{ overflowX: "auto" }}>
+            <Table size="small" sx={{ minWidth: 900 }}>
+              <TableHead>
                 <TableRow>
-                  <TableCell colSpan={7}>Nessun dipendente LDAP disponibile.</TableCell>
+                  <TableCell>Username</TableCell>
+                  <TableCell>Nome visualizzato</TableCell>
+                  <TableCell>Email</TableCell>
+                  <TableCell>Primo login</TableCell>
+                  <TableCell>Ultimo login</TableCell>
+                  <TableCell>Dipendente TMS</TableCell>
+                  <TableCell align="center">Accesso</TableCell>
+                  <TableCell align="center">Stato</TableCell>
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
+              </TableHead>
+              <TableBody>
+                {(ldapEmployeesQuery.data ?? []).map((employee) => (
+                  <LinkableRow
+                    key={employee.id}
+                    employee={employee}
+                    employeeOptions={employeeOptionsQuery.data ?? []}
+                    isSaving={linkMutation.isPending}
+                    onSave={(ldapEmployeeId, tmsEmployeeId) => linkMutation.mutate({ ldapEmployeeId, tmsEmployeeId })}
+                    isUnlocking={unlockMutation.isPending && unlockMutation.variables === employee.id}
+                    onUnlock={(ldapEmployeeId) => unlockMutation.mutate(ldapEmployeeId)}
+                  />
+                ))}
+                {!ldapEmployeesQuery.isLoading && !ldapEmployeesQuery.data?.length && (
+                  <TableRow>
+                    <TableCell colSpan={8}>Nessun dipendente LDAP disponibile.</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
         </Stack>
       </Paper>
     </Stack>
