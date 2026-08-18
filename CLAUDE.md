@@ -15,7 +15,10 @@ Promemoria dei punti che sbagliano più spesso gli agenti su T-Hub:
   ```bash
   cd backend  && ./.venv/bin/python -m pytest -q && ./.venv/bin/ruff check app tests
   cd frontend && node --test src/pages/ && npm run build
+  ./scripts/smoke.sh          # tutte le sezioni rispondono (evita il Connection Refused)
   ```
+- **Smoke obbligatorio** dopo ogni modifica a route, import, router o pagine: i test
+  unitari montano l'app in memoria e non si accorgono che il servizio reale è caduto.
 - **Non committare e non pushare** senza richiesta esplicita.
 - **Codice scollegato**: l'inventario è in §7 di AGENTS.md — non cancellare nulla di
   iniziativa, e aggiorna la tabella se colleghi o rimuovi una voce.

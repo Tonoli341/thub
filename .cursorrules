@@ -18,6 +18,9 @@ Punti critici:
 - Commenti e testi UI in italiano.
 - Convalida: backend `./.venv/bin/python -m pytest -q` e `./.venv/bin/ruff check app tests`;
   frontend `node --test src/pages/` e `npm run build`. Docker non è accessibile dalla shell.
+- Smoke obbligatorio dopo modifiche a route/import/router/pagine: `./scripts/smoke.sh`
+  verifica che tutte le sezioni rispondano. I test unitari montano l'app in memoria e non
+  intercettano il Connection Refused causato da un import rotto che uccide uvicorn.
 - Non committare e non pushare senza richiesta esplicita.
 - L'inventario del codice scollegato (unwired) e' nella sezione 7 di AGENTS.md: non
   cancellare nulla di iniziativa; se colleghi o rimuovi una voce, aggiorna la tabella.

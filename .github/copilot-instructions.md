@@ -16,5 +16,6 @@ Sintesi:
 - Date/orari: `services/timeutils.today_local()` (Europe/Rome), mai `date.today()`.
 - Frontend: ogni chiamata HTTP passa da `src/api.js`.
 - Convalida: `pytest -q` + `ruff check app tests` (backend), `node --test src/pages/` +
-  `npm run build` (frontend).
+  `npm run build` (frontend), poi `./scripts/smoke.sh` per verificare che tutte le sezioni
+  rispondano — e' il controllo che intercetta il Connection Refused da import rotto.
 - Codice scollegato (unwired): inventario in §7 di AGENTS.md; non cancellarlo di iniziativa.

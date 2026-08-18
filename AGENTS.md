@@ -203,26 +203,67 @@ qui vale più dell'eleganza del singolo file.
 > `/var/run/docker.sock`). Usa il virtualenv già presente in `backend/.venv`.
 > Non tentare `docker compose up/restart`: l'ambiente è condiviso e monta un DB reale.
 
-### Backend
+La convalida ha **due livelli** e servono entrambi. I test unitari montano l'app in
+memoria: non passano dal proxy e non si accorgono mai che il servizio reale è caduto.
+Lo smoke test copre proprio quel buco.
+
+### 5.1 Test — obbligatori sempre
+
 ```bash
 cd /opt/thub/backend
-./.venv/bin/python -m pytest -q          # atteso: 91 passed (~36s)
+./.venv/bin/python -m pytest -q          # atteso: 268 passed, 1 skipped (~43s)
 ./.venv/bin/ruff check app tests         # deve chiudere pulito
-```
 
-### Frontend
-```bash
 cd /opt/thub/frontend
 node --test src/pages/                   # atteso: 7 pass
 npm run build                            # deve completare senza errori
 ```
 
-### Applicazione viva (solo se i container girano)
+### 5.2 Smoke — tutte le sezioni devono rispondere
+
+**Questo è il controllo che evita il "Connection Refused".** Un import rotto, un
+decoratore sbagliato o un router non registrato non fanno fallire i test funzionali —
+fanno morire uvicorn all'avvio. nginx resta senza upstream e l'utente riceve un errore di
+connessione, non un 500. Nessuno se ne accorge finché non apre il browser.
+
+**a) Smoke offline — gira sempre, incluso in CI.** È dentro `pytest`, in
+[backend/tests/test_smoke_routes.py](backend/tests/test_smoke_routes.py) (174 test
+parametrici):
+
+| Test | Cosa garantisce |
+|---|---|
+| `test_app_si_importa_e_monta_le_route` | L'app si importa e monta >150 route. Se fallisce, **in produzione uvicorn non parte**: è letteralmente la causa del Connection Refused |
+| `test_ogni_router_e_registrato` | Ogni modulo di `app/api/` compare tra le route montate. Un router dimenticato in `api/__init__.py` è una sezione che risponde 404 |
+| `test_ogni_sezione_get_risponde` | Bussa a **tutti i 91 endpoint GET**. Un 500 significa che la sezione esplode prima ancora di validare i permessi |
+| `test_ogni_sezione_protetta_rifiuta_gli_anonimi` | Ogni GET sotto `/api/` risponde 401/403/503 a un anonimo. Unica esenzione: `/api/health` |
+
+Gli endpoint nuovi entrano nei test **automaticamente** (sono parametrizzati sulle route
+dell'app): non serve manutenzione, ma se aggiungi un endpoint volutamente pubblico devi
+dichiararlo nell'esenzione e spiegare perché.
+
+**b) Smoke sull'app viva — quando i container girano:**
+
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8088/health   # atteso: 200
+./scripts/smoke.sh                                  # default http://localhost:8088
+BASE_URL=http://thub.tonoli.com ./scripts/smoke.sh  # altro ambiente
 ```
 
-### Regole di convalida
+45 controlli, esce 1 al primo problema:
+- **backend**: `/health` e `/api/health/ready`
+- **26 sezioni frontend**: in dev il server Vite trasforma ogni pagina su richiesta, quindi
+  il 500 di una pagina che non compila viene intercettato — è la schermata bianca che
+  vedrebbe l'utente. In build statica lo salta, perché `npm run build` ha già validato
+- **17 endpoint API**: qui **401 è un successo** (l'app è viva e il gate funziona)
+
+Distingue esplicitamente `CONNECTION REFUSED` da un codice di stato inatteso, e in caso di
+fallimento stampa i comandi diagnostici (`docker compose logs backend`,
+`python -c 'import app.main'`).
+
+⚠️ Le route del frontend rispondono 200 **per qualunque path** (fallback SPA): un 200 su
+`/planner` prova solo che il server è in piedi. Per questo lo script controlla i moduli
+delle pagine, non le URL.
+
+### 5.3 Regole di convalida
 - **Esegui i test prima e dopo** la modifica. Se erano già rossi, dillo: non attribuirti
   un fallimento preesistente né nasconderlo.
   ⚠️ *Stato noto al 2026-08-18*: `ruff` segnala 2 errori F401 preesistenti in
@@ -230,6 +271,8 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8088/health   # atteso
   importati e non usati). La CI è rossa su questo. Sistemali solo se stai già lavorando
   su quel file o se l'utente te lo chiede.
 - Se tocchi backend **e** frontend, esegui entrambe le suite.
+- **Dopo ogni modifica che tocchi route, import, router o pagine: esegui lo smoke.**
+  Se i container non girano, il livello offline (5.2a) è comunque obbligatorio.
 - Se tocchi lo schema: `alembic revision --autogenerate -m "..."`, **rileggi la migration
   generata riga per riga** (l'autogenerate propone anche DROP che non vuoi), poi
   `alembic upgrade head`. Verifica `alembic heads`: deve restarne **una sola**.
