@@ -422,8 +422,17 @@ Serve un nuovo `docker compose up --build` solo se cambi Dockerfile o dipendenze
 Punti di accesso:
 
 - applicazione: `http://localhost:8088`
-- API health: `http://localhost:8088/health`
-- API docs: `http://localhost:8088/api/docs`
+- API health: `http://localhost:8088/health` (e `http://localhost:8088/api/health/ready`)
+- documentazione degli endpoint esterni: sezione **Configurazione › Endpoint API**
+  dell'applicazione (`/endpoints`, riservata agli amministratori)
+
+Swagger e lo schema OpenAPI **non sono esposti da nginx**: FastAPI li serve su `/docs` e
+`/openapi.json`, percorsi che il proxy instrada al frontend, e la porta 8000 del backend
+non è pubblicata. Per consultarli serve entrare nel container:
+
+```bash
+docker compose exec backend curl -s localhost:8000/openapi.json
+```
 
 ## API principali
 

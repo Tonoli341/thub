@@ -1,6 +1,5 @@
 import csv
 import io
-from collections import defaultdict
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -10,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import require_admin_or_hr
 from app.db import get_db
 from app.enums import AssignmentCause
-from app.models import Assignment, Employee, TrainingCourse, TrainingMacroArea, User
+from app.models import Assignment, TrainingCourse, TrainingMacroArea, User
 from app.schemas import (
     TrainingCourseCreate,
     TrainingCourseRead,
