@@ -36,7 +36,7 @@ export default function ReportingPeriodFilter({ start, end, onChange, children, 
   }
 
   return (
-    <Paper sx={{ p: 3, borderRadius: 3 }}>
+    <Paper variant="outlined" sx={{ px: 1.25, py: 1.25, borderRadius: 2 }}>
       <Box
         sx={{
           display: "grid",
@@ -71,7 +71,7 @@ export default function ReportingPeriodFilter({ start, end, onChange, children, 
         />
         {children}
       </Box>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.25 }}>
         {PRESETS.map((preset, index) => (
           <Button
             key={preset.label}

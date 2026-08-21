@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import dayjs from "dayjs";
 import {
   Alert,
   Autocomplete,
@@ -17,6 +18,12 @@ import {
   Snackbar,
   Stack,
   Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   Tabs,
   TextField,
   Tooltip,
@@ -26,6 +33,10 @@ import {
 import { alpha, useTheme } from "@mui/material/styles";
 
 import { addTeamMember, createTeam, deleteTeam, getEmployeeOptions, getTeams, removeTeamMember, updateTeam } from "../api";
+import FilterBar from "../components/FilterBar";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
+import { bodyRowSx, headRowSx, tableSx } from "../components/tableStyles";
+import { SQUADRE_COLUMNS } from "./squadreColumns";
 
 const TEAM_ICONS = [
   "🦁", "🐯", "🦊", "🐺", "🦅", "🦉", "🐬", "🦈", "🐘", "🦒",
@@ -145,13 +156,13 @@ function SectionLabel({ children }) {
   );
 }
 
-function NotificationBellIcon({ enabled }) {
+function NotificationBellIcon({ enabled, size = 21 }) {
   return (
     <Box
       component="svg"
       viewBox="0 0 24 24"
       aria-hidden="true"
-      sx={{ width: 21, height: 21, display: "block", "--bell-halo": (theme) => theme.palette.background.paper }}
+      sx={{ width: size, height: size, display: "block", "--bell-halo": (theme) => theme.palette.background.paper }}
     >
       <path
         d="M18 8.8a6 6 0 0 0-12 0c0 6.2-2.5 6.7-2.5 6.7h17S18 15 18 8.8Z"
@@ -173,105 +184,152 @@ function NotificationBellIcon({ enabled }) {
   );
 }
 
-function SearchBar({ value, onChange }) {
+function NotificationEmailIcon({ enabled, size = 21 }) {
   return (
     <Box
-      className="search-wrapper"
-      sx={{
-        width: "100%",
-        maxWidth: 790,
-        mb: 1.5,
-        display: "flex",
-        alignItems: "center",
-        background: "#FFFFFF",
-        border: "1.6px solid rgb(226, 226, 229)",
-        borderRadius: "100px",
-        position: "relative",
-      }}
+      component="svg"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      sx={{ width: size, height: size, display: "block", "--email-halo": (theme) => theme.palette.background.paper }}
     >
-      <Box
-        sx={{
-          position: "absolute",
-          left: 14,
-          top: "50%",
-          transform: "translateY(-50%)",
-          color: "rgba(1, 22, 58, 0.56)",
-          fontSize: 16,
-          lineHeight: 1,
-          pointerEvents: "none",
-        }}
-      >
-        ⌕
-      </Box>
-      <Box
-        component="input"
-        type="text"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder="Cerca"
-        sx={{
-          width: "100%",
-          border: 0,
-          outline: 0,
-          background: "transparent",
-          color: "rgb(30, 30, 49)",
-          fontSize: 16,
-          px: 2,
-          py: 1,
-          pl: 4.5,
-          borderRadius: "100px",
-        }}
+      <rect
+        x="3"
+        y="5.5"
+        width="18"
+        height="13"
+        rx="2"
+        fill={enabled ? "currentColor" : "none"}
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="m4.5 7 7.5 6 7.5-6"
+        fill="none"
+        stroke={enabled ? "var(--email-halo)" : "currentColor"}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </Box>
   );
 }
 
-const ROW_COLUMNS = { xs: "minmax(160px, 2fr) minmax(120px, 1fr) 100px", lg: "minmax(220px, 2fr) minmax(180px, 1fr) 110px" };
+function SearchBar({ value, onChange }) {
+  return (
+    <TextField
+      size="small"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="Cerca squadra, leader o membro"
+      InputProps={{
+        startAdornment: (
+          <InputAdornment position="start" sx={{ color: "text.disabled", fontSize: 16 }}>
+            ⌕
+          </InputAdornment>
+        ),
+      }}
+      sx={{ flex: "1 1 260px", "& .MuiInputBase-input": { fontSize: 13.5, py: 0.75 } }}
+    />
+  );
+}
+
+function Muted({ children = "—" }) {
+  return (
+    <Typography component="span" sx={{ fontSize: 13, color: "text.disabled" }}>
+      {children}
+    </Typography>
+  );
+}
+
+function PersonCell({ name }) {
+  if (!name) return <Muted />;
+  return (
+    <Typography title={name} sx={{ fontSize: 13 }} noWrap>
+      {name}
+    </Typography>
+  );
+}
 
 function TeamRow({ team, onManage }) {
+  const memberCount = team.members.length;
+  const notificationsEnabled = !!team.operational_reporting_notifications_enabled;
+  const emailEnabled = !!team.operational_reporting_email_enabled;
+  const memberNames = memberCount ? team.members.map((member) => member.employee_name).join(", ") : "Nessun membro";
+
   return (
-    <Box
-      role="row"
+    <TableRow
+      hover
       onClick={() => onManage(team.id)}
-      sx={{
-        display: "grid",
-        gridTemplateColumns: ROW_COLUMNS,
-        alignItems: "center",
-        minHeight: 56,
-        borderBottom: "1px solid rgb(226, 226, 229)",
-        cursor: "pointer",
-        "&:hover": { bgcolor: "rgba(5, 31, 81, 0.03)" },
-      }}
+      sx={bodyRowSx({ clickable: true })}
     >
-      <Box role="cell" sx={{ px: 2, py: 1.5 }}>
-        <Stack direction="row" spacing={1.5} alignItems="center" minWidth={0}>
-          <TeamAvatar team={team} size={36} />
-          <Typography sx={{ fontSize: 14, fontWeight: 600, color: "rgb(13, 22, 38)", lineHeight: 1.3 }} noWrap>
+      <TableCell>
+        <Stack direction="row" spacing={1} alignItems="center" minWidth={0}>
+          <TeamAvatar team={team} size={26} />
+          <Typography title={team.name} sx={{ fontSize: 13.5, fontWeight: 600, minWidth: 0 }} noWrap>
             {team.name}
           </Typography>
         </Stack>
-      </Box>
+      </TableCell>
 
-      <Box role="cell" sx={{ px: 2, py: 1.5 }}>
-        {team.team_leader_employee_name ? (
-          <Typography sx={{ fontSize: 13, color: "rgb(13, 22, 38)" }} noWrap>
-            {team.team_leader_employee_name}
-          </Typography>
-        ) : (
-          <Typography sx={{ fontSize: 13, color: "rgba(1, 22, 58, 0.38)", fontStyle: "italic" }}>
-            Non definito
-          </Typography>
-        )}
-      </Box>
+      <TableCell><PersonCell name={team.team_leader_employee_name} /></TableCell>
+      <TableCell><PersonCell name={team.team_leader_2_employee_name} /></TableCell>
+      <TableCell><PersonCell name={team.workload_owner_employee_name} /></TableCell>
+      <TableCell>
+        <Stack direction="row" spacing={0.75} alignItems="center" minWidth={0}>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <PersonCell name={team.operational_reporting_owner_employee_name} />
+          </Box>
+          <Tooltip
+            title={
+              notificationsEnabled
+                ? "Notifiche rendicontazione operativa attive"
+                : "Notifiche rendicontazione operativa disattivate"
+            }
+          >
+            <Box
+              component="span"
+              sx={{
+                display: "inline-flex",
+                flexShrink: 0,
+                color: notificationsEnabled ? "primary.main" : "text.disabled",
+                opacity: notificationsEnabled ? 1 : 0.55,
+              }}
+            >
+              <NotificationBellIcon enabled={notificationsEnabled} size={15} />
+            </Box>
+          </Tooltip>
+          <Tooltip title={`Email delle 10:00 ${emailEnabled ? "attiva" : "disattivata"}`}>
+            <Box
+              component="span"
+              sx={{
+                display: "inline-flex",
+                flexShrink: 0,
+                color: emailEnabled ? "primary.main" : "text.disabled",
+                opacity: emailEnabled ? 1 : 0.55,
+              }}
+            >
+              <NotificationEmailIcon enabled={emailEnabled} size={15} />
+            </Box>
+          </Tooltip>
+        </Stack>
+      </TableCell>
 
-      <Box role="cell" sx={{ px: 2, py: 1.5 }}>
-        <Chip
-          label={`${team.members.length} ${team.members.length === 1 ? "membro" : "membri"}`}
-          size="small"
-          sx={{ fontWeight: 600, fontSize: 12, bgcolor: "action.hover" }}
-        />
-      </Box>
-    </Box>
+      <TableCell align="center">
+        <Tooltip title={memberNames}>
+          <Chip
+            label={memberCount}
+            size="small"
+            sx={{ height: 20, minWidth: 34, fontSize: 12, fontWeight: 700, bgcolor: "action.hover" }}
+          />
+        </Tooltip>
+      </TableCell>
+
+      <TableCell>
+        <Typography sx={{ fontSize: 12.5, color: "text.secondary" }} noWrap>
+          {team.updated_at ? dayjs(team.updated_at).format("DD/MM/YY") : "—"}
+        </Typography>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -403,6 +461,7 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
   const [workloadOwnerId, setWorkloadOwnerId] = useState(null);
   const [operationalReportingOwnerId, setOperationalReportingOwnerId] = useState(null);
   const [operationalReportingNotificationsEnabled, setOperationalReportingNotificationsEnabled] = useState(false);
+  const [operationalReportingEmailEnabled, setOperationalReportingEmailEnabled] = useState(false);
   const [addEmployee, setAddEmployee] = useState(null);
   const [snackbar, setSnackbar] = useState(null);
   const [saveError, setSaveError] = useState(null);
@@ -429,6 +488,7 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
     setWorkloadOwnerId(team.workload_owner_employee_id ?? null);
     setOperationalReportingOwnerId(team.operational_reporting_owner_employee_id ?? null);
     setOperationalReportingNotificationsEnabled(!!team.operational_reporting_notifications_enabled);
+    setOperationalReportingEmailEnabled(!!team.operational_reporting_email_enabled);
     setAddEmployee(null);
     setSaveError(null);
     setActiveTab(0);
@@ -475,6 +535,7 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
         workload_owner_employee_id: workloadOwnerId,
         operational_reporting_owner_employee_id: operationalReportingOwnerId,
         operational_reporting_notifications_enabled: operationalReportingNotificationsEnabled,
+        operational_reporting_email_enabled: operationalReportingEmailEnabled,
       },
     });
   }
@@ -705,7 +766,39 @@ function TeamDialog({ open, teamId, onClose, onRequestDelete }) {
                           <NotificationBellIcon enabled={operationalReportingNotificationsEnabled} />
                         </IconButton>
                       </Tooltip>
-                      <InfoHint title="Responsabile della rendicontazione operativa della squadra. Può essere un dipendente qualsiasi, anche esterno al team; con la campanella attiva riceve le relative notifiche." />
+                      <Tooltip
+                        title={
+                          operationalReportingEmailEnabled
+                            ? "Email attiva: alle 10:00 l'owner riceve il riepilogo delle rendicontazioni mancanti. Clicca per disattivarla."
+                            : "Email disattivata: l'owner non riceve il riepilogo delle 10:00. Clicca per attivarla."
+                        }
+                      >
+                        <IconButton
+                          aria-label={operationalReportingEmailEnabled ? "Disattiva email delle 10:00" : "Attiva email delle 10:00"}
+                          aria-pressed={operationalReportingEmailEnabled}
+                          onClick={() => setOperationalReportingEmailEnabled((enabled) => !enabled)}
+                          sx={{
+                            width: 40,
+                            height: 40,
+                            flexShrink: 0,
+                            borderRadius: 1,
+                            border: "1px solid",
+                            borderColor: operationalReportingEmailEnabled ? "primary.main" : "divider",
+                            bgcolor: operationalReportingEmailEnabled
+                              ? (t) => alpha(t.palette.primary.main, 0.12)
+                              : "transparent",
+                            color: operationalReportingEmailEnabled ? "primary.main" : "text.secondary",
+                            "&:hover": {
+                              bgcolor: operationalReportingEmailEnabled
+                                ? (t) => alpha(t.palette.primary.main, 0.2)
+                                : "action.hover",
+                            },
+                          }}
+                        >
+                          <NotificationEmailIcon enabled={operationalReportingEmailEnabled} />
+                        </IconButton>
+                      </Tooltip>
+                      <InfoHint title="Responsabile della rendicontazione operativa della squadra. Campanella ed email sono indipendenti; l'email riepiloga alle 10:00 le conferme mancanti del giorno precedente." />
                     </Stack>
                   </Box>
                 </Box>
@@ -956,6 +1049,8 @@ export default function SquadrePage() {
         team.name,
         team.team_leader_employee_name,
         team.team_leader_2_employee_name,
+        team.workload_owner_employee_name,
+        team.operational_reporting_owner_employee_name,
         ...team.members.map((m) => m.employee_name),
       ]
         .filter(Boolean)
@@ -965,99 +1060,79 @@ export default function SquadrePage() {
     });
   }, [searchTerm, teams]);
 
+  const totalMembers = useMemo(
+    () => teams.reduce((sum, team) => sum + team.members.length, 0),
+    [teams],
+  );
+
   return (
     <Box sx={{ minHeight: "100%", borderRadius: 3 }}>
-      <Stack spacing={3}>
-        <Paper sx={{ p: 3.5, borderRadius: 4, background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))", color: "#fff" }}>
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between" alignItems={{ md: "center" }}>
-            <Box>
-              <Typography variant="overline" sx={{ opacity: 0.8 }}>Impresa</Typography>
-              <Typography variant="h4">Squadre</Typography>
-              <Typography sx={{ mt: 1, maxWidth: 680, opacity: 0.9 }}>
-                Gestisci le squadre operative, i membri e i team leader.
-              </Typography>
-            </Box>
-            <Button
-              onClick={() => setCreateOpen(true)}
-              sx={{
-                height: 36,
-                px: 2.5,
-                borderRadius: "18px",
-                background: "rgba(255,255,255,0.15)",
-                color: "#fff",
-                border: "1.5px solid rgba(255,255,255,0.4)",
-                fontSize: 14,
-                fontWeight: 600,
-                textTransform: "none",
-                backdropFilter: "blur(4px)",
-                "&:hover": { background: "rgba(255,255,255,0.25)" },
-              }}
-            >
-              + Nuova squadra
-            </Button>
-          </Stack>
-        </Paper>
+      <Stack spacing={2}>
+        <PageHeader
+          section="Impresa"
+          title="Squadre"
+          meta={`${teams.length} ${teams.length === 1 ? "squadra" : "squadre"} · ${totalMembers} ${totalMembers === 1 ? "persona" : "persone"}`}
+          actions={<HeaderButton onClick={() => setCreateOpen(true)}>+ Nuova squadra</HeaderButton>}
+        />
 
         {teamsQuery.error && <Alert severity="error">{teamsQuery.error.message}</Alert>}
 
-        <Box
-          className="table-wrapper"
-          sx={{
-            width: "100%",
-            background: "#FFFFFF",
-            border: "1.6px solid rgb(226, 226, 229)",
-            borderRadius: "12px",
-            overflow: "hidden",
-          }}
+        <FilterBar
+          onReset={() => setSearch("")}
+          resetDisabled={!searchTerm}
+          dense
         >
-          <Box sx={{ p: 2 }}>
-            <SearchBar value={search} onChange={setSearch} />
-          </Box>
+          <SearchBar value={search} onChange={setSearch} />
+          {searchTerm && (
+            <Typography variant="caption" color="text.secondary">
+              {filteredTeams.length} di {teams.length} squadre
+            </Typography>
+          )}
+        </FilterBar>
 
-          <Box sx={{ overflowX: "auto" }}>
-            <Box role="table" sx={{ minWidth: 700 }}>
-              <Box role="rowgroup">
-                <Box
-                  role="row"
-                  sx={{
-                    display: "grid",
-                    gridTemplateColumns: ROW_COLUMNS,
-                    alignItems: "center",
-                    background: "rgba(5, 31, 81, 0.02)",
-                    borderBottom: "1px solid rgb(226, 226, 229)",
-                  }}
-                >
-                  {["Nome squadra", "Team leader", "Membri"].map((label) => (
-                    <Box
-                      key={label}
-                      role="columnheader"
-                      sx={{ px: 2, py: 1, fontSize: 12, fontWeight: 500, color: "rgba(1, 22, 58, 0.56)" }}
-                    >
-                      {label}
-                    </Box>
+        <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+          <TableContainer>
+            <Table
+              size="small"
+              sx={tableSx({ minWidth: 720 })}
+            >
+              <TableHead>
+                <TableRow sx={headRowSx}>
+                  {SQUADRE_COLUMNS.map((column) => (
+                    <TableCell key={column.key} align={column.align} sx={{ width: `${column.width}%` }}>
+                      {column.label}
+                    </TableCell>
                   ))}
-                </Box>
-              </Box>
+                </TableRow>
+              </TableHead>
 
-              <Box role="rowgroup">
+              <TableBody>
                 {filteredTeams.map((team) => (
                   <TeamRow key={team.id} team={team} onManage={(id) => setDrawerTeamId(id)} />
                 ))}
 
-                {filteredTeams.length === 0 && !teamsQuery.isLoading && (
-                  <Box sx={{ px: 3, py: 5, textAlign: "center" }}>
-                    <Typography sx={{ fontSize: 15, fontWeight: 600, color: "rgb(13, 22, 38)" }}>
-                      Nessuna squadra trovata
-                    </Typography>
-                    <Typography sx={{ mt: 0.5, fontSize: 13, color: "rgba(1, 22, 58, 0.56)" }}>
-                      Modifica la ricerca oppure crea una nuova squadra.
-                    </Typography>
-                  </Box>
+                {teamsQuery.isLoading && (
+                  <TableRow>
+                    <TableCell colSpan={SQUADRE_COLUMNS.length} sx={{ py: 4, textAlign: "center", color: "text.secondary", fontSize: 13 }}>
+                      Caricamento squadre...
+                    </TableCell>
+                  </TableRow>
                 )}
-              </Box>
-            </Box>
-          </Box>
-        </Box>
+
+                {filteredTeams.length === 0 && !teamsQuery.isLoading && (
+                  <TableRow>
+                    <TableCell colSpan={SQUADRE_COLUMNS.length} sx={{ py: 4, textAlign: "center" }}>
+                      <Typography sx={{ fontSize: 14, fontWeight: 600 }}>Nessuna squadra trovata</Typography>
+                      <Typography sx={{ mt: 0.25, fontSize: 12.5, color: "text.secondary" }}>
+                        Modifica la ricerca oppure crea una nuova squadra.
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
       </Stack>
 
       <TeamDialog

@@ -49,6 +49,7 @@ def _team_to_read(team: Team) -> TeamRead:
             team.operational_reporting_owner.full_name if team.operational_reporting_owner else None
         ),
         operational_reporting_notifications_enabled=bool(team.operational_reporting_notifications_enabled),
+        operational_reporting_email_enabled=bool(team.operational_reporting_email_enabled),
         created_at=team.created_at,
         updated_at=team.updated_at,
         members=members,
@@ -191,6 +192,8 @@ def update_team(team_id: str, payload: TeamUpdate, db: Session = Depends(get_db)
         team.operational_reporting_owner_employee_id = payload.operational_reporting_owner_employee_id
     if "operational_reporting_notifications_enabled" in payload.model_fields_set:
         team.operational_reporting_notifications_enabled = bool(payload.operational_reporting_notifications_enabled)
+    if "operational_reporting_email_enabled" in payload.model_fields_set:
+        team.operational_reporting_email_enabled = bool(payload.operational_reporting_email_enabled)
     if "reports_to_employee_id" in payload.model_fields_set:
         team.reports_to_employee_id = _resolve_reports_to_employee_id(
             team,

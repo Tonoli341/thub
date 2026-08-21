@@ -1,4 +1,6 @@
+import asyncio
 from contextlib import asynccontextmanager
+from contextlib import suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,7 @@ from app.api import api_router
 from app.config import settings
 from app.db import init_db
 from app.services.errors import DomainError
+from app.services.operational_reporting_reminders import operational_reporting_email_scheduler
 
 _DEFAULT_JWT_SECRET = "change-this-in-production"
 _DEFAULT_PORTAL_PASSWORD = "admin"
@@ -37,7 +40,13 @@ def _ensure_production_secrets() -> None:
 async def lifespan(_: FastAPI):
     _ensure_production_secrets()
     init_db()
-    yield
+    reminder_task = asyncio.create_task(operational_reporting_email_scheduler())
+    try:
+        yield
+    finally:
+        reminder_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reminder_task
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

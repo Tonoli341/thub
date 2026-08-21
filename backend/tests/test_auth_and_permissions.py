@@ -60,6 +60,7 @@ def test_linked_employee_role_overrides_legacy_admin_account(client, db_session)
     assert payload["can_access_workloads"] is False
     assert payload["expirations_scope"] == "none"
     assert payload["can_access_deliveries"] is False
+    assert payload["can_access_maintenance"] is False
 
     admin_only = client.get("/api/audit-logs", headers=auth_headers(token))
     assert admin_only.status_code == 403
@@ -139,3 +140,4 @@ def test_portal_login_and_refresh(client, db_session):
     refreshed = client.post("/api/auth/refresh", headers=auth_headers(token))
     assert refreshed.status_code == 200
     assert refreshed.json()["access_token"]
+    assert refreshed.json()["user"]["can_access_maintenance"] is False

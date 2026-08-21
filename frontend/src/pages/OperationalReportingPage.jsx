@@ -6,6 +6,7 @@ import {
   Chip,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
@@ -14,6 +15,7 @@ import {
   MenuItem,
   Popover,
   Select,
+  Snackbar,
   Stack,
   TextField,
   Tooltip,
@@ -21,6 +23,21 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
+
+import FilterBar from "../components/FilterBar";
+import FilterSelect from "../components/FilterSelect";
+import {
+  allocationsKeptAfterBlockRelocation,
+  defaultAllocationLocation,
+  relocationLabel,
+} from "./operationalReportingLocation";
+import {
+  fillPastedBlocks,
+  flattenAllocations,
+  scheduleDifferences,
+  scheduleDigest,
+} from "./operationalReportingPaste";
+import PageHeader from "../components/PageHeader";
 import { useSearchParams } from "react-router-dom";
 import "./OperationalReportingPage.css";
 
@@ -61,8 +78,9 @@ function defaultNameColumnWidth(teams) {
 
   context.font = '800 10.5px "Lexend", "Segoe UI", sans-serif';
   const headerLabelWidth = context.measureText("SQUADRA / DIPENDENTE").width;
-  // padding + due pulsanti globali + gap + maniglia
-  let required = 24 + 40 + 10 + headerLabelWidth + 8;
+  // padding + due pulsanti globali + gap + maniglia, più copia/incolla che
+  // stanno sulle righe dipendente ma allargano la stessa colonna
+  let required = 24 + 40 + 10 + headerLabelWidth + 8 + 46;
 
   for (const team of teams) {
     const plannedCount = team.members.filter((member) => member.has_planning).length;
@@ -75,6 +93,50 @@ function defaultNameColumnWidth(teams) {
   }
 
   return Math.max(190, Math.min(480, Math.ceil(required)));
+}
+
+// Firma della casella con lo stesso metodo del Planner: il backend salva il
+// nome dell'autore già risolto, qui si formatta soltanto.
+function allocationSignature(allocation = {}) {
+  const stamp = (name, at, prefix) => (
+    name && at ? `${prefix} ${name} il ${dayjs(at).format("DD/MM/YYYY [alle] HH:mm")}` : null
+  );
+  const created = stamp(allocation.created_by_name, allocation.created_at, "Creata da");
+  const modified = stamp(allocation.last_modified_by_name, allocation.last_modified_at, "Ultima modifica di");
+  // Dentro il box c'è spazio per una riga sola: vince l'ultima modifica, che è
+  // il dato che si cerca quando una casella cambia sotto gli occhi di qualcuno.
+  const inlineName = allocation.last_modified_by_name || allocation.created_by_name;
+  const inlineAt = allocation.last_modified_at || allocation.created_at;
+  const inline = inlineName && inlineAt
+    ? `✎ ${inlineName} · ${dayjs(inlineAt).format("DD/MM HH:mm")}`
+    : "";
+  return { created, modified, inline };
+}
+
+function renderAllocationTooltip(allocation, { customerLabel, relocation, minutes, totalWork, clockRange }) {
+  const signature = allocationSignature(allocation);
+  return (
+    <Box sx={{ py: 0.25 }}>
+      <Typography sx={{ fontSize: 11, fontWeight: 700 }}>{customerLabel}</Typography>
+      <Typography sx={{ fontSize: 10.5, opacity: 0.8 }}>
+        {allocation.jupiter_description || "Dato storico"}{relocation ? ` · ${relocation}` : ""}
+      </Typography>
+      <Typography sx={{ fontSize: 10.5, opacity: 0.8 }}>
+        {clockRange ? `${clockRange} · ` : ""}{durationLabel(minutes)} · {weightLabel(minutes, totalWork)} del totale
+      </Typography>
+      {allocation.notes && (
+        <Typography sx={{ fontSize: 10.5, mt: 0.5, maxWidth: 260, whiteSpace: "pre-wrap" }}>
+          {allocation.notes}
+        </Typography>
+      )}
+      {(signature.created || signature.modified) && (
+        <Box sx={{ mt: 0.75, pt: 0.6, borderTop: "1px solid rgba(255,255,255,0.25)", opacity: 0.82 }}>
+          {signature.created && <Typography sx={{ fontSize: 10 }}>{signature.created}</Typography>}
+          {signature.modified && <Typography sx={{ fontSize: 10 }}>{signature.modified}</Typography>}
+        </Box>
+      )}
+    </Box>
+  );
 }
 
 function allocationColor(code = "") {
@@ -205,7 +267,13 @@ function memberToDraft(member, workDate) {
       actual_area_id: block.actual_area_id ?? "",
       actual_building: block.actual_building ?? "",
       notes: block.notes ?? "",
-      allocations: allocationsWithPositions(block.allocations),
+      // Ogni box porta la propria destinazione: il backend risponde già con
+      // quella del blocco per le rendicontazioni precedenti alla modifica.
+      allocations: allocationsWithPositions((block.allocations ?? []).map((allocation) => ({
+        ...allocation,
+        actual_area_id: allocation.actual_area_id ?? block.actual_area_id ?? "",
+        actual_building: allocation.actual_building ?? "",
+      }))),
     })),
   };
 }
@@ -228,6 +296,8 @@ function apiPayload(draft) {
         id: allocation.id ?? null,
         customer_code: allocation.customer_code,
         jupiter_description: allocation.jupiter_description || null,
+        actual_area_id: allocation.actual_area_id || null,
+        actual_building: allocation.actual_building || null,
         start_offset_minutes: Number(allocation.start_offset_minutes || 0),
         minutes: Number(allocation.minutes),
         notes: allocation.notes || null,
@@ -317,6 +387,57 @@ function rebaseDraftTimeline(draft, changes) {
       return { ...sourceBlock, allocations: allocationsWithPositions(allocations) };
     }),
   };
+}
+
+// --- Copia di una rendicontazione da una risorsa all'altra ----------------
+
+const PASTE_DIFFERENCE_LABELS = {
+  schedule: "orario",
+  pauses: "pause",
+  blocks: "blocchi pianificati",
+};
+
+function scheduleLine(label, summary) {
+  const pauses = summary.pauses
+    ? summary.pauses.split(" ").map((pause) => pause.replace("-", "–")).join(", ")
+    : "nessuna pausa";
+  return `${label}: ${summary.name} · ${summary.start}–${summary.end} · pause ${pauses} · ${durationLabel(summary.minutes)} netti`;
+}
+
+function memberHasAllocations(member) {
+  return (member.blocks ?? []).some((block) => (block.allocations ?? []).length > 0);
+}
+
+// `alignTime` porta l'orario effettivo della destinazione su quello
+// dell'origine: è la risposta "sì" all'avviso sul tempo da compilare diverso.
+function buildPasteDraft(sourceMember, targetMember, workDate, alignTime) {
+  const sourceDraft = memberToDraft(sourceMember, workDate);
+  const targetDraft = memberToDraft(targetMember, workDate);
+  const base = alignTime
+    ? {
+      ...targetDraft,
+      actual_start: sourceDraft.actual_start,
+      actual_end: sourceDraft.actual_end,
+      pauses: sourceDraft.pauses.map((pause) => ({ ...pause })),
+    }
+    : targetDraft;
+  const { blocks, leftover } = fillPastedBlocks(
+    blocksWithEffectiveCapacity(base),
+    flattenAllocations(sourceDraft.blocks),
+  );
+  // Un blocco pianificato in un'area che non esiste in rendicontazione arriva
+  // senza destinazione: prende quella di ciò che vi è stato incollato dentro,
+  // altrimenti il salvataggio verrebbe rifiutato per area mancante.
+  const withLocation = blocks.map((block) => (
+    block.actual_area_id || !block.allocations.length
+      ? block
+      : {
+        ...block,
+        actual_area_id: block.allocations[0].actual_area_id,
+        actual_building: block.allocations[0].actual_building,
+      }
+  ));
+  return { draft: { ...base, notes: sourceDraft.notes, blocks: withLocation }, leftover };
 }
 
 function Coverage({ work, allocated, uncovered, over }) {
@@ -540,73 +661,94 @@ function AllocationTimeline({
         const netStart = Number(allocation.start_offset_minutes || 0);
         const minutes = Number(allocation.minutes || 0);
         const color = allocationColor(`${allocation.customer_code}:${allocation.jupiter_description}`);
+        const relocation = relocationLabel(block, allocation);
+        const customerLabel = allocation.customer_description || allocation.customer_code || "Da assegnare";
         const segments = netRangeToClock(geometry.work, netStart, netStart + minutes);
         const allocationClockStart = segments[0]?.start;
         const allocationClockEnd = segments[segments.length - 1]?.end;
+        const signature = allocationSignature(allocation);
         return segments.map((segment, segmentIndex) => (
-          <Box
+          <Tooltip
             key={`${allocation.id || allocation._local_id || `${allocation.customer_code}:${allocation.jupiter_description}:${index}`}:${segmentIndex}`}
-            className={`op-report-allocation-box${draggedIndex === index ? " is-dragging" : ""}${selectedAllocationIndex === index ? " is-selected" : ""}${segmentIndex > 0 ? " is-continued" : ""}`}
-            draggable
-            onClick={() => onAllocationSelect(index)}
-            onDragStart={(event) => {
-              draggedIndexRef.current = index;
-              setDraggedIndex(index);
-              const rect = trackRef.current?.getBoundingClientRect();
-              if (rect?.width) {
-                const pointerClock = displayStart + ((event.clientX - rect.left) / rect.width) * displaySpan;
-                dragGrabOffsetRef.current = Math.max(0, clockToNet(geometry.work, pointerClock) - netStart);
-              } else {
-                dragGrabOffsetRef.current = 0;
-              }
-              dragOriginalStartRef.current = netStart;
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", String(index));
-            }}
-            onDrag={(event) => { if (event.clientX) dragAllocation(event); }}
-            onDragEnd={stopAllocationDrag}
-            style={{ left: `${percent(segment.start)}%`, width: `${widthPercent(segment)}%`, background: color.background, borderColor: color.border, color: color.text }}
-            title={`${allocation.customer_description || allocation.customer_code} · ${allocation.jupiter_description || "Dato storico"} · ${durationLabel(minutes)} · ${weightLabel(minutes, totalWork)} del totale · ${clockLabel(segment.start)}–${clockLabel(segment.end)}`}
+            title={renderAllocationTooltip(allocation, {
+              customerLabel,
+              relocation,
+              minutes,
+              totalWork,
+              clockRange: allocationClockStart != null && allocationClockEnd != null
+                ? `${clockLabel(allocationClockStart)}–${clockLabel(allocationClockEnd)}`
+                : "",
+            })}
+            placement="top"
+            arrow
+            enterDelay={150}
           >
-            {segmentIndex === 0 && (
-              <>
-                <Box className="op-report-box-resize is-start" onPointerDown={(event) => startResize(event, index, netStart, "start")} />
-                <Box className="op-report-box-grip">⋮⋮</Box>
-              </>
-            )}
-            {/* Anche vuoto, il blocco copy fa da spaziatore e tiene la
-                maniglia di ridimensionamento sul bordo destro del segmento. */}
-            <Box className="op-report-box-copy">
+            <Box
+              className={`op-report-allocation-box${draggedIndex === index ? " is-dragging" : ""}${selectedAllocationIndex === index ? " is-selected" : ""}${segmentIndex > 0 ? " is-continued" : ""}`}
+              draggable
+              onClick={() => onAllocationSelect(index)}
+              onDragStart={(event) => {
+                draggedIndexRef.current = index;
+                setDraggedIndex(index);
+                const rect = trackRef.current?.getBoundingClientRect();
+                if (rect?.width) {
+                  const pointerClock = displayStart + ((event.clientX - rect.left) / rect.width) * displaySpan;
+                  dragGrabOffsetRef.current = Math.max(0, clockToNet(geometry.work, pointerClock) - netStart);
+                } else {
+                  dragGrabOffsetRef.current = 0;
+                }
+                dragOriginalStartRef.current = netStart;
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", String(index));
+              }}
+              onDrag={(event) => { if (event.clientX) dragAllocation(event); }}
+              onDragEnd={stopAllocationDrag}
+              style={{ left: `${percent(segment.start)}%`, width: `${widthPercent(segment)}%`, background: color.background, borderColor: color.border, color: color.text }}
+            >
               {segmentIndex === 0 && (
                 <>
-                  <span className="op-report-box-customer">
-                    {allocation.customer_description || allocation.customer_code}
-                    {allocationClockStart != null && allocationClockEnd != null
-                      ? ` · ${clockLabel(allocationClockStart)}–${clockLabel(allocationClockEnd)}`
-                      : ""}
-                  </span>
-                  <span className="op-report-box-jupiter">
-                    {allocation.jupiter_description || "Dato storico"} · {durationLabel(minutes)} · {weightLabel(minutes, totalWork)}{allocation.notes ? " · 📝" : ""}
-                  </span>
+                  <Box className="op-report-box-resize is-start" onPointerDown={(event) => startResize(event, index, netStart, "start")} />
+                  <Box className="op-report-box-grip">⋮⋮</Box>
                 </>
               )}
+              {/* Anche vuoto, il blocco copy fa da spaziatore e tiene la
+                  maniglia di ridimensionamento sul bordo destro del segmento. */}
+              <Box className="op-report-box-copy">
+                {segmentIndex === 0 && (
+                  <>
+                    <span className="op-report-box-customer">
+                      {customerLabel}
+                      {allocationClockStart != null && allocationClockEnd != null
+                        ? ` · ${clockLabel(allocationClockStart)}–${clockLabel(allocationClockEnd)}`
+                        : ""}
+                    </span>
+                    <span className="op-report-box-jupiter">
+                      {allocation.jupiter_description || "Dato storico"}{relocation ? ` · ${relocation}` : ""} · {durationLabel(minutes)} · {weightLabel(minutes, totalWork)}{allocation.notes ? " · 📝" : ""}
+                    </span>
+                    {/* Sotto l'ora di durata la riga non ci sta: resta sul tooltip. */}
+                    {signature.inline && minutes >= 60 && (
+                      <span className="op-report-box-signature">{signature.inline}</span>
+                    )}
+                  </>
+                )}
+              </Box>
+              {segmentIndex === 0 && (
+                <button
+                  type="button"
+                  className="op-report-box-delete"
+                  title="Rimuovi"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onAllocationDelete(index);
+                    onChange(blockIndex, { ...block, allocations: block.allocations.filter((_, itemIndex) => itemIndex !== index) });
+                  }}
+                >×</button>
+              )}
+              {segmentIndex === segments.length - 1 && (
+                <Box className="op-report-box-resize is-end" onPointerDown={(event) => startResize(event, index, netStart, "end")} />
+              )}
             </Box>
-            {segmentIndex === 0 && (
-              <button
-                type="button"
-                className="op-report-box-delete"
-                title="Rimuovi"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onAllocationDelete(index);
-                  onChange(blockIndex, { ...block, allocations: block.allocations.filter((_, itemIndex) => itemIndex !== index) });
-                }}
-              >×</button>
-            )}
-            {segmentIndex === segments.length - 1 && (
-              <Box className="op-report-box-resize is-end" onPointerDown={(event) => startResize(event, index, netStart, "end")} />
-            )}
-          </Box>
+          </Tooltip>
         ));
       })}
       {freeNetRanges(block.allocations, block.capacity_minutes).flatMap((range) => (
@@ -641,29 +783,65 @@ function AllocationTimeline({
   );
 }
 
-function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, totalWork, onChange, onPausesChange }) {
+// Gli Incroci ammessi dipendono dalla coppia Area + Immobile, non dal blocco:
+// due box dello stesso blocco possono quindi avere elenchi clienti diversi.
+function useEligibleCustomers(areaId, building) {
+  return useQuery({
+    queryKey: ["operational-reporting-customers", areaId || "", building || ""],
+    queryFn: () => getOperationalReportingCustomers(areaId, building || null),
+    enabled: Boolean(areaId),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+function withJupiterDescriptions(customers = []) {
+  return customers.filter((customer) => (customer.jupiter_descriptions ?? []).length > 0);
+}
+
+function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBounds, totalWork, onChange, onPausesChange }) {
   const [customerToAdd, setCustomerToAdd] = useState("");
   const [jupiterToAdd, setJupiterToAdd] = useState("");
   const [createMenu, setCreateMenu] = useState(null);
   const [createMode, setCreateMode] = useState(null);
+  const [createLocation, setCreateLocation] = useState({ actual_area_id: "", actual_building: "" });
   const [selectedAllocationIndex, setSelectedAllocationIndex] = useState(null);
-  const customersQuery = useQuery({
-    queryKey: ["operational-reporting-customers", block.actual_area_id, block.actual_building],
-    queryFn: () => getOperationalReportingCustomers(block.actual_area_id, block.actual_building),
-    enabled: Boolean(block.actual_area_id),
-    staleTime: 5 * 60 * 1000,
-  });
+  const customersQuery = useEligibleCustomers(createLocation.actual_area_id, createLocation.actual_building);
   const customers = customersQuery.data ?? [];
+  const areaById = (areaId) => areas.find((area) => area.id === areaId);
   const customerGeometry = useMemo(() => blockGeometry(block, pauses), [block, pauses]);
   const customerWorkWindows = useMemo(() => netWorkWindows(customerGeometry.work), [customerGeometry.work]);
   // La stessa combinazione Cliente + Descrizione Jupiter può essere usata
   // in più box distinti (per esempio prima e dopo una pausa).
-  const availableCustomers = customers.filter((customer) => (customer.jupiter_descriptions ?? []).length > 0);
+  const availableCustomers = withJupiterDescriptions(customers);
   const selectedCustomer = customers.find((item) => item.code === customerToAdd);
   const availableJupiterDescriptions = selectedCustomer?.jupiter_descriptions ?? [];
+  const createArea = areaById(createLocation.actual_area_id);
   const allocated = block.allocations.reduce((sum, item) => sum + Number(item.minutes || 0), 0);
   const remaining = Math.max(0, block.capacity_minutes - allocated);
   const selectedAllocation = selectedAllocationIndex == null ? null : block.allocations[selectedAllocationIndex];
+  const selectedArea = areaById(selectedAllocation?.actual_area_id);
+  const selectedLocationQuery = useEligibleCustomers(
+    selectedAllocation?.actual_area_id,
+    selectedAllocation?.actual_building,
+  );
+  const selectedLocationCustomers = withJupiterDescriptions(selectedLocationQuery.data ?? []);
+  const selectedAllocationCustomer = selectedLocationCustomers.find(
+    (item) => item.code === selectedAllocation?.customer_code,
+  );
+  // Un cliente rimosso dagli Incroci non deve sparire dal box già rendicontato:
+  // resta selezionabile finché non si cambia destinazione. La voce va comunque
+  // renderizzata mentre l'elenco carica, altrimenti la Select resta senza il
+  // proprio valore. Il suffisso arriva solo quando la risposta c'è davvero.
+  const selectedCustomerIsHistorical = Boolean(
+    selectedAllocation?.customer_code && !selectedAllocationCustomer,
+  );
+  const selectedJupiterIsHistorical = Boolean(
+    selectedAllocation?.jupiter_description
+    && !(selectedAllocationCustomer?.jupiter_descriptions ?? []).some(
+      (item) => item.description === selectedAllocation.jupiter_description,
+    ),
+  );
+  const historicalHint = selectedLocationQuery.isPending ? "" : " · non più in elenco";
   const selectedAllocationSegments = selectedAllocation
     ? netRangeToClock(
       customerGeometry.work,
@@ -689,9 +867,29 @@ function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, tota
       )),
     });
   };
+  // Cambiando Area o Immobile cambia l'elenco degli Incroci ammessi: la scelta
+  // del cliente va rifatta, e `_needs_customer` tiene fermo l'autosave finché
+  // il box non è di nuovo completo.
+  const relocateSelectedAllocation = (changes) => updateSelectedAllocation({
+    ...changes,
+    customer_code: "",
+    customer_description: "",
+    jupiter_description: "",
+    _needs_customer: true,
+  });
+  const pickSelectedCustomer = (code) => {
+    const customer = selectedLocationCustomers.find((item) => item.code === code);
+    updateSelectedAllocation({
+      customer_code: code,
+      customer_description: customer?.description ?? code,
+      jupiter_description: "",
+      _needs_customer: true,
+    });
+  };
+
   const addCustomer = () => {
     const customer = customers.find((item) => item.code === customerToAdd);
-    if (!customer || !jupiterToAdd || !createMenu) return;
+    if (!customer || !jupiterToAdd || !createMenu || !createLocation.actual_area_id) return;
     const localId = `local-${Date.now()}-${Math.random()}`;
     const allocations = allocationsWithPositions([
       ...block.allocations,
@@ -700,6 +898,9 @@ function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, tota
         customer_code: customer.code,
         customer_description: customer.description,
         jupiter_description: jupiterToAdd,
+        actual_area_id: createLocation.actual_area_id,
+        actual_area_name: createArea?.name ?? "",
+        actual_building: createLocation.actual_building,
         start_offset_minutes: createMenu.startOffset,
         minutes: Math.min(60, createMenu.availableMinutes),
         notes: "",
@@ -727,6 +928,9 @@ function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, tota
 
   const openCreateMenu = (event, position) => {
     const workWindow = customerWorkWindows.find((window) => position.startOffset >= window.start && position.startOffset < window.end);
+    // Chi si sposta continua a lavorare dove è arrivato: il box nuovo eredita
+    // la destinazione di quello che lo precede, il blocco solo se è il primo.
+    setCreateLocation(defaultAllocationLocation(block, position.startOffset));
     setCreateMenu({
       ...position,
       availableMinutes: Math.min(position.availableMinutes, (workWindow?.end ?? position.startOffset) - position.startOffset),
@@ -758,13 +962,87 @@ function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, tota
       />
       <Typography className="op-report-drag-hint">Clicca sul bianco per aggiungere · clicca un box per annotarlo · trascina i box e le pause · usa i bordi per ridimensionare · scatti di 10 minuti</Typography>
       {selectedAllocation && (
-        <TextField
-          className="op-report-block-notes"
-          label={`Note attività · ${selectedAllocation.customer_description || selectedAllocation.customer_code}${selectedAllocationTime ? ` · ${selectedAllocationTime}` : ""}`}
-          size="small"
-          value={selectedAllocation.notes ?? ""}
-          onChange={(event) => updateSelectedAllocation({ notes: event.target.value })}
-        />
+        <Box className="op-report-allocation-panel">
+          <Typography className="op-report-allocation-panel-title">
+            Attività selezionata{selectedAllocationTime ? ` · ${selectedAllocationTime}` : ""}
+          </Typography>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Area effettiva</InputLabel>
+              <Select
+                value={selectedAllocation.actual_area_id ?? ""}
+                label="Area effettiva"
+                onChange={(event) => relocateSelectedAllocation({
+                  actual_area_id: event.target.value,
+                  actual_area_name: areaById(event.target.value)?.name ?? "",
+                  actual_building: "",
+                })}
+              >
+                {areas.map((area) => <MenuItem key={area.id} value={area.id}>{area.name}</MenuItem>)}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth disabled={!selectedArea || !selectedArea.buildings.length}>
+              <InputLabel>Immobile effettivo</InputLabel>
+              <Select
+                value={selectedAllocation.actual_building ?? ""}
+                label="Immobile effettivo"
+                onChange={(event) => relocateSelectedAllocation({ actual_building: event.target.value })}
+              >
+                <MenuItem value=""><em>Nessun immobile</em></MenuItem>
+                {(selectedArea?.buildings ?? []).map((building) => <MenuItem key={building} value={building}>{building}</MenuItem>)}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth disabled={!selectedAllocation.actual_area_id || selectedLocationQuery.isLoading}>
+              <InputLabel>Cliente</InputLabel>
+              <Select
+                value={selectedAllocation.customer_code ?? ""}
+                label="Cliente"
+                onChange={(event) => pickSelectedCustomer(event.target.value)}
+              >
+                {selectedCustomerIsHistorical && (
+                  <MenuItem value={selectedAllocation.customer_code}>
+                    {selectedAllocation.customer_description || selectedAllocation.customer_code}{historicalHint}
+                  </MenuItem>
+                )}
+                {selectedLocationCustomers.map((customer) => (
+                  <MenuItem key={customer.code} value={customer.code}>{customer.description}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth disabled={!selectedAllocation.customer_code}>
+              <InputLabel>Descrizione Jupiter</InputLabel>
+              <Select
+                value={selectedAllocation.jupiter_description ?? ""}
+                label="Descrizione Jupiter"
+                onChange={(event) => updateSelectedAllocation({
+                  jupiter_description: event.target.value,
+                  _needs_customer: false,
+                })}
+              >
+                {selectedJupiterIsHistorical && (
+                  <MenuItem value={selectedAllocation.jupiter_description}>
+                    {selectedAllocation.jupiter_description}{historicalHint}
+                  </MenuItem>
+                )}
+                {(selectedAllocationCustomer?.jupiter_descriptions ?? []).map((item) => (
+                  <MenuItem key={item.description} value={item.description}>{item.description}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+          {selectedAllocation._needs_customer && (
+            <Typography className="op-report-allocation-panel-hint">
+              Scegli Cliente e Descrizione Jupiter validi per la nuova destinazione: la bozza non viene salvata finché il box è incompleto.
+            </Typography>
+          )}
+          <TextField
+            className="op-report-block-notes"
+            label="Note attività"
+            size="small"
+            value={selectedAllocation.notes ?? ""}
+            onChange={(event) => updateSelectedAllocation({ notes: event.target.value })}
+          />
+        </Box>
       )}
       <Popover
         open={Boolean(createMenu)}
@@ -784,7 +1062,36 @@ function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, tota
           )}
           {createMode === "activity" && (
             <Stack spacing={1}>
-              <FormControl size="small" fullWidth disabled={!block.actual_area_id || customersQuery.isLoading}>
+              <FormControl size="small" fullWidth>
+                <InputLabel>Area effettiva</InputLabel>
+                <Select
+                  value={createLocation.actual_area_id}
+                  label="Area effettiva"
+                  onChange={(event) => {
+                    setCreateLocation({ actual_area_id: event.target.value, actual_building: "" });
+                    setCustomerToAdd("");
+                    setJupiterToAdd("");
+                  }}
+                >
+                  {areas.map((area) => <MenuItem key={area.id} value={area.id}>{area.name}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <FormControl size="small" fullWidth disabled={!createArea || !createArea.buildings.length}>
+                <InputLabel>Immobile effettivo</InputLabel>
+                <Select
+                  value={createLocation.actual_building}
+                  label="Immobile effettivo"
+                  onChange={(event) => {
+                    setCreateLocation((current) => ({ ...current, actual_building: event.target.value }));
+                    setCustomerToAdd("");
+                    setJupiterToAdd("");
+                  }}
+                >
+                  <MenuItem value=""><em>Nessun immobile</em></MenuItem>
+                  {(createArea?.buildings ?? []).map((building) => <MenuItem key={building} value={building}>{building}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <FormControl size="small" fullWidth disabled={!createLocation.actual_area_id || customersQuery.isLoading}>
                 <InputLabel>Cliente</InputLabel>
                 <Select value={customerToAdd} label="Cliente" onChange={(event) => { setCustomerToAdd(event.target.value); setJupiterToAdd(""); }}>
                   {availableCustomers.map((customer) => <MenuItem key={customer.code} value={customer.code}>{customer.description}</MenuItem>)}
@@ -804,7 +1111,9 @@ function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, tota
           )}
         </Box>
       </Popover>
-      {customersQuery.isError && <Alert severity="error">{customersQuery.error.message}</Alert>}
+      {(customersQuery.isError || selectedLocationQuery.isError) && (
+        <Alert severity="error">{(customersQuery.error || selectedLocationQuery.error).message}</Alert>
+      )}
       <Coverage work={block.capacity_minutes} allocated={allocated} uncovered={remaining} over={Math.max(0, allocated - block.capacity_minutes)} />
     </Stack>
   );
@@ -812,7 +1121,14 @@ function CustomerAllocationEditor({ block, blockIndex, pauses, pauseBounds, tota
 
 function BlockEditor({ block, index, areas, pauses, pauseBounds, totalWork, onChange, onPausesChange }) {
   const selectedArea = areas.find((area) => area.id === block.actual_area_id);
-  const setBlock = (changes) => onChange(index, { ...block, ...changes });
+  // Il select del blocco governa la destinazione pianificata e fa da default
+  // per i box nuovi. I box rimasti su quella destinazione perdono i clienti
+  // della vecchia area; quelli già spostati altrove non c'entrano e restano.
+  const setBlockLocation = (changes) => onChange(index, {
+    ...block,
+    ...changes,
+    allocations: allocationsKeptAfterBlockRelocation(block),
+  });
   return (
     <Box className="op-report-block-editor">
       <Box className="op-report-block-editor-head">
@@ -833,7 +1149,7 @@ function BlockEditor({ block, index, areas, pauses, pauseBounds, totalWork, onCh
             <Select
               value={block.actual_area_id}
               label="Area effettiva"
-              onChange={(event) => setBlock({ actual_area_id: event.target.value, actual_building: "", allocations: [] })}
+              onChange={(event) => setBlockLocation({ actual_area_id: event.target.value, actual_building: "" })}
             >
               {areas.map((area) => <MenuItem key={area.id} value={area.id}>{area.name}</MenuItem>)}
             </Select>
@@ -843,7 +1159,7 @@ function BlockEditor({ block, index, areas, pauses, pauseBounds, totalWork, onCh
             <Select
               value={block.actual_building}
               label="Immobile effettivo"
-              onChange={(event) => setBlock({ actual_building: event.target.value, allocations: [] })}
+              onChange={(event) => setBlockLocation({ actual_building: event.target.value })}
             >
               <MenuItem value=""><em>Nessun immobile</em></MenuItem>
               {(selectedArea?.buildings ?? []).map((building) => <MenuItem key={building} value={building}>{building}</MenuItem>)}
@@ -851,7 +1167,7 @@ function BlockEditor({ block, index, areas, pauses, pauseBounds, totalWork, onCh
           </FormControl>
         </Stack>
       </Box>
-      <CustomerAllocationEditor block={block} blockIndex={index} pauses={pauses} pauseBounds={pauseBounds} totalWork={totalWork} onChange={onChange} onPausesChange={onPausesChange} />
+      <CustomerAllocationEditor block={block} blockIndex={index} areas={areas} pauses={pauses} pauseBounds={pauseBounds} totalWork={totalWork} onChange={onChange} onPausesChange={onPausesChange} />
     </Box>
   );
 }
@@ -893,6 +1209,13 @@ function MemberEditor({ member, workDate, areas, open, onSaved, onConfirmed }) {
   });
   const totals = useMemo(() => draftTotals(draft), [draft]);
   const effectiveBlocks = useMemo(() => blocksWithEffectiveCapacity(draft), [draft]);
+  // Un box rimasto senza cliente valido dopo un cambio di destinazione non è
+  // salvabile: l'autosave si ferma e la conferma resta disabilitata, invece di
+  // far arrivare all'utente l'errore di validazione del backend.
+  const incomplete = useMemo(() => draft.blocks.some((block) => (
+    !block.actual_area_id
+    || block.allocations.some((allocation) => allocation._needs_customer || !allocation.actual_area_id)
+  )), [draft]);
 
   useEffect(() => {
     if (!open) {
@@ -954,7 +1277,7 @@ function MemberEditor({ member, workDate, areas, open, onSaved, onConfirmed }) {
   };
 
   useEffect(() => {
-    if (!dirty || !draft.actual_start || !draft.actual_end || draft.blocks.some((block) => !block.actual_area_id)) return undefined;
+    if (!dirty || !draft.actual_start || !draft.actual_end || incomplete) return undefined;
     autosaveTimer.current = window.setTimeout(async () => {
       try {
         const saved = await saveMutation.mutateAsync(apiPayload(draft));
@@ -969,7 +1292,7 @@ function MemberEditor({ member, workDate, areas, open, onSaved, onConfirmed }) {
       }
     }, 900);
     return () => window.clearTimeout(autosaveTimer.current);
-  }, [dirty, draft, workDate]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dirty, draft, incomplete, workDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateBlock = (index, nextBlock) => change((current) => ({
     ...current,
@@ -1089,7 +1412,7 @@ function MemberEditor({ member, workDate, areas, open, onSaved, onConfirmed }) {
       <Box className="op-report-editor-footer">
         <TextField className="op-report-day-notes" label="Note giornata" size="small" value={draft.notes} onChange={(event) => change({ ...draft, notes: event.target.value })} />
         <Typography variant="caption" color={dirty ? "warning.main" : "success.main"}>
-          {restoreMutation.isPending ? "Ripristino…" : saveMutation.isPending ? "Salvataggio…" : dirty ? "Modifiche in attesa di autosalvataggio" : saveMessage || "Dati sincronizzati"}
+          {restoreMutation.isPending ? "Ripristino…" : saveMutation.isPending ? "Salvataggio…" : incomplete ? "Completa Cliente e Descrizione Jupiter dei box spostati" : dirty ? "Modifiche in attesa di autosalvataggio" : saveMessage || "Dati sincronizzati"}
         </Typography>
         <Button
           variant="outlined"
@@ -1102,7 +1425,7 @@ function MemberEditor({ member, workDate, areas, open, onSaved, onConfirmed }) {
         <Button
           variant="contained"
           color="success"
-          disabled={saveMutation.isPending || confirmMutation.isPending || restoreMutation.isPending || totals.over > 0}
+          disabled={saveMutation.isPending || confirmMutation.isPending || restoreMutation.isPending || totals.over > 0 || incomplete}
           onClick={confirm}
         >
           {confirmMutation.isPending ? "Conferma…" : draft.status === "CONFIRMED" ? "Conferma modifiche" : "Conferma rendicontazione"}
@@ -1132,22 +1455,56 @@ function MemberTimeline({ member }) {
             )}
             {block.allocations.flatMap((allocation, allocationIndex) => {
               const netStart = Number(allocation.start_offset_minutes || 0);
-              const netEnd = netStart + Number(allocation.minutes || 0);
+              const minutes = Number(allocation.minutes || 0);
               const color = allocationColor(`${allocation.customer_code}:${allocation.jupiter_description}`);
-              return netRangeToClock(geometry.work, netStart, netEnd).map((segment, segmentIndex) => (
-                <Box
+              const signature = allocationSignature(allocation);
+              const customerLabel = allocation.customer_description || allocation.customer_code || "Da assegnare";
+              const segments = netRangeToClock(geometry.work, netStart, netStart + minutes);
+              const clockStart = segments[0]?.start;
+              const clockEnd = segments[segments.length - 1]?.end;
+              // Nella riga di riepilogo un box da un'ora è largo una manciata di
+              // pixel: la firma sta nel tooltip, non dentro il box. Il `title`
+              // vuoto sul box serve a non far comparire anche quello nativo del
+              // blocco pianificato sotto, in doppio con il tooltip.
+              const showSignature = Boolean(signature.inline) && minutes >= 180;
+              const tooltip = renderAllocationTooltip(allocation, {
+                customerLabel,
+                relocation: relocationLabel(block, allocation),
+                minutes,
+                totalWork: member.work_minutes,
+                clockRange: clockStart != null && clockEnd != null
+                  ? `${clockLabel(clockStart)}–${clockLabel(clockEnd)}`
+                  : "",
+              });
+              return segments.map((segment, segmentIndex) => (
+                <Tooltip
                   key={`${allocation.id || `${allocation.customer_code}:${allocation.jupiter_description}:${allocationIndex}`}:${segmentIndex}`}
-                  className="op-report-overview-allocation"
-                  style={{
-                    left: `${((segment.start - geometry.start) / geometry.span) * 100}%`,
-                    width: `${((segment.end - segment.start) / geometry.span) * 100}%`,
-                    background: color.background,
-                    borderColor: color.border,
-                    color: color.text,
-                  }}
+                  title={tooltip}
+                  placement="top"
+                  arrow
+                  enterDelay={150}
                 >
-                  {segmentIndex === 0 ? allocation.customer_description : ""}
-                </Box>
+                  <Box
+                    className={`op-report-overview-allocation${showSignature ? " has-signature" : ""}`}
+                    title=""
+                    style={{
+                      left: `${((segment.start - geometry.start) / geometry.span) * 100}%`,
+                      width: `${((segment.end - segment.start) / geometry.span) * 100}%`,
+                      background: color.background,
+                      borderColor: color.border,
+                      color: color.text,
+                    }}
+                  >
+                    {segmentIndex === 0 ? (
+                      <>
+                        <span className="op-report-overview-allocation-name">{customerLabel}</span>
+                        {showSignature && (
+                          <span className="op-report-overview-allocation-signature">{signature.inline}</span>
+                        )}
+                      </>
+                    ) : ""}
+                  </Box>
+                </Tooltip>
               ));
             })}
           </Box>
@@ -1185,6 +1542,13 @@ export default function OperationalReportingPage() {
   const [activeMember, setActiveMember] = useState(null);
   const [openedMembers, setOpenedMembers] = useState(() => new Set());
   const [collapsedTeams, setCollapsedTeams] = useState({});
+  const [teamFilter, setTeamFilter] = useState("");
+  const [employeeFilter, setEmployeeFilter] = useState("");
+  // Appunti della copia: tiene lo snapshot della risorsa di origine, non un id,
+  // così l'incolla non dipende da un nuovo caricamento della giornata.
+  const [clipboard, setClipboard] = useState(null);
+  const [pasteRequest, setPasteRequest] = useState(null);
+  const [pasteFeedback, setPasteFeedback] = useState(null);
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: ["operational-reporting-day", selectedDate],
@@ -1199,11 +1563,37 @@ export default function OperationalReportingPage() {
       setOpenedMembers(new Set());
       setCollapsedTeams({});
       queryClient.setQueryData(["operational-reporting-day", selectedDate], cleanDay);
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
     },
   });
-  const visibleTeams = useMemo(
+  const plannedTeams = useMemo(
     () => (query.data?.teams ?? []).filter((team) => team.members.some((member) => member.has_planning)),
     [query.data?.teams],
+  );
+  // Le risorse selezionabili si restringono alla squadra scelta: filtrare per una
+  // persona che non ne fa parte lascerebbe sempre l'elenco vuoto.
+  const employeeOptions = useMemo(() => {
+    const byId = new Map();
+    for (const team of plannedTeams) {
+      if (teamFilter && team.team_id !== teamFilter) continue;
+      for (const member of team.members) {
+        if (!member.has_planning || byId.has(member.employee_id)) continue;
+        byId.set(member.employee_id, { value: member.employee_id, label: member.employee_name });
+      }
+    }
+    return [...byId.values()].sort((left, right) => left.label.localeCompare(right.label, "it"));
+  }, [plannedTeams, teamFilter]);
+  const visibleTeams = useMemo(
+    () => plannedTeams
+      .filter((team) => !teamFilter || team.team_id === teamFilter)
+      .map((team) => ({
+        ...team,
+        members: team.members.filter((member) => (
+          member.has_planning && (!employeeFilter || member.employee_id === employeeFilter)
+        )),
+      }))
+      .filter((team) => team.members.length > 0),
+    [plannedTeams, teamFilter, employeeFilter],
   );
   const automaticNameColWidth = useMemo(() => defaultNameColumnWidth(visibleTeams), [visibleTeams]);
   const [manualNameColWidth, setManualNameColWidth] = useState(null);
@@ -1227,6 +1617,10 @@ export default function OperationalReportingPage() {
     setActiveMember(null);
     setOpenedMembers(new Set());
     setCollapsedTeams({});
+    // I blocchi copiati appartengono alla giornata: su un'altra data non
+    // corrispondono più a nulla di pianificato.
+    setClipboard(null);
+    setPasteRequest(null);
   }, [selectedDate]);
 
   useEffect(() => {
@@ -1246,6 +1640,27 @@ export default function OperationalReportingPage() {
   }, [query.data, requestedDay, requestedEmployee, requestedTeam, selectedDate]);
 
   const moveDay = (amount) => setSelectedDate(dayjs(selectedDate).add(amount, "day").format("YYYY-MM-DD"));
+  const changeTeamFilter = (value) => {
+    setTeamFilter(value);
+    setActiveMember(null);
+    // Con un filtro attivo restano poche righe: tenerle collassate le nasconderebbe.
+    if (value) setCollapsedTeams({});
+    // La risorsa già scelta può non appartenere alla nuova squadra: lasciarla
+    // attiva produrrebbe un elenco vuoto senza motivo apparente.
+    if (!value || !employeeFilter) return;
+    const team = plannedTeams.find((item) => item.team_id === value);
+    if (!team?.members.some((member) => member.employee_id === employeeFilter)) setEmployeeFilter("");
+  };
+  const changeEmployeeFilter = (value) => {
+    setEmployeeFilter(value);
+    setActiveMember(null);
+    if (value) setCollapsedTeams({});
+  };
+  const resetFilters = () => {
+    setTeamFilter("");
+    setEmployeeFilter("");
+    setActiveMember(null);
+  };
   const resetAllFromPlanner = () => {
     const accepted = window.confirm(
       "Azzerare tutte le rendicontazioni delle squadre per la giornata selezionata e ricaricarle dal Planner? L’operazione non modifica il Planner.",
@@ -1267,6 +1682,56 @@ export default function OperationalReportingPage() {
     });
   };
 
+  const pasteMutation = useMutation({
+    mutationFn: ({ payload }) => saveOperationalReportingDay(payload),
+    onSuccess: (saved, variables) => {
+      updateCachedMember(saved);
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      const leftover = variables.leftover
+        ? ` · ${durationLabel(variables.leftover)} non attribuite: la destinazione ha meno tempo disponibile`
+        : "";
+      setPasteFeedback({
+        severity: variables.leftover ? "warning" : "success",
+        message: `Rendicontazione copiata su ${saved.employee_name}${leftover}`,
+      });
+    },
+    onError: (error) => setPasteFeedback({ severity: "error", message: error.message }),
+  });
+
+  const copyMember = (member) => {
+    setClipboard({ member });
+    setPasteFeedback({
+      severity: "info",
+      message: `Rendicontazione di ${member.employee_name} copiata: usa ⤓ sulla risorsa di destinazione.`,
+    });
+  };
+  const runPaste = (member, alignTime) => {
+    setPasteRequest(null);
+    const { draft, leftover } = buildPasteDraft(clipboard.member, member, selectedDate, alignTime);
+    pasteMutation.mutate({ payload: apiPayload(draft), leftover });
+  };
+  const requestPaste = (member) => {
+    if (!clipboard) return;
+    const sourceDraft = memberToDraft(clipboard.member, selectedDate);
+    const targetDraft = memberToDraft(member, selectedDate);
+    const source = scheduleDigest(sourceDraft, blocksWithEffectiveCapacity(sourceDraft));
+    const target = scheduleDigest(targetDraft, blocksWithEffectiveCapacity(targetDraft));
+    const differences = scheduleDifferences(source, target);
+    const overwrites = memberHasAllocations(member);
+    // Giornata sovrapponibile e destinazione vuota: non c'è nulla da avvisare.
+    if (!differences.length && !overwrites) {
+      runPaste(member, false);
+      return;
+    }
+    setPasteRequest({
+      member,
+      differences,
+      overwrites,
+      source: { ...source, name: clipboard.member.employee_name, minutes: draftTotals(sourceDraft).work },
+      target: { ...target, name: member.employee_name, minutes: draftTotals(targetDraft).work },
+    });
+  };
+
   const openMember = (memberKey) => {
     setOpenedMembers((current) => new Set(current).add(memberKey));
     setActiveMember(memberKey);
@@ -1284,35 +1749,61 @@ export default function OperationalReportingPage() {
 
   return (
     <Box className="op-report-page">
-      <Box className="op-report-topbar">
-        <Box className="op-report-title-wrap">
-          <Box className="op-report-title-badge">✓</Box>
-          <Typography className="op-report-title">Rendicontazione operativa</Typography>
-        </Box>
-        <Box className="op-report-date-nav">
-          <button className="op-report-nav-btn" onClick={() => moveDay(-1)}>‹</button>
-          <TextField type="date" size="small" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} className="op-report-date-input" />
-          <button className="op-report-nav-btn" onClick={() => moveDay(1)}>›</button>
-          <Typography className="op-report-date-label">{dayjs(selectedDate).format("dddd D MMMM YYYY")}</Typography>
-        </Box>
-        <Box className="op-report-topbar-actions">
-          <Typography className="op-report-readonly-hint">Il Planner resta invariato</Typography>
+      <PageHeader
+        section="Rendicontazioni"
+        title="Rendicontazione operativa"
+        meta="Il Planner resta invariato"
+      />
+
+      {/* Data e azioni in barra a sé, fuori dalla banda del titolo (regole 2-3) */}
+      <Box sx={{ mt: 2, mb: 2 }}>
+        <FilterBar dense>
+          <Box className="op-report-date-nav">
+            <button className="op-report-nav-btn" onClick={() => moveDay(-1)}>‹</button>
+            <TextField type="date" size="small" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} className="op-report-date-input" />
+            <button className="op-report-nav-btn" onClick={() => moveDay(1)}>›</button>
+            <Typography className="op-report-date-label">{dayjs(selectedDate).format("dddd D MMMM YYYY")}</Typography>
+          </Box>
+          <FilterSelect
+            label="Squadra"
+            value={teamFilter}
+            onChange={changeTeamFilter}
+            options={plannedTeams.map((team) => ({
+              value: team.team_id,
+              label: `${team.team_icon || ""} ${team.team_name}`.trim(),
+            }))}
+            placeholder="Tutte le squadre"
+          />
+          <FilterSelect
+            label="Risorsa"
+            value={employeeFilter}
+            onChange={changeEmployeeFilter}
+            options={employeeOptions}
+            placeholder="Tutte le risorse"
+          />
+          <Box sx={{ flexGrow: 1 }} />
           <Button
             size="small"
             variant="outlined"
             color="warning"
             disabled={resetDayMutation.isPending || query.isLoading}
             onClick={resetAllFromPlanner}
+            sx={{ flexShrink: 0 }}
           >
             {resetDayMutation.isPending ? "Ricaricamento…" : "Ricarica da Planner"}
           </Button>
-        </Box>
+        </FilterBar>
       </Box>
 
       {query.isLoading && <Box sx={{ display: "grid", placeItems: "center", minHeight: 300 }}><CircularProgress /></Box>}
       {query.isError && <Alert severity="error">{query.error.message}</Alert>}
       {resetDayMutation.isError && <Alert severity="error">{resetDayMutation.error.message}</Alert>}
-      {query.data && visibleTeams.length === 0 && <Alert severity="info">Nessuna squadra con pianificazione per questa giornata.</Alert>}
+      {query.data && plannedTeams.length === 0 && <Alert severity="info">Nessuna squadra con pianificazione per questa giornata.</Alert>}
+      {query.data && plannedTeams.length > 0 && visibleTeams.length === 0 && (
+        <Alert severity="info" action={<Button size="small" onClick={resetFilters}>Azzera filtri</Button>}>
+          Nessuna risorsa corrisponde ai filtri selezionati.
+        </Alert>
+      )}
 
       {visibleTeams.length > 0 && (
         <Box className="op-report-shell">
@@ -1398,6 +1889,53 @@ export default function OperationalReportingPage() {
                         <small>{hhmm(member.planned_start)}–{hhmm(member.planned_end)}</small>
                       </Box>
                       <span className={`op-report-status ${member.status === "CONFIRMED" ? "is-confirmed" : ""}`}>{STATUS_LABELS[member.status] || "Da compilare"}</span>
+                      <Box
+                        className="op-report-row-actions"
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <Tooltip title={memberHasAllocations(member) ? "Copia questa rendicontazione" : "Nessuna attività da copiare"}>
+                          <span>
+                            <button
+                              type="button"
+                              className={`op-report-row-action${clipboard?.member.employee_id === member.employee_id ? " is-copied" : ""}`}
+                              aria-label="Copia rendicontazione"
+                              disabled={!memberHasAllocations(member)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                copyMember(member);
+                              }}
+                            >⧉</button>
+                          </span>
+                        </Tooltip>
+                        {/* Con il dettaglio aperto l'editor tiene una propria
+                            bozza: il suo autosalvataggio sovrascriverebbe la
+                            copia appena incollata. */}
+                        <Tooltip
+                          title={isOpen
+                            ? "Chiudi il dettaglio prima di incollare"
+                            : clipboard
+                              ? `Incolla la rendicontazione di ${clipboard.member.employee_name}`
+                              : "Copia prima una rendicontazione"}
+                        >
+                          <span>
+                            <button
+                              type="button"
+                              className="op-report-row-action"
+                              aria-label="Incolla rendicontazione"
+                              disabled={
+                                !clipboard
+                                || clipboard.member.employee_id === member.employee_id
+                                || pasteMutation.isPending
+                                || isOpen
+                              }
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                requestPaste(member);
+                              }}
+                            >⤓</button>
+                          </span>
+                        </Tooltip>
+                      </Box>
                     </Box>
                     <MemberTimeline member={member} />
                   </Box>
@@ -1426,7 +1964,10 @@ export default function OperationalReportingPage() {
                           areas={query.data.areas}
                           open={isOpen}
                           onSaved={updateCachedMember}
-                          onConfirmed={() => setActiveMember(null)}
+                          onConfirmed={() => {
+                            queryClient.invalidateQueries({ queryKey: ["notifications"] });
+                            setActiveMember(null);
+                          }}
                         />
                       </DialogContent>
                     </Dialog>
@@ -1439,6 +1980,61 @@ export default function OperationalReportingPage() {
             })}
           </Box>
         </Box>
+      )}
+
+      <Dialog open={Boolean(pasteRequest)} onClose={() => setPasteRequest(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Copia su {pasteRequest?.member.employee_name}</DialogTitle>
+        <DialogContent dividers>
+          {pasteRequest && pasteRequest.differences.length > 0 && (
+            <Alert severity="warning" sx={{ mb: 1.5 }}>
+              <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.75 }}>
+                Le due giornate non coincidono: {pasteRequest.differences.map((key) => PASTE_DIFFERENCE_LABELS[key]).join(", ")}.
+              </Typography>
+              <Typography variant="body2" component="div">
+                {scheduleLine("Origine", pasteRequest.source)}
+                <br />
+                {scheduleLine("Destinazione", pasteRequest.target)}
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 0.75 }}>
+                Rispondendo «Sì» l’orario di {pasteRequest.target.name} viene portato su quello
+                dell’origine ({pasteRequest.source.start}–{pasteRequest.source.end}, pause comprese);
+                ciò che non entra nei blocchi pianificati resta fuori e va sistemato a mano.
+              </Typography>
+            </Alert>
+          )}
+          {pasteRequest?.overwrites && (
+            <Alert severity="info">
+              {pasteRequest.member.employee_name} ha già una rendicontazione per questa giornata:
+              viene sostituita da quella copiata.
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPasteRequest(null)}>No, annulla</Button>
+          <Button
+            variant="contained"
+            onClick={() => runPaste(pasteRequest.member, pasteRequest.differences.length > 0)}
+          >
+            Sì, copia
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {pasteFeedback && (
+        <Snackbar
+          open
+          autoHideDuration={7000}
+          onClose={() => setPasteFeedback(null)}
+          anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        >
+          <Alert
+            severity={pasteFeedback.severity}
+            variant="filled"
+            onClose={() => setPasteFeedback(null)}
+          >
+            {pasteFeedback.message}
+          </Alert>
+        </Snackbar>
       )}
     </Box>
   );

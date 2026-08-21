@@ -10,9 +10,12 @@ from app.db import get_db
 from app.enums import JustificationApprovalStatus
 from app.models import Assignment, Employee, Justification, User
 from app.schemas import (
+    DashboardAreaPerson,
     ApproverDashboardResponse,
     ApproverRequestItem,
     DashboardDetail,
+    DashboardBirthdayItem,
+    DashboardBirthdaysResponse,
     DashboardExpirationItem,
     DashboardExpirationsResponse,
     DashboardResponse,
@@ -23,13 +26,54 @@ from app.schemas import (
     UpcomingAbsenceItem,
 )
 from app.api.deps import get_impersonation_employee
-from app.services.absence_permissions import get_linked_tms_employee, resolve_approvers
+from app.services.absence_permissions import get_linked_tms_employee, list_pending_justifications_for_approver
 from app.services.hierarchy import collect_report_ids
 from app.services.portal_auth import build_auth_user_read, build_impersonation_view
 from app.services.security import get_current_user
+from app.services.timeutils import today_local
 from app.services.tms import fetch_all_employee_expirations_from_tms
 
+# Raccoglitore delle allocazioni senza area, come nel riepilogo del Planner.
+NO_AREA_LABEL = "Senza area"
+
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+def _birthday_in_year(birth_date: date, year: int) -> date:
+    try:
+        return birth_date.replace(year=year)
+    except ValueError:
+        # Il 29 febbraio viene celebrato il 28 negli anni non bisestili.
+        return date(year, 2, 28)
+
+
+@router.get("/birthdays", response_model=DashboardBirthdaysResponse)
+def get_upcoming_birthdays(
+    days: int = Query(default=7, ge=0, le=31),
+    db: Session = Depends(get_db),
+) -> DashboardBirthdaysResponse:
+    today = today_local()
+    employees = db.scalars(
+        select(Employee)
+        .where(Employee.is_active.is_(True), Employee.birth_date.is_not(None))
+        .order_by(Employee.full_name)
+    ).all()
+    items: list[DashboardBirthdayItem] = []
+    for employee in employees:
+        next_birthday = _birthday_in_year(employee.birth_date, today.year)
+        if next_birthday < today:
+            next_birthday = _birthday_in_year(employee.birth_date, today.year + 1)
+        days_remaining = (next_birthday - today).days
+        if days_remaining <= days:
+            items.append(DashboardBirthdayItem(
+                employee_id=employee.id,
+                employee_name=employee.full_name,
+                birth_date=employee.birth_date,
+                next_birthday=next_birthday,
+                days_remaining=days_remaining,
+            ))
+    items.sort(key=lambda item: (item.days_remaining, item.employee_name))
+    return DashboardBirthdaysResponse(days=days, items=items)
 
 
 def _ensure_can_view_employee_dashboard(
@@ -77,19 +121,56 @@ def get_dashboard(
 
     # Employees with planner assignments today
     present_rows = db.execute(
-        select(Employee.id, Employee.full_name, Assignment.area, Assignment.immobile)
+        select(
+            Employee.id, Employee.full_name,
+            Assignment.area, Assignment.immobile,
+            Assignment.start_time, Assignment.end_time,
+        )
         .join(Assignment, Assignment.employee_id == Employee.id)
         .where(Assignment.work_date == target_date)
-        .order_by(Employee.full_name)
+        .order_by(Employee.full_name, Assignment.start_time)
     ).all()
 
     emp_areas: dict[str, tuple[str, list[str]]] = {}
-    for emp_id, emp_name, area, immobile in present_rows:
+    # Una riga per allocazione, deduplicata: la stessa persona puo' comparire in
+    # piu' immobili nella stessa giornata.
+    area_shifts: dict[str, list[tuple[str, str, str | None]]] = {}
+    seen_area_shifts: set[tuple[str, str, str | None]] = set()
+    shifts_per_employee: dict[str, int] = {}
+    for emp_id, emp_name, area, immobile, start_time, end_time in present_rows:
         if emp_id not in emp_areas:
             emp_areas[emp_id] = (emp_name, [])
         area_key = " ".join(filter(None, [area, immobile]))
         if area_key:
             emp_areas[emp_id][1].append(area_key)
+        time_range = (
+            f"{str(start_time)[:5]}-{str(end_time)[:5]}"
+            if start_time and end_time
+            else None
+        )
+        shift_key = (area_key or NO_AREA_LABEL, emp_id, time_range)
+        if shift_key in seen_area_shifts:
+            continue
+        seen_area_shifts.add(shift_key)
+        shifts_per_employee[emp_id] = shifts_per_employee.get(emp_id, 0) + 1
+        area_shifts.setdefault(area_key or NO_AREA_LABEL, []).append(
+            (emp_id, emp_name, time_range)
+        )
+
+    # L'orario si mostra solo a chi ha piu' di un'allocazione nella giornata:
+    # per tutti gli altri sarebbe rumore, mentre qui serve a capire quando la
+    # persona sta in K1 e quando in K2.
+    area_people: dict[str, list[DashboardAreaPerson]] = {
+        area: [
+            DashboardAreaPerson(
+                employee_id=emp_id,
+                employee_name=emp_name,
+                time_range=time_range if shifts_per_employee.get(emp_id, 0) > 1 else None,
+            )
+            for emp_id, emp_name, time_range in shifts
+        ]
+        for area, shifts in area_shifts.items()
+    }
 
     present_detail = [
         DashboardDetail(
@@ -100,18 +181,19 @@ def get_dashboard(
         for emp_id, (name, areas) in emp_areas.items()
     ]
 
-    area_employees: dict[str, list[str]] = {}
-    for _emp_id, (name, areas) in emp_areas.items():
-        for area in (set(areas) if areas else {"Senza area"}):
-            area_employees.setdefault(area, []).append(name)
-
     present_by_area = [
         DashboardDetail(
             employee_id=area,
             employee_name=area,
-            info=", ".join(sorted(names)),
+            # "info" resta l'elenco dei soli nomi: e' il testo di ripiego per i
+            # client che non leggono "people".
+            info=", ".join(sorted({person.employee_name for person in people})),
+            people=sorted(
+                people,
+                key=lambda person: (person.employee_name, person.time_range or ""),
+            ),
         )
-        for area, names in sorted(area_employees.items())
+        for area, people in sorted(area_people.items())
     ]
 
     # Employees absent today (justification covering target_date, not rejected)
@@ -120,6 +202,7 @@ def get_dashboard(
             Employee.id, Employee.full_name,
             Justification.start_date, Justification.end_date,
             Justification.start_time, Justification.end_time,
+            Justification.id,
         )
         .join(Justification, Justification.employee_id == Employee.id)
         .where(
@@ -137,8 +220,9 @@ def get_dashboard(
             info=f"{sd.strftime('%d/%m')}–{ed.strftime('%d/%m')}",
             start_time=str(st)[:5] if st else None,
             end_time=str(et)[:5] if et else None,
+            justification_id=justification_id,
         )
-        for emp_id, emp_name, sd, ed, st, et in absent_rows
+        for emp_id, emp_name, sd, ed, st, et, justification_id in absent_rows
     ]
 
     # Future pending approvals (start_date >= today)
@@ -147,6 +231,7 @@ def get_dashboard(
             Employee.id, Employee.full_name,
             Justification.start_date, Justification.end_date,
             Justification.start_time, Justification.end_time,
+            Justification.id,
         )
         .join(Justification, Justification.employee_id == Employee.id)
         .where(
@@ -163,8 +248,9 @@ def get_dashboard(
             info=f"{sd.strftime('%d/%m')}–{ed.strftime('%d/%m')}",
             start_time=str(st)[:5] if st else None,
             end_time=str(et)[:5] if et else None,
+            justification_id=justification_id,
         )
-        for emp_id, emp_name, sd, ed, st, et in pending_rows
+        for emp_id, emp_name, sd, ed, st, et, justification_id in pending_rows
     ]
 
     return DashboardResponse(
@@ -448,24 +534,10 @@ def get_approver_dashboard(
     impersonate_employee: Employee | None = Depends(get_impersonation_employee),
 ) -> ApproverDashboardResponse:
     _ensure_can_view_employee_dashboard(db, current_user, employee_id, impersonate_employee)
-    def is_current_approver(justification: Justification) -> bool:
-        approver_1, approver_2, approver_3 = resolve_approvers(db, justification.employee)
-        approver_ids = {
-            approver_1.id if approver_1 else None,
-            approver_2.id if approver_2 else None,
-            approver_3.id if approver_3 else None,
-        }
-        return employee_id in approver_ids
-
     # Calcolato sugli approvatori attuali del dipendente, non su quelli congelati sulla
     # richiesta al momento della creazione: un cambio di approvatore deve riflettersi subito.
-    pending_candidates = db.scalars(
-        select(Justification)
-        .options(selectinload(Justification.employee), selectinload(Justification.requested_by_employee))
-        .where(Justification.approval_status == JustificationApprovalStatus.pending)
-        .order_by(Justification.start_date.asc())
-    ).all()
-    pending_rows = [j for j in pending_candidates if is_current_approver(j)]
+    approver = db.get(Employee, employee_id)
+    pending_rows = list_pending_justifications_for_approver(db, approver) if approver else []
 
     is_approver = or_(
         Justification.approver_1_employee_id == employee_id,

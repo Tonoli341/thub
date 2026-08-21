@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import PageHeader from "../components/PageHeader";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -324,10 +325,8 @@ export default function IntegrationsPage() {
 
   return (
     <Box>
-      <Typography variant="h5" fontWeight={700} sx={{ mb: 0.5 }}>
-        Integrazioni
-      </Typography>
-      <Typography fontSize={13} color="text.secondary" sx={{ mb: 2.5 }}>
+      <PageHeader section="Configurazione" title="Integrazioni" />
+      <Typography fontSize={13} color="text.secondary" sx={{ mt: 2, mb: 2.5 }}>
         Servizi esterni collegati a T-Hub. Ogni integrazione ha un interruttore generale: a spento non viene effettuata
         alcuna chiamata verso il servizio. Le credenziali sono cifrate a database e non sono più rileggibili una volta salvate.
       </Typography>

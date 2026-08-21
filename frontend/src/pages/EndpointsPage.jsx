@@ -1,4 +1,5 @@
 import { useState } from "react";
+import PageHeader from "../components/PageHeader";
 import { Box, Chip, Collapse, Divider, Stack, Tooltip, Typography } from "@mui/material";
 
 function Badge({ method }) {
@@ -425,7 +426,7 @@ const ABSENCE_REQUEST_REQUEST = `{
   "start_date": "2026-08-10",
   "end_date": "2026-08-14",
   "start_time": "08:00",
-  "end_time": "17:00"
+  "end_time": "18:00"
 }`;
 
 const ABSENCE_REQUEST_RESPONSE = `{
@@ -436,7 +437,7 @@ const ABSENCE_REQUEST_RESPONSE = `{
   "start_date": "2026-08-10",
   "end_date": "2026-08-14",
   "start_time": "08:00:00",
-  "end_time": "17:00:00",
+  "end_time": "18:00:00",
   "approval_status": "pending",
   "approval_required": true,
   "approver_1_employee_name": "BIANCHI GIULIO",
@@ -461,7 +462,7 @@ const ABSENCE_REQUEST_LIST_RESPONSE = `[
     "start_date": "2026-08-10",
     "end_date": "2026-08-14",
     "start_time": "08:00:00",
-    "end_time": "17:00:00",
+    "end_time": "18:00:00",
     "approval_status": "pending",
     "approval_required": true,
     "approver_1_employee_name": "BIANCHI GIULIO",
@@ -856,10 +857,8 @@ export default function EndpointsPage() {
   return (
     <Box sx={{ maxWidth: 860, mx: "auto" }}>
       <Box sx={{ mb: 4 }}>
-        <Typography variant="h5" fontWeight={700} sx={{ mb: 0.5 }}>
-          Endpoint API esterni
-        </Typography>
-        <Typography color="text.secondary" fontSize={14}>
+        <PageHeader section="Configurazione" title="Endpoint API esterni" />
+        <Typography color="text.secondary" fontSize={14} sx={{ mt: 2 }}>
           Endpoint riservati a client esterni. Il flusso prevede login locale con username/password e successivo uso di JWT Bearer sugli endpoint protetti.
         </Typography>
       </Box>
@@ -951,7 +950,7 @@ export default function EndpointsPage() {
           Vista semplificata dello stesso sistema di assenze del portale (box &quot;Assenze&quot;): il dipendente gestisce <strong>solo le proprie</strong> ferie.
           Il tipo è sempre <Box component="code" sx={{ fontFamily: "monospace", fontSize: 12, bgcolor: "action.hover", px: 0.5, borderRadius: "4px" }}>FERIE</Box>;
           la distinzione tra &quot;Giorno&quot; (orario custom, <Box component="code" sx={{ fontFamily: "monospace", fontSize: 12, bgcolor: "action.hover", px: 0.5, borderRadius: "4px" }}>start_date == end_date</Box>) e &quot;Giorni&quot;
-          (intervallo di giorni interi, tipicamente <Box component="code" sx={{ fontFamily: "monospace", fontSize: 12, bgcolor: "action.hover", px: 0.5, borderRadius: "4px" }}>08:00–17:00</Box>) va gestita lato client, come nel portale.
+          (intervallo di giorni interi, <Box component="code" sx={{ fontFamily: "monospace", fontSize: 12, bgcolor: "action.hover", px: 0.5, borderRadius: "4px" }}>08:00–18:00</Box>; <Box component="code" sx={{ fontFamily: "monospace", fontSize: 12, bgcolor: "action.hover", px: 0.5, borderRadius: "4px" }}>08:00–17:00</Box> resta letto come giornata intera per le richieste già inviate) va gestita lato client, come nel portale.
           Una volta <Box component="code" sx={{ fontFamily: "monospace", fontSize: 12, bgcolor: "action.hover", px: 0.5, borderRadius: "4px" }}>approved</Box> o <Box component="code" sx={{ fontFamily: "monospace", fontSize: 12, bgcolor: "action.hover", px: 0.5, borderRadius: "4px" }}>rejected</Box>, la richiesta non è più modificabile né cancellabile.
         </Typography>
       </Box>

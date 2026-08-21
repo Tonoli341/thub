@@ -1,4 +1,5 @@
 import dagre from "dagre";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
 import { useQuery } from "@tanstack/react-query";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, getViewportForBounds, useReactFlow } from "@xyflow/react";
 import { Alert, Avatar, Box, Button, Checkbox, Chip, CircularProgress, Divider, ListItemText, Menu, MenuItem, Paper, Stack, Typography } from "@mui/material";
@@ -1463,65 +1464,33 @@ function OrgChartCanvas() {
 
   return (
     <Stack spacing={3}>
-      <Paper
-        sx={{
-          p: 4,
-          color: "white",
-          background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))",
-        }}
-      >
-        <Typography variant="overline" sx={{ opacity: 0.82 }}>Panoramica relazioni</Typography>
-        <Typography variant="h4">Organigramma</Typography>
+      <PageHeader section="Panoramica relazioni" title="Organigramma" />
 
+      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
 
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} sx={{ mt: 2.25, flexWrap: "wrap" }}>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ flexWrap: "wrap" }} useFlexGap>
           <Button
-            variant="contained"
+            size="small"
+            variant="outlined"
             onClick={() => setCollapsedIds(new Set(collapsibleIds))}
             disabled={!collapsibleIds.length}
-            sx={{
-              borderRadius: 2,
-              textTransform: "none",
-              fontWeight: 700,
-              bgcolor: "rgba(255,255,255,0.14)",
-              color: "white",
-              boxShadow: "none",
-              "&:hover": { bgcolor: "rgba(255,255,255,0.22)", boxShadow: "none" },
-            }}
           >
             Comprimi tutto
           </Button>
           <Button
+            size="small"
             variant="outlined"
             onClick={() => setCollapsedIds(new Set())}
             disabled={collapsedIds.size === 0}
-            sx={{
-              borderRadius: 2,
-              textTransform: "none",
-              fontWeight: 700,
-              color: "white",
-              borderColor: "rgba(255,255,255,0.45)",
-              "&:hover": { borderColor: "rgba(255,255,255,0.7)", bgcolor: "rgba(255,255,255,0.08)" },
-              "&.Mui-disabled": { color: "rgba(255,255,255,0.4)", borderColor: "rgba(255,255,255,0.16)" },
-            }}
           >
             Espandi tutto{collapsedIds.size > 0 ? ` (${collapsedIds.size})` : ""}
           </Button>
           <Box sx={{ flexGrow: 1 }} />
           <Button
+            size="small"
             variant="contained"
             onClick={(event) => setPrintMenuAnchor(event.currentTarget)}
             disabled={loading || printing || printSections.length === 0}
-            sx={{
-              borderRadius: 2,
-              textTransform: "none",
-              fontWeight: 700,
-              bgcolor: "rgba(255,255,255,0.14)",
-              color: "white",
-              boxShadow: "none",
-              "&:hover": { bgcolor: "rgba(255,255,255,0.22)", boxShadow: "none" },
-              "&.Mui-disabled": { color: "rgba(255,255,255,0.4)", bgcolor: "rgba(255,255,255,0.08)" },
-            }}
           >
             {printing ? "Generazione PDF…" : "Stampa PDF ▾"}
           </Button>
@@ -1585,11 +1554,11 @@ function OrgChartCanvas() {
           </Box>
         </Menu>
 
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2.25 }}>
-          <Chip size="small" label={`${model.totalEmployees} risorse`} sx={{ bgcolor: "rgba(255,255,255,0.16)", color: "white" }} />
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.25 }}>
+          <Chip size="small" label={`${model.totalEmployees} risorse`} sx={{ bgcolor: "action.hover" }} />
         </Stack>
 
-        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mt: 1.5, opacity: 0.82 }}>
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mt: 1, color: "text.secondary" }}>
           {COURSE_BADGES.map(({ icon, label }) => (
             <Typography key={label} sx={{ fontSize: 12 }}>{icon} {label}</Typography>
           ))}

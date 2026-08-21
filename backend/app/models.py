@@ -99,10 +99,15 @@ class FieldDefinition(TimestampMixin, Base):
 class InfinityBillingCustomerSupplierMap(TimestampMixin, Base):
     __tablename__ = "infinity_billing_customer_supplier_map"
     __table_args__ = (
+        # Lo stesso cliente sulla stessa voce Infinity va rendicontato su piu
+        # aree e immobili (es. Dronero TONOLI EXTRA e Rossana TONOLI EXTRA):
+        # area e immobili fanno quindi parte dell'identita dell'incrocio.
         UniqueConstraint(
             "infinity_billing_item_id",
             "customer_supplier_code",
             "jupiter_description",
+            "operational_area_id",
+            "buildings",
             name="uq_infinity_billing_customer_supplier_map_pair",
         ),
     )
@@ -194,6 +199,7 @@ class Employee(TimestampMixin, Base):
     config_can_access_expirations: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     config_expirations_scope: Mapped[str] = mapped_column(String(16), default="all", nullable=False)
     config_can_access_deliveries: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    config_can_access_maintenance: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     app_role: Mapped[str | None] = mapped_column(String(16))
     planner_access_level: Mapped[str | None] = mapped_column(String(32))
     default_operational_area_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("operational_areas.id"))
@@ -422,9 +428,22 @@ class Assignment(TimestampMixin, Base):
     training_course_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("training_courses.id"), index=True
     )
+    last_modified_by_name: Mapped[str | None] = mapped_column(String(120))
 
     employee: Mapped[Employee] = relationship(back_populates="assignments")
     training_course: Mapped["TrainingCourse | None"] = relationship()
+
+
+class PlannerDayAudit(TimestampMixin, Base):
+    __tablename__ = "planner_day_audits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    work_date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
+    first_copied_from_date: Mapped[date | None] = mapped_column(Date)
+    first_copied_by_name: Mapped[str | None] = mapped_column(String(120))
+    first_copied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_modified_by_name: Mapped[str | None] = mapped_column(String(120))
+    last_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Justification(TimestampMixin, Base):
@@ -517,6 +536,10 @@ class Team(TimestampMixin, Base):
     workload_owner_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     operational_reporting_owner_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
     operational_reporting_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    operational_reporting_email_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    operational_reporting_last_email_date: Mapped[date | None] = mapped_column(Date)
 
     members: Mapped[list["TeamMember"]] = relationship(back_populates="team", cascade="all, delete-orphan")
     team_leader: Mapped[Employee | None] = relationship(foreign_keys=[team_leader_employee_id])

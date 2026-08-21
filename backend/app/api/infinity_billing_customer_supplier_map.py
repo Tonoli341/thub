@@ -15,6 +15,7 @@ from app.schemas import (
     InfinityMapFieldAssignmentsBulkReplace,
 )
 from app.services.audit import record_audit_log
+from app.services.normalization import building_codes
 from app.services.security import get_current_user
 
 router = APIRouter(
@@ -76,16 +77,29 @@ def _ensure_unique_pair(
     infinity_billing_item_id: str,
     customer_supplier_code: str,
     jupiter_description: str | None,
+    operational_area_id: str | None,
+    buildings: list | None,
     current_id: str | None = None,
 ) -> None:
     statement = select(InfinityBillingCustomerSupplierMap).where(
         InfinityBillingCustomerSupplierMap.infinity_billing_item_id == infinity_billing_item_id,
         func.lower(InfinityBillingCustomerSupplierMap.customer_supplier_code) == customer_supplier_code.lower(),
         func.lower(func.coalesce(InfinityBillingCustomerSupplierMap.jupiter_description, "")) == (jupiter_description or "").lower(),
+        InfinityBillingCustomerSupplierMap.operational_area_id.is_(None)
+        if operational_area_id is None
+        else InfinityBillingCustomerSupplierMap.operational_area_id == operational_area_id,
     )
     if current_id is not None:
         statement = statement.where(InfinityBillingCustomerSupplierMap.id != current_id)
-    duplicate = db.scalar(statement)
+    # Gli immobili sono una lista JSON: il confronto per insieme normalizzato non
+    # è esprimibile in SQL portabile, quindi si filtra per area e si confrontano
+    # gli immobili in Python. L'ordine di selezione non deve contare: ["A","B"] e
+    # ["B","A"] sono lo stesso incrocio.
+    target_buildings = set(building_codes(buildings))
+    duplicate = next(
+        (row for row in db.scalars(statement) if set(building_codes(row.buildings)) == target_buildings),
+        None,
+    )
     if duplicate is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Incrocio Infinity / Cliente-Fornitore gia esistente.")
 
@@ -104,7 +118,14 @@ def create_infinity_billing_customer_supplier_map(
     db: Session = Depends(get_db),
 ) -> InfinityBillingCustomerSupplierMap:
     _ensure_infinity_item_exists(db, payload.infinity_billing_item_id)
-    _ensure_unique_pair(db, payload.infinity_billing_item_id, payload.customer_supplier_code, payload.jupiter_description)
+    _ensure_unique_pair(
+        db,
+        payload.infinity_billing_item_id,
+        payload.customer_supplier_code,
+        payload.jupiter_description,
+        payload.operational_area_id,
+        payload.buildings,
+    )
     _validate_operational_area_payload(db, payload.operational_area_id, payload.buildings)
 
     obj = InfinityBillingCustomerSupplierMap(**payload.model_dump())
@@ -140,8 +161,25 @@ def update_infinity_billing_customer_supplier_map(
     next_buildings = values.get("buildings", obj.buildings)
     if "infinity_billing_item_id" in values:
         _ensure_infinity_item_exists(db, next_infinity_item_id)
-    if "infinity_billing_item_id" in values or "customer_supplier_code" in values or "jupiter_description" in values:
-        _ensure_unique_pair(db, next_infinity_item_id, next_customer_supplier_code, next_jupiter_description, current_id=map_id)
+    if any(
+        field in values
+        for field in (
+            "infinity_billing_item_id",
+            "customer_supplier_code",
+            "jupiter_description",
+            "operational_area_id",
+            "buildings",
+        )
+    ):
+        _ensure_unique_pair(
+            db,
+            next_infinity_item_id,
+            next_customer_supplier_code,
+            next_jupiter_description,
+            next_operational_area_id,
+            next_buildings,
+            current_id=map_id,
+        )
     if "operational_area_id" in values or "buildings" in values:
         _validate_operational_area_payload(db, next_operational_area_id, next_buildings)
 

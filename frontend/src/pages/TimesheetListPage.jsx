@@ -34,6 +34,9 @@ import { deleteActivityRecordAdmin, getActivityRecordsAdmin, getDailyRecords, ge
 import { useAuth } from "../auth";
 import { reportingBuildingCodes } from "../buildings";
 import ReportingPeriodFilter from "../components/ReportingPeriodFilter";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
+import { headRowSx, stickyFirstColumnSx, tableSx } from "../components/tableStyles";
+import { timesheetListColumns } from "./timesheetListColumns";
 
 function fmtDuration(seconds) {
   const totalMinutes = Math.round((seconds ?? 0) / 60);
@@ -688,17 +691,16 @@ export default function ActivityListPage() {
     : data;
 
   const totalHours = filteredData.reduce((sum, r) => sum + r.duration_seconds, 0) / 3600;
+  const columns = timesheetListColumns(isAdmin);
 
   return (
     <Stack spacing={3}>
       {/* Header */}
-      <Paper sx={{ p: 3.5, borderRadius: 4, background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))", color: "#fff" }}>
-        <Typography variant="overline" sx={{ opacity: 0.8 }}>Rendicontazioni</Typography>
-        <Typography variant="h4">Giornate</Typography>
-        <Typography sx={{ mt: 0.5, maxWidth: 680, opacity: 0.9, fontSize: "0.95rem" }}>
-          Filtra per data, dipendente, commessa o testo nei campi extra. Espandi una riga per vedere i campi extra registrati.
-        </Typography>
-      </Paper>
+      <PageHeader
+        section="Rendicontazioni"
+        title="Giornate"
+        meta={filteredData.length ? `${filteredData.length} giornate` : undefined}
+      />
 
       {/* Filters */}
       <ReportingPeriodFilter
@@ -800,19 +802,14 @@ export default function ActivityListPage() {
 
         {!isLoading && filteredData.length > 0 && (
           <Box sx={{ overflowX: "auto" }}>
-            <Table size="small" sx={{ minWidth: 900 }}>
+            <Table size="small" sx={{ ...tableSx({ minWidth: 1020, dense: true }), ...stickyFirstColumnSx }}>
               <TableHead>
-                <TableRow>
-                  <TableCell>Dipendente</TableCell>
-                  <TableCell>Commessa</TableCell>
-                  <TableCell>Area</TableCell>
-                  <TableCell>Immobile</TableCell>
-                  <TableCell>Data</TableCell>
-                  <TableCell>Inizio</TableCell>
-                  <TableCell>Fine</TableCell>
-                  <TableCell>Durata</TableCell>
-                  <TableCell>Campi</TableCell>
-                  {isAdmin && <TableCell>Azioni Admin</TableCell>}
+                <TableRow sx={headRowSx}>
+                  {columns.map((column) => (
+                    <TableCell key={column.key} sx={{ width: `${column.width}%` }}>
+                      {column.label}
+                    </TableCell>
+                  ))}
                 </TableRow>
               </TableHead>
               <TableBody>

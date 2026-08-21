@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, selectinload
 
-from app.enums import AppRole
+from app.enums import AppRole, JustificationApprovalStatus
 from app.models import Employee, Justification, LdapEmployee, User
 from app.services.hierarchy import collect_report_ids
 
@@ -49,6 +49,43 @@ def resolve_approvers(db: Session, employee: Employee) -> tuple[Employee | None,
     approver_2 = employee.absence_approver_2 or _resolve_default_approver_by_tms_id(db, DEFAULT_APPROVER_2_TMS_ID)
     approver_3 = employee.absence_approver_3 or _resolve_default_approver_by_tms_id(db, DEFAULT_APPROVER_3_TMS_ID)
     return approver_1, approver_2, approver_3
+
+
+def list_pending_justifications_for_approver(
+    db: Session,
+    approver: Employee,
+) -> list[Justification]:
+    """Richieste ancora aperte assegnate all'approvatore secondo la configurazione attuale."""
+    conditions = [
+        Employee.absence_approver_1_employee_id == approver.id,
+        Employee.absence_approver_2_employee_id == approver.id,
+        Employee.absence_approver_3_employee_id == approver.id,
+        (
+            Employee.absence_approver_1_employee_id.is_(None)
+            & (Employee.manager_employee_id == approver.id)
+        ),
+    ]
+    normalized_tms_id = (approver.tms_id or "").strip()
+    if normalized_tms_id == DEFAULT_APPROVER_2_TMS_ID:
+        conditions.append(Employee.absence_approver_2_employee_id.is_(None))
+    if normalized_tms_id == DEFAULT_APPROVER_3_TMS_ID:
+        conditions.append(Employee.absence_approver_3_employee_id.is_(None))
+
+    return list(
+        db.scalars(
+            select(Justification)
+            .join(Employee, Employee.id == Justification.employee_id)
+            .options(
+                selectinload(Justification.employee),
+                selectinload(Justification.requested_by_employee),
+            )
+            .where(
+                Justification.approval_status == JustificationApprovalStatus.pending,
+                or_(*conditions),
+            )
+            .order_by(Justification.start_date.asc(), Justification.created_at.asc())
+        ).all()
+    )
 
 
 def build_absence_permission_context(

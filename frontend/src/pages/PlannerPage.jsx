@@ -59,8 +59,6 @@ import lexendFontUrl from "../assets/fonts/Lexend-VariableFont_wght.ttf";
 import logoTonoli from "../upload/logoTonoli.png";
 import { buildCopySourceTeams, notesForCopiedAssignment } from "./plannerCopy";
 import {
-  WORKLOAD_NO_WAREHOUSE_KEY,
-  groupWorkloadRowsByArea,
   isCancelledGesapBooking,
   workloadCustomerLabel,
   workloadSupplierLabel,
@@ -132,22 +130,9 @@ const AREA_PALETTE_DARK = [
 
 const NO_TEAM_KEY = "__no_team__";
 
-// Etichetta della sezione che raccoglie, dentro un'area divisa per immobili,
-// le allocazioni rimaste senza immobile.
-const NO_BUILDING_KEY = "SENZA IMMOBILE";
-
-// Perimetro di default del riepilogo: tutti i dipendenti, nessun filtro attivo.
-const DEFAULT_REPORT_SCOPE = {
-  allEmployees: true,
-  byTeam: false,
-  teamIds: [],
-  byRole: false,
-  roles: [],
-  byArea: false,
-  areaNames: [],
-  byImmobile: false,
-  immobili: [],
-};
+// Raccoglitore delle allocazioni senza area, con la stessa etichetta usata
+// dalla card "In Planner oggi" della dashboard.
+const NO_AREA_KEY = "Senza area";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 function normalizeAreaKey(area) { return String(area ?? "").trim().toUpperCase(); }
@@ -171,10 +156,14 @@ function formatAssignmentAreaLabel(area, immobile) {
 }
 // Colore dedicato per gli slot di formazione (viola), distinto dalle aree operative.
 const TRAINING_COLOR = { bg: "#ede7f6", border: "#7e57c2", text: "#4527a0" };
+// Visita di idoneità: verde acqua, per non confonderla né con la formazione né con
+// le aree operative.
+const MEDICAL_CHECK_COLOR = { bg: "#e0f2f1", border: "#00897b", text: "#00695c" };
 function formatAssignmentPrimaryLabel(a, immobile) {
   if (a.cause === "FORMAZIONE") {
     return a.training_course_title ? `🎓 ${a.training_course_title}` : "🎓 Formazione";
   }
+  if (a.cause === "VISITA_IDONEITA") return "🩺 Visita idoneità";
   return formatAssignmentAreaLabel(a.area, immobile);
 }
 function renderAssignmentTooltip(a, startH, endH, breakSegment = null) {
@@ -246,8 +235,11 @@ function isDaysModeJustification(justification) {
   if (justification.start_date && justification.end_date && justification.start_date !== justification.end_date) {
     return true;
   }
+  // 08:00-18:00 e' il marcatore corrente della giornata intera, 08:00-17:00 quello
+  // storico: entrambi vanno letti come giornata intera, non come assenza a ore.
   if (
-    isRangeMatch(justification.start_time, justification.end_time, "08:00", "17:00")
+    isRangeMatch(justification.start_time, justification.end_time, "08:00", "18:00")
+    || isRangeMatch(justification.start_time, justification.end_time, "08:00", "17:00")
   ) {
     return true;
   }
@@ -404,8 +396,8 @@ export default function PlannerPage() {
   const [generateSnackbar, setGenerateSnackbar] = useState(null);
   const [clearDayOpen, setClearDayOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
-  const [reportScope, setReportScope] = useState(DEFAULT_REPORT_SCOPE);
-  const [reportGrouping, setReportGrouping] = useState("team"); // "team" | "building"
+  // Perimetro del riepilogo: elenco vuoto = tutte le squadre.
+  const [reportTeamIds, setReportTeamIds] = useState([]);
   const [teamWorkloadEdit, setTeamWorkloadEdit] = useState(null);
   const [sortMode, setSortMode] = useState("team"); // "alpha" | "team"
   const { darkMode } = useAppTheme();
@@ -443,6 +435,16 @@ export default function PlannerPage() {
   const isAdmin = effectiveUser?.effective_role === "admin";
   const isHrTrainer = effectiveUser?.effective_role === "hr";
   const canUseTraining = isAdmin || isHrTrainer;
+  // Visita di idoneità: perimetro piu' largo della formazione, come il gate del
+  // backend (api/assignments.py MEDICAL_CHECK_ROLES).
+  const isManager = effectiveUser?.effective_role === "manager";
+  const canUseMedicalCheck = isAdmin || isHrTrainer || isManager;
+  // Tipi selezionabili nel dialog: sotto i due non si mostra nemmeno la select.
+  const availableBlockModes = [
+    ...(isHrTrainer ? [] : ["presenza"]),
+    ...(canUseTraining ? ["formazione"] : []),
+    ...(canUseMedicalCheck ? ["visita"] : []),
+  ];
 
   // ── queries ──────────────────────────────────────────────────────────────
   const employeesQuery = useQuery({
@@ -1077,40 +1079,6 @@ export default function PlannerPage() {
     { value: NO_TEAM_KEY, label: "Senza squadra" },
   ], [teamsQuery.data]);
 
-  const reportRoleOptions = useMemo(() => {
-    const roles = new Set();
-    for (const employee of Object.values(employeeById)) {
-      const role = String(employee.tms_role_description ?? "").trim().toUpperCase();
-      if (role) roles.add(role);
-    }
-    return [...roles].sort((a, b) => a.localeCompare(b));
-  }, [employeeById]);
-
-  const reportAreaOptions = useMemo(() => {
-    const names = new Set();
-    for (const area of areasQuery.data ?? []) {
-      const name = String(area.name ?? "").trim();
-      if (name) names.add(name);
-    }
-    // Le allocazioni possono puntare ad aree non piu' in anagrafica: restano
-    // filtrabili, altrimenti sparirebbero dal perimetro senza spiegazione.
-    for (const assignment of assignmentsQuery.data ?? []) {
-      const name = String(assignment.area ?? "").trim();
-      if (name) names.add(name);
-    }
-    return [...names].sort((a, b) => a.localeCompare(b));
-  }, [areasQuery.data, assignmentsQuery.data]);
-
-  const reportImmobileOptions = useMemo(() => {
-    const buildings = new Set();
-    for (const area of areasQuery.data ?? []) {
-      for (const code of plannerBuildingCodes(area.buildings)) {
-        buildings.add(code);
-      }
-    }
-    return [...buildings].sort((a, b) => a.localeCompare(b));
-  }, [areasQuery.data]);
-
   // Dipendenti diventati inattivi (es. usciti dal TMS) che hanno ancora allocazioni o assenze
   // residue sul giorno selezionato: non compaiono più nella rubrica attiva, ma vanno comunque
   // mostrati (in sola pulizia) così da poter eliminare i record orfani dal Planner.
@@ -1267,6 +1235,8 @@ export default function PlannerPage() {
     if (!editingBlock || !canWritePlanning) return;
     const payload = editingBlock.cause === "FORMAZIONE"
       ? { training_course_id: editForm.trainingCourseId || null, notes: editForm.notes || null }
+      : editingBlock.cause === "VISITA_IDONEITA"
+      ? { notes: editForm.notes || null }
       : {
           area: editForm.area || null,
           immobile: normalizeImmobile(editForm.area, editForm.immobile, areas),
@@ -1278,310 +1248,131 @@ export default function PlannerPage() {
     );
   }
 
+  // Il riepilogo ha una struttura fissa: assenze in alto, personale in turno
+  // raggruppato per area+immobile con la stessa chiave della card "In Planner
+  // oggi" della home, carichi di lavoro per squadra in fondo.
   function buildReportData() {
     const dateLabel = dayjs(selectedDate).format("dddd D MMMM YYYY");
-    const teams = (teamsQuery.data ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
-    const teamSectionsMap = {};
 
-    // Perimetro del riepilogo: i filtri attivi si combinano in AND; un filtro
-    // spuntato ma senza valori selezionati non restringe il risultato.
-    const scope = reportScope;
-    const teamFilterActive = !scope.allEmployees && scope.byTeam && scope.teamIds.length > 0;
-    const roleFilterActive = !scope.allEmployees && scope.byRole && scope.roles.length > 0;
-    const areaFilterActive = !scope.allEmployees && scope.byArea && scope.areaNames.length > 0;
-    const immobileFilterActive = !scope.allEmployees && scope.byImmobile && scope.immobili.length > 0;
-    const scopeAreaKeys = areaFilterActive ? scope.areaNames.map(normalizeAreaKey) : [];
-
+    // Perimetro del riepilogo: la squadra e' l'unico filtro; senza squadre
+    // selezionate il riepilogo comprende tutti i dipendenti.
+    const teamFilterActive = reportTeamIds.length > 0;
     const employeeInScope = (employeeId) => {
-      if (teamFilterActive) {
-        const teamKey = employeeTeamMap[employeeId]?.id ?? NO_TEAM_KEY;
-        if (!scope.teamIds.includes(teamKey)) return false;
-      }
-      if (roleFilterActive) {
-        const role = String(employeeById[employeeId]?.tms_role_description ?? "").trim().toUpperCase();
-        if (!scope.roles.includes(role)) return false;
-      }
-      return true;
+      if (!teamFilterActive) return true;
+      const teamKey = employeeTeamMap[employeeId]?.id ?? NO_TEAM_KEY;
+      return reportTeamIds.includes(teamKey);
     };
 
-    const assignmentInScope = (assignment) => {
-      if (!employeeInScope(assignment.employee_id)) return false;
-      if (areaFilterActive && !scopeAreaKeys.includes(normalizeAreaKey(assignment.area))) return false;
-      if (immobileFilterActive) {
-        const immobile = String(assignment.immobile ?? "").trim().toUpperCase();
-        if (!scope.immobili.includes(immobile)) return false;
-      }
-      return true;
-    };
+    const teamNameById = Object.fromEntries((teamsQuery.data ?? []).map((team) => [team.id, team.name]));
+    const scopeLabel = teamFilterActive
+      ? `Squadre: ${reportTeamIds.map((id) => (id === NO_TEAM_KEY ? "Senza squadra" : teamNameById[id] ?? id)).join(", ")} (assenti: elenco completo)`
+      : null;
 
-    const scopeParts = [];
-    if (teamFilterActive) {
-      const teamNameById = Object.fromEntries((teamsQuery.data ?? []).map((team) => [team.id, team.name]));
-      scopeParts.push(`Squadre: ${scope.teamIds.map((id) => (id === NO_TEAM_KEY ? "Senza squadra" : teamNameById[id] ?? id)).join(", ")}`);
+    // Le assenze restano sempre complete, a prescindere dal perimetro:
+    // il filtro si applica solo alle allocazioni.
+    const absences = (justificationsQuery.data ?? [])
+      .map((j) => ({
+        name: employeeById[j.employee_id]?.full_name ?? "–",
+        displayLabel: getAbsenceDisplayLabel(j),
+        note: j.description?.trim() || null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // Stessa logica della dashboard (backend/app/api/dashboard.py): la chiave e'
+    // "Area Immobile" (es. "Kimberly K1"), chi non ha area finisce in "Senza
+    // area" e chi lavora su piu' aree compare in ognuna.
+    const groupsByKey = {};
+    const allocationsPerEmployee = {};
+    let allocationCount = 0;
+    for (const assignment of assignmentsQuery.data ?? []) {
+      if (!employeeInScope(assignment.employee_id)) continue;
+      allocationCount += 1;
+      const areaName = String(assignment.area ?? "").trim();
+      const immobile = String(assignment.immobile ?? "").trim();
+      const key = [areaName, immobile].filter(Boolean).join(" ") || NO_AREA_KEY;
+      if (!groupsByKey[key]) {
+        groupsByKey[key] = {
+          id: `area:${key}`,
+          name: key,
+          color: areaColorMap[areaName]?.border ?? "#006f3d",
+          allocations: [],
+        };
+      }
+      allocationsPerEmployee[assignment.employee_id] = (allocationsPerEmployee[assignment.employee_id] ?? 0) + 1;
+      groupsByKey[key].allocations.push({
+        employeeId: assignment.employee_id,
+        name: assignment.employee_name ?? employeeById[assignment.employee_id]?.full_name ?? "–",
+        note: assignment.notes?.trim() || null,
+        startTime: String(assignment.start_time ?? "").slice(0, 5),
+        timeRange: formatTimeRange(assignment.start_time, assignment.end_time),
+      });
     }
-    if (roleFilterActive) scopeParts.push(`Ruoli: ${scope.roles.join(", ")}`);
-    if (areaFilterActive) scopeParts.push(`Aree: ${scope.areaNames.join(", ")}`);
-    if (immobileFilterActive) scopeParts.push(`Immobili: ${scope.immobili.join(", ")}`);
-    const scopeLabel = scopeParts.length > 0 ? `${scopeParts.join(" · ")} (assenti: elenco completo)` : null;
 
-    for (const team of teams) {
-      teamSectionsMap[team.id] = {
-        id: team.id,
-        name: team.name,
-        icon: team.icon ?? "👥",
-        color: team.color ?? "#5f6b7a",
-        // Owner predefinito della squadra; in mancanza, chi ha compilato il carico.
-        ownerName: team.workload_owner_employee_name ?? teamWorkloadOwnerByTeamId[team.id] ?? null,
-        absences: [],
-        areas: [],
-      };
-    }
+    const areaGroups = Object.values(groupsByKey)
+      .map((group) => ({
+        ...group,
+        allocations: group.allocations
+          .slice()
+          .sort(compareAllocations)
+          // L'orario si mostra solo a chi ha piu' di un'allocazione nella
+          // giornata: per gli altri e' rumore, qui serve a capire quando la
+          // persona sta in K1 e quando in K2.
+          .map((allocation) => (
+            allocationsPerEmployee[allocation.employeeId] > 1
+              ? allocation
+              : { ...allocation, timeRange: null }
+          )),
+        peopleCount: new Set(group.allocations.map((allocation) => allocation.employeeId)).size,
+      }))
+      // "Senza area" in coda: e' il raccoglitore, non un'area vera.
+      .sort((a, b) =>
+        Number(a.name === NO_AREA_KEY) - Number(b.name === NO_AREA_KEY)
+        || a.name.localeCompare(b.name));
 
-    const noTeamSection = {
-      id: "no-team",
-      name: "Senza squadra",
-      icon: null,
-      color: "#888888",
-      absences: [],
-      areas: [],
-    };
+    // Il carico di lavoro e' un dato di squadra: resta diviso per squadra
+    // anche se le persone qui sopra sono raggruppate per area.
+    const sumWorkload = (rows) => rows.reduce((acc, row) => ({
+      inb: acc.inb + Number(row.inbound_count || 0),
+      out: acc.out + Number(row.outbound_count || 0),
+      plt: acc.plt + Number(row.pallet_count || 0),
+    }), { inb: 0, out: 0, plt: 0 });
 
-    const getSectionForEmployee = (employeeId) => {
-      const team = employeeTeamMap[employeeId];
-      if (!team) return noTeamSection;
-      if (!teamSectionsMap[team.id]) {
-        teamSectionsMap[team.id] = {
+    const workloadTeams = (teamsQuery.data ?? [])
+      .filter((team) => !teamFilterActive || reportTeamIds.includes(team.id))
+      .map((team) => {
+        const rows = teamWorkloadRowsByTeamId[team.id] ?? [];
+        return {
           id: team.id,
           name: team.name,
           icon: team.icon ?? "👥",
           color: team.color ?? "#5f6b7a",
+          // Owner predefinito della squadra; in mancanza, chi ha compilato il carico.
           ownerName: team.workload_owner_employee_name ?? teamWorkloadOwnerByTeamId[team.id] ?? null,
-          absences: [],
-          areas: [],
+          rows,
+          workload: teamWorkloadByTeamId[team.id] ?? null,
+          totals: sumWorkload(rows),
         };
-      }
-      return teamSectionsMap[team.id];
-    };
+      })
+      .filter((team) => team.rows.length > 0 || Boolean(team.workload))
+      .sort((a, b) => a.name.localeCompare(b.name));
 
-    // Le assenze restano sempre complete, a prescindere dal perimetro:
-    // il filtro si applica solo alle allocazioni.
-    const allAbsences = [];
-    for (const j of justificationsQuery.data ?? []) {
-      const section = getSectionForEmployee(j.employee_id);
-      const name = employeeById[j.employee_id]?.full_name ?? "–";
-      const displayLabel = getAbsenceDisplayLabel(j);
-      const absenceEntry = { name, displayLabel, note: j.description?.trim() || null };
-      section.absences.push(absenceEntry);
-      allAbsences.push(absenceEntry);
-    }
-    allAbsences.sort((a, b) => a.name.localeCompare(b.name));
-
-    const areaSectionsMap = {};
-
-    const orderedAreaNames = areas.map((a) => a.name).filter((name) => (assignmentsByArea[name] ?? []).length > 0);
-    const extraAreaNames = Object.keys(assignmentsByArea).filter((n) => !orderedAreaNames.includes(n) && (assignmentsByArea[n] ?? []).length > 0);
-    let allocationCount = 0;
-
-    for (const areaName of [...orderedAreaNames, ...extraAreaNames]) {
-      const sorted = (assignmentsByArea[areaName] ?? []).filter(assignmentInScope).sort((a, b) => {
-        const nameA = a.employee_name ?? employeeById[a.employee_id]?.full_name ?? "";
-        const nameB = b.employee_name ?? employeeById[b.employee_id]?.full_name ?? "";
-        return nameA.localeCompare(nameB) || String(a.start_time).localeCompare(String(b.start_time));
-      });
-      if (sorted.length === 0) continue;
-
-      const areaBuildings = getImmobileOptions(areaName, areas);
-      // Nel raggruppamento per Area/Immobile ogni immobile e' una sezione a se':
-      // ha senso solo se almeno un'allocazione dell'area ha l'immobile compilato,
-      // altrimenti l'area resta una sezione unica come prima.
-      const areaSplitByBuilding = reportGrouping === "building"
-        && sorted.some((a) => String(a.immobile ?? "").trim() !== "");
-      for (const assignment of sorted) {
-        allocationCount += 1;
-        const rawImmobile = String(assignment.immobile ?? "").trim().toUpperCase();
-        let section;
-        if (reportGrouping === "building") {
-          const areaKey = areaName || "SENZA AREA";
-          const buildingKey = areaSplitByBuilding ? (rawImmobile || NO_BUILDING_KEY) : null;
-          const sectionKey = buildingKey ? `${areaKey}::${buildingKey}` : areaKey;
-          if (!areaSectionsMap[sectionKey]) {
-            areaSectionsMap[sectionKey] = {
-              id: buildingKey ? `area:${areaKey}:${buildingKey}` : `area:${areaKey}`,
-              name: buildingKey ? `${areaKey} · ${buildingKey}` : areaKey,
-              areaName: areaKey,
-              immobile: buildingKey,
-              icon: "🏢",
-              color: areaColorMap[areaName]?.border ?? "#006f3d",
-              absences: [],
-              areas: [],
-              workload: null,
-              workloadRows: [],
-              ownerName: null,
-            };
-          }
-          section = areaSectionsMap[sectionKey];
-        } else {
-          section = getSectionForEmployee(assignment.employee_id);
-        }
-        const areaKey = areaName || "—";
-        let areaEntry = section.areas.find((area) => area.name === areaKey);
-        if (!areaEntry) {
-          areaEntry = {
-            name: areaKey,
-            buildings: reportGrouping === "team" && areaBuildings.length > 0
-              ? areaBuildings.map((buildingName) => ({ name: buildingName, allocations: [] }))
-              : [],
-            allocations: [],
-          };
-          section.areas.push(areaEntry);
-        }
-
-        const item = {
-          name: assignment.employee_name ?? employeeById[assignment.employee_id]?.full_name ?? "–",
-          note: assignment.notes?.trim() || null,
-          startTime: String(assignment.start_time ?? "").slice(0, 5),
-          timeRange: formatTimeRange(assignment.start_time, assignment.end_time),
-        };
-
-        if (reportGrouping === "team" && areaEntry.buildings.length > 0) {
-          // Gli immobili non visibili nel Planner confluiscono in "SENZA IMMOBILE".
-          const teamImmobileKey = areaBuildings.includes(rawImmobile) ? rawImmobile : NO_BUILDING_KEY;
-          let buildingEntry = areaEntry.buildings.find((building) => building.name === teamImmobileKey);
-          if (!buildingEntry) {
-            buildingEntry = { name: teamImmobileKey, allocations: [] };
-            areaEntry.buildings.push(buildingEntry);
-          }
-          buildingEntry.allocations.push(item);
-        } else {
-          // Nel raggruppamento per Area/Immobile l'immobile e' gia' l'intestazione
-          // della sezione: qui l'elenco delle persone e' piatto.
-          areaEntry.allocations.push(item);
-        }
-      }
-    }
-
-    const teamSections = [...teams.map((team) => teamSectionsMap[team.id]).filter(Boolean), noTeamSection]
-      .map((section) => ({
-        ...section,
-        absences: section.absences.slice().sort((a, b) => a.name.localeCompare(b.name)),
-        areas: section.areas
-          .slice()
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .map((area) => ({
-            ...area,
-            buildings: area.buildings
-              .map((building) => ({
-                ...building,
-                allocations: building.allocations.slice().sort(compareAllocations),
-              }))
-              .filter((building) => building.allocations.length > 0),
-            allocations: area.allocations.slice().sort(compareAllocations),
-          })),
-      }))
-      .map((section) => ({
-        ...section,
-        workload: section.id !== "no-team" ? (teamWorkloadByTeamId[section.id] ?? null) : null,
-        workloadRows: section.id !== "no-team" ? (teamWorkloadRowsByTeamId[section.id] ?? []) : [],
-        ownerName: section.id !== "no-team" ? (section.ownerName ?? teamWorkloadOwnerByTeamId[section.id] ?? null) : null,
-      }))
-      .filter((section) => {
-        if (teamFilterActive) {
-          const sectionKey = section.id === "no-team" ? NO_TEAM_KEY : section.id;
-          if (!scope.teamIds.includes(sectionKey)) return false;
-        }
-        const hasAllocations = section.areas.some((area) => area.allocations.length > 0 || area.buildings.some((building) => building.allocations.length > 0));
-        // Con filtri su ruolo/area/immobile le sezioni con solo carico di lavoro
-        // (dato di squadra, non di persona) vengono escluse se vuote.
-        if (roleFilterActive || areaFilterActive || immobileFilterActive) {
-          return hasAllocations;
-        }
-        return section.workloadRows?.length > 0 || Boolean(section.workload) || hasAllocations;
-      });
-
-    // Il carico di lavoro è un dato di squadra: nel raggruppamento per
-    // Area/Immobile le righe si redistribuiscono sulle aree indicate nella
-    // colonna "Mag". Con i filtri per ruolo/area/immobile attivi restano solo le
-    // aree che hanno anche allocazioni, come già avviene per le squadre.
-    if (reportGrouping === "building") {
-      const workloadRowsByArea = groupWorkloadRowsByArea(teamDailyNotesQuery.data, {
-        teamIds: teamFilterActive ? scope.teamIds : null,
-      });
-      const allowWorkloadOnlySections = !roleFilterActive && !areaFilterActive && !immobileFilterActive;
-      const sectionsByAreaKey = {};
-      for (const section of Object.values(areaSectionsMap)) {
-        const key = normalizeAreaKey(section.areaName ?? section.name);
-        if (!sectionsByAreaKey[key]) sectionsByAreaKey[key] = [];
-        sectionsByAreaKey[key].push(section);
-      }
-      for (const [areaKey, rows] of Object.entries(workloadRowsByArea)) {
-        const areaSectionsForKey = sectionsByAreaKey[areaKey] ?? [];
-        // Il carico e' un dato di area, non di immobile: finisce dentro la sezione
-        // solo quando l'area non e' divisa, altrimenti comparirebbe ripetuto sotto
-        // ogni immobile. Nelle aree divise prende una sezione propria, intestata
-        // all'area e ordinata prima dei suoi immobili.
-        if (areaSectionsForKey.length === 1) {
-          areaSectionsForKey[0].workloadRows = rows;
-          continue;
-        }
-        if (areaSectionsForKey.length === 0 && !allowWorkloadOnlySections) continue;
-        const isNoWarehouse = areaKey === WORKLOAD_NO_WAREHOUSE_KEY;
-        const areaName = areas.find((area) => normalizeAreaKey(area.name) === areaKey)?.name ?? areaKey;
-        areaSectionsMap[isNoWarehouse ? `workload:${areaKey}` : areaName] = {
-          id: isNoWarehouse ? "workload:no-warehouse" : `area:${areaName}`,
-          name: isNoWarehouse ? WORKLOAD_NO_WAREHOUSE_KEY : areaName,
-          areaName: isNoWarehouse ? WORKLOAD_NO_WAREHOUSE_KEY : areaName,
-          immobile: null,
-          icon: isNoWarehouse ? "📦" : "🏢",
-          color: areaColorMap[areaName]?.border ?? "#006f3d",
-          absences: [],
-          areas: [],
-          workload: null,
-          workloadRows: rows,
-          ownerName: null,
-          // Le righe senza magazzino non appartengono a nessuna area: in coda.
-          sortLast: isNoWarehouse,
-        };
-      }
-    }
-
-    const areaSections = Object.values(areaSectionsMap)
-      .sort((a, b) =>
-        Number(a.sortLast ?? false) - Number(b.sortLast ?? false)
-        || normalizeAreaKey(a.areaName ?? a.name).localeCompare(normalizeAreaKey(b.areaName ?? b.name))
-        // Dentro l'area: prima il carico di lavoro (sezione senza immobile),
-        // poi gli immobili in ordine, e in fondo chi l'immobile non ce l'ha.
-        || Number(a.immobile === NO_BUILDING_KEY) - Number(b.immobile === NO_BUILDING_KEY)
-        || String(a.immobile ?? "").localeCompare(String(b.immobile ?? "")))
-      .map((section) => ({
-        ...section,
-        areas: section.areas
-          .slice()
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .map((area) => ({
-            ...area,
-            buildings: area.buildings
-              .slice()
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((building) => ({
-                ...building,
-                allocations: building.allocations.slice().sort(compareAllocations),
-              })),
-            allocations: area.allocations.slice().sort(compareAllocations),
-          })),
-      }));
-
-    const reportSections = reportGrouping === "building" ? areaSections : teamSections;
+    const workloadTotals = workloadTeams.reduce((acc, team) => ({
+      inb: acc.inb + team.totals.inb,
+      out: acc.out + team.totals.out,
+      plt: acc.plt + team.totals.plt,
+    }), { inb: 0, out: 0, plt: 0 });
 
     return {
       title: "Planner - Riepilogo allocazioni",
       dateLabel,
       scopeLabel,
-      allAbsences,
-      grouping: reportGrouping,
-      teams: reportSections,
+      absences,
+      areaGroups,
+      workloadTeams,
+      workloadTotals,
       totals: {
-        absences: allAbsences.length,
-        areas: reportSections.reduce((sum, section) => sum + section.areas.length, 0),
+        absences: absences.length,
+        areas: areaGroups.length,
         allocations: allocationCount,
       },
     };
@@ -1593,52 +1384,44 @@ export default function PlannerPage() {
     if (report.scopeLabel) lines.push(`Perimetro: ${report.scopeLabel}`);
     lines.push("");
 
-    if (report.allAbsences.length > 0) {
-    lines.push(`Assenti (${report.allAbsences.length})`);
-    for (const item of report.allAbsences) {
-      lines.push(`• ${item.name} (${item.displayLabel})${item.note ? ` — ${item.note}` : ""}`);
-    }
-    lines.push("");
-  }
-
-  for (const team of report.teams) {
-      lines.push(`${team.icon ? `${team.icon} ` : ""}${team.name}`);
-      if (team.workloadRows?.length) {
-        const totals = team.workloadRows.reduce((acc, row) => ({
-          inb: acc.inb + Number(row.inbound_count || 0),
-          out: acc.out + Number(row.outbound_count || 0),
-          plt: acc.plt + Number(row.pallet_count || 0),
-        }), { inb: 0, out: 0, plt: 0 });
-        lines.push("  Carico di lavoro:");
-        lines.push("    Cliente | Fornitore | IN | MEZZI OUT | PLT | Note/Info | Mag");
-        for (const row of team.workloadRows) {
-          lines.push(
-            `    ${workloadCustomerLabel(row) || "-"} | ${workloadSupplierLabel(row) || "-"} | ${row.inbound_count ?? 0} | ${row.outbound_count ?? 0} | ${row.pallet_count ?? 0} | ${row.notes || "-"} | ${row.warehouse || "-"}`
-          );
-        }
-        lines.push(`    TOT | ${totals.inb} | ${totals.out} | ${totals.plt} | - | -`);
-      } else if (team.workload) {
-        lines.push("  Carico di lavoro:");
-        for (const line of team.workload.split("\n")) {
-          lines.push(`    ${line}`);
-        }
-      }
-
-      for (const area of team.areas) {
-        if (report.grouping !== "building") lines.push(`🏢 ${area.name}`);
-        if (area.buildings.length > 0) {
-          for (const building of area.buildings) {
-            lines.push(`• ${building.name}`);
-            for (const allocation of building.allocations) {
-              lines.push(`  - ${getAllocationDisplayLabel(allocation)}${allocation.note ? ` — Note: ${allocation.note}` : ""}`);
-            }
-          }
-        }
-        for (const allocation of area.allocations) {
-          lines.push(`• ${getAllocationDisplayLabel(allocation)}${allocation.note ? ` — Note: ${allocation.note}` : ""}`);
-        }
+    if (report.absences.length > 0) {
+      lines.push(`Assenti (${report.absences.length})`);
+      for (const item of report.absences) {
+        lines.push(`• ${item.name} (${item.displayLabel})${item.note ? ` — ${item.note}` : ""}`);
       }
       lines.push("");
+    }
+
+    lines.push("Personale in turno");
+    if (report.areaGroups.length === 0) lines.push("• Nessuna allocazione");
+    for (const group of report.areaGroups) {
+      lines.push(`🏢 ${group.name} (${group.peopleCount} ${group.peopleCount === 1 ? "persona" : "persone"})`);
+      for (const allocation of group.allocations) {
+        lines.push(`  - ${getAllocationDisplayLabel(allocation)}${allocation.note ? ` — Note: ${allocation.note}` : ""}`);
+      }
+    }
+    lines.push("");
+
+    if (report.workloadTeams.length > 0) {
+      lines.push("Carichi di lavoro");
+      for (const team of report.workloadTeams) {
+        lines.push(`${team.icon ? `${team.icon} ` : ""}${team.name}${team.ownerName ? ` — Owner: ${team.ownerName}` : ""}`);
+        if (team.rows.length > 0) {
+          lines.push(`    IN ${team.totals.inb} | OUT ${team.totals.out} | PLT ${team.totals.plt}`);
+          lines.push("    Cliente | Fornitore | IN | MEZZI OUT | PLT | Note/Info | Mag");
+          for (const row of team.rows) {
+            lines.push(
+              `    ${workloadCustomerLabel(row) || "-"} | ${workloadSupplierLabel(row) || "-"} | ${row.inbound_count ?? 0} | ${row.outbound_count ?? 0} | ${row.pallet_count ?? 0} | ${row.notes || "-"} | ${row.warehouse || "-"}`
+            );
+          }
+        } else if (team.workload) {
+          for (const line of team.workload.split("\n")) {
+            lines.push(`    ${line}`);
+          }
+        }
+        lines.push("");
+      }
+      lines.push(`TOTALE GIORNATA | IN ${report.workloadTotals.inb} | OUT ${report.workloadTotals.out} | PLT ${report.workloadTotals.plt}`);
     }
 
     return lines.join("\n").trim();
@@ -1652,11 +1435,31 @@ export default function PlannerPage() {
       import("@pdf-lib/fontkit"),
     ]);
     const report = buildReportData();
+
+    // ── Griglia di pagina (A4) ────────────────────────────────────────────
     const pageWidth = 595.28;
     const pageHeight = 841.89;
-    const margin = 36;
-    const bottomMargin = 34;
+    const margin = 40;
     const contentWidth = pageWidth - margin * 2;
+    const footerHeight = 30;
+    const contentBottom = footerHeight + 12;
+
+    // Il verde Tonoli e' l'unico colore forte del documento: il colore della
+    // squadra/area resta confinato al badge e alla barretta della sezione,
+    // cosi' le pagine non cambiano faccia a ogni cambio di sede.
+    const C = {
+      green: "#006f3d",
+      greenSoft: "#eef6f1",
+      greenLine: "#cbe3d5",
+      ink: "#1f2933",
+      inkSoft: "#4d5a66",
+      muted: "#8a939c",
+      line: "#e4e7ea",
+      zebra: "#f7f8f9",
+      white: "#ffffff",
+      alert: "#b4232a",
+      alertSoft: "#fbefef",
+    };
 
     const pdfDoc = await PDFDocument.create();
     pdfDoc.registerFontkit(fontkit);
@@ -1665,9 +1468,9 @@ export default function PlannerPage() {
       fetch(lexendFontUrl).then((res) => res.arrayBuffer()),
       fetch(logoTonoli).then((res) => res.arrayBuffer()),
     ]);
-    const lexendLight = await pdfDoc.embedFont(lexendBytes, { subset: true });
-    const lexendBlack = await pdfDoc.embedFont(lexendBytes, { subset: true });
+    const font = await pdfDoc.embedFont(lexendBytes, { subset: true });
     const logoImage = await pdfDoc.embedPng(logoBytes);
+    const logoRatio = logoImage.width / logoImage.height;
 
     const loadCanvasPngBytes = async (draw, width, height) => {
       const canvas = document.createElement("canvas");
@@ -1684,8 +1487,10 @@ export default function PlannerPage() {
       return bytes;
     };
 
+    // L'emoji della squadra/area non esiste nel font Lexend: si disegna su
+    // canvas e si incorpora come immagine (unico modo per averla nel PDF).
     const teamBadgeImages = {};
-    for (const team of report.teams) {
+    for (const team of report.workloadTeams) {
       if (!team.icon) continue;
       try {
         const bytes = await loadCanvasPngBytes((ctx, width, height) => {
@@ -1717,8 +1522,12 @@ export default function PlannerPage() {
       );
     };
     const sanitize = (value) => String(value ?? "").replace(/[•]/g, "-").replace(/[–—]/g, "-");
-    const measureText = (font, size, text) => font.widthOfTextAtSize(sanitize(text), size);
-    const wrapText = (text, maxWidth, font, size) => {
+    const capitalize = (value) => {
+      const text = String(value ?? "");
+      return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+    };
+    const measureText = (text, size) => font.widthOfTextAtSize(sanitize(text), size);
+    const wrapText = (text, maxWidth, size) => {
       const source = sanitize(text).trim();
       if (!source) return [""];
       const words = source.split(/\s+/);
@@ -1726,7 +1535,7 @@ export default function PlannerPage() {
       let current = "";
       for (const word of words) {
         const candidate = current ? `${current} ${word}` : word;
-        if (measureText(font, size, candidate) <= maxWidth || !current) current = candidate;
+        if (measureText(candidate, size) <= maxWidth || !current) current = candidate;
         else {
           lines.push(current);
           current = word;
@@ -1735,12 +1544,32 @@ export default function PlannerPage() {
       if (current) lines.push(current);
       return lines;
     };
+    // Nelle colonne strette una parola sola (un codice cliente, una mail) puo'
+    // superare la larghezza: senza la griglia nera sborderebbe sulla colonna
+    // accanto, quindi li' si spezza a meta' parola.
+    const wrapTight = (text, maxWidth, size) => {
+      const lines = [];
+      for (const line of wrapText(text, maxWidth, size)) {
+        let rest = line;
+        while (measureText(rest, size) > maxWidth && rest.length > 1) {
+          let cut = rest.length;
+          while (cut > 1 && measureText(rest.slice(0, cut), size) > maxWidth) cut -= 1;
+          lines.push(rest.slice(0, cut));
+          rest = rest.slice(cut);
+        }
+        lines.push(rest);
+      }
+      return lines;
+    };
 
     let page = null;
     let y = pageHeight;
-    let pageNumber = 0;
+    // Sezione attiva: la testata la ripete solo quando la pagina si apre a
+    // meta' sezione, per non duplicare il titolo appena sotto la fascia.
+    let currentSection = null;
+    const pages = [];
 
-    const drawTopRect = (x, topY, width, height, fill, border = null, borderWidth = 1) => {
+    const drawTopRect = (x, topY, width, height, fill, border = null, borderWidth = 0.6) => {
       page.drawRectangle({
         x,
         y: topY - height,
@@ -1748,297 +1577,366 @@ export default function PlannerPage() {
         height,
         color: fill ? hexToRgb(fill) : undefined,
         borderColor: border ? hexToRgb(border) : undefined,
-        borderWidth,
+        borderWidth: border ? borderWidth : 0,
       });
     };
 
+    // Lexend e' disponibile in un solo peso: il semibold si ottiene
+    // ridisegnando il testo con un micro-offset, altrimenti titoli, nomi e
+    // corpo avrebbero tutti lo stesso peso e la gerarchia sparirebbe.
     const drawText = (text, x, baselineY, size, options = {}) => {
-      const { bold = false, color = "#1e1e31" } = options;
-      page.drawText(sanitize(text), {
-        x,
-        y: baselineY,
-        size,
-        font: bold ? lexendBlack : lexendLight,
-        color: hexToRgb(color),
-      });
+      const { bold = false, color = C.ink } = options;
+      const value = sanitize(text);
+      page.drawText(value, { x, y: baselineY, size, font, color: hexToRgb(color) });
+      if (bold) {
+        page.drawText(value, { x: x + 0.3, y: baselineY, size, font, color: hexToRgb(color) });
+      }
+    };
+
+    const drawTextRight = (text, rightX, baselineY, size, options = {}) => {
+      drawText(text, rightX - measureText(text, size), baselineY, size, options);
     };
 
     const drawImageTop = (image, x, topY, width, height) => {
       page.drawImage(image, { x, y: topY - height, width, height });
     };
 
-    let currentPageTeam = null;
+    // ── Testata ───────────────────────────────────────────────────────────
+    const drawHeader = () => {
+      drawTopRect(0, pageHeight, pageWidth, pageHeight, C.white);
+      const logoHeight = 30;
+      const logoWidth = logoRatio * logoHeight;
+      drawImageTop(logoImage, margin, pageHeight - 22, logoWidth, logoHeight);
+      const titleX = margin + logoWidth + 14;
+      drawText("Planning operativo giornaliero", titleX, pageHeight - 46, 20, { bold: true, color: C.ink });
+      drawTopRect(margin, pageHeight - 58, contentWidth, 1.6, C.green);
+      // La data sta sulla riga della sezione, non accanto al titolo: con i
+      // giorni lunghi ("mercoledi' 21 settembre") si sovrapporrebbero.
+      drawTextRight(capitalize(report.dateLabel), pageWidth - margin, pageHeight - 76, 10, { color: C.inkSoft });
+
+      if (currentSection) {
+        const badge = teamBadgeImages[currentSection.id];
+        let textX = margin;
+        if (badge) {
+          drawImageTop(badge, textX, pageHeight - 65, 15, 15);
+          textX += 21;
+        }
+        drawText(currentSection.name, textX, pageHeight - 77, 13, { bold: true, color: C.green });
+        drawText("segue", textX + measureText(currentSection.name, 13) + 8, pageHeight - 76, 8, { color: C.muted });
+      }
+      return pageHeight - 92;
+    };
 
     const startPage = () => {
       page = pdfDoc.addPage([pageWidth, pageHeight]);
-      pageNumber += 1;
-      const bannerColor = currentPageTeam?.color || "#006f3d";
-      drawTopRect(0, pageHeight, pageWidth, pageHeight, "#ffffff");
-      drawTopRect(margin, pageHeight - 28, contentWidth, 68, bannerColor);
-      const logoHeight = 32;
-      const logoWidth = (logoImage.width / logoImage.height) * logoHeight;
-      drawTopRect(margin + 12, pageHeight - 36, logoWidth + 10, logoHeight + 10, "#ffffff");
-      drawImageTop(logoImage, margin + 17, pageHeight - 41, logoWidth, logoHeight);
-      const titleX = margin + 17 + logoWidth + 20;
-      if (currentPageTeam) {
-        const badge = teamBadgeImages[currentPageTeam.id];
-        const badgeX = titleX;
-        const badgeSize = 22;
-        if (badge) drawImageTop(badge, badgeX, pageHeight - 37, badgeSize, badgeSize);
-        const nameX = badge ? badgeX + badgeSize + 7 : badgeX;
-        drawText(currentPageTeam.name, nameX, pageHeight - 58, 20, { bold: true, color: "#ffffff" });
-        drawText(report.dateLabel, nameX, pageHeight - 80, 10, { color: "#ffffffbb" });
-      } else {
-        drawText(report.dateLabel, titleX, pageHeight - 60, 16, { bold: true, color: "#ffffff" });
-      }
-      drawText(`Pagina ${pageNumber}`, pageWidth - margin - 58, pageHeight - 60, 10, { bold: true, color: "#ffffff" });
-      y = pageHeight - 112;
+      pages.push(page);
+      y = drawHeader();
     };
 
     const ensureSpace = (height) => {
-      if (y - height < bottomMargin) startPage(false);
+      if (y - height < contentBottom) startPage();
     };
 
-    const getParagraphHeight = (text, width, font = lexendLight, fontSize = 10.5, lineGap = 14) => {
-      const lines = wrapText(text, width, font, fontSize);
-      return lines.length * lineGap;
-    };
-
-    // Riga di allocazione: usata sia per disegnare sia per misurare l'altezza,
-    // cosi' le due cose non possono divergere.
-    const allocationPdfText = (allocation) =>
-      `- ${getAllocationDisplayLabel(allocation)}${allocation.note ? ` - Note: ${allocation.note}` : ""}`;
-
-    const getBuildingBlockHeight = (building) => {
-      let height = 18;
-      if (building.allocations.length === 0) {
-        height += getParagraphHeight("Nessuna allocazione", contentWidth - 68) + 4;
-        return height;
+    // ── Blocchi ───────────────────────────────────────────────────────────
+    const drawSectionBand = (section, count, options = {}) => {
+      const bandHeight = 26;
+      const badge = teamBadgeImages[section.id];
+      drawTopRect(margin, y, contentWidth, bandHeight, C.greenSoft);
+      drawTopRect(margin, y, 3, bandHeight, section.color || C.green);
+      let textX = margin + 14;
+      if (badge) {
+        drawImageTop(badge, textX, y - 5, 16, 16);
+        textX += 22;
       }
-      for (const allocation of building.allocations) {
-        height += getParagraphHeight(allocationPdfText(allocation), contentWidth - 68) + 4;
+      drawText(section.name, textX, y - 17.5, 13, { bold: true, color: C.green });
+      const rightLabel = options.rightLabel
+        ?? (count > 0 ? (count === 1 ? "1 persona" : `${count} persone`) : null);
+      if (rightLabel) {
+        drawTextRight(rightLabel, margin + contentWidth - 12, y - 17, 8.5, { color: C.inkSoft });
       }
-      return height;
+      y -= bandHeight + 12;
     };
 
-    const getAreaIntroHeight = (area) => {
-      const areaHeaderHeight = report.grouping === "building" ? 0 : 28;
-      if (area.buildings.length > 0) {
-        const firstBuilding = area.buildings[0];
-        return areaHeaderHeight + getBuildingBlockHeight(firstBuilding);
-      }
-      if (area.allocations.length > 0) {
-        return areaHeaderHeight + getParagraphHeight(allocationPdfText(area.allocations[0]), contentWidth - 56);
-      }
-      return areaHeaderHeight;
+    // Titolo dei tre blocchi del documento (assenze, personale, carichi).
+    const drawBlockTitle = (title, subtitle = null) => {
+      ensureSpace(30);
+      drawText(title, margin, y - 14, 15, { bold: true, color: C.ink });
+      if (subtitle) drawTextRight(subtitle, margin + contentWidth, y - 14, 8.5, { color: C.muted });
+      y -= 19;
+      drawTopRect(margin, y, contentWidth, 1, C.greenLine);
+      y -= 12;
     };
 
-    const drawSectionHeader = (title, options = {}) => {
-      const { color = "#006f3d" } = options;
-      ensureSpace(34);
-      drawTopRect(margin, y, contentWidth, 24, "#eef8f2", "#cfe7d8");
-      drawText(title, margin + 12, y - 16, 12, { bold: true, color });
-      y -= 34;
+    const drawGroupLabel = (text, options = {}) => {
+      const { x = margin, size = 8, color = C.muted, bold = true } = options;
+      ensureSpace(16);
+      drawText(String(text ?? "").toUpperCase(), x, y - 8, size, { bold, color });
+      y -= 15;
     };
 
-    const drawWrappedParagraph = (text, options = {}) => {
-      const { x = margin + 14, width = contentWidth - 28, fontSize = 10.5, color = "#1e1e31", bold = false, lineGap = 14 } = options;
-      const lines = wrapText(text, width, bold ? lexendBlack : lexendLight, fontSize);
-      for (const line of lines) {
-        ensureSpace(lineGap);
-        drawText(line, x, y - 10, fontSize, { color, bold });
-        y -= lineGap;
+    // Totali come KPI: tre riquadri sopra la tabella, al posto della riga
+    // verde acceso in coda che li nascondeva in fondo all'elenco.
+    const drawKpiRow = (totals) => {
+      const boxWidth = 104;
+      const boxHeight = 36;
+      const gap = 9;
+      ensureSpace(boxHeight + 12);
+      let x = margin;
+      for (const [label, value] of [["IN", totals.inb], ["OUT", totals.out], ["PLT", totals.plt]]) {
+        drawTopRect(x, y, boxWidth, boxHeight, C.greenSoft, C.greenLine);
+        drawText(label, x + 11, y - 13, 7.5, { bold: true, color: C.inkSoft });
+        drawText(String(value), x + 11, y - 28, 14, { bold: true, color: C.green });
+        x += boxWidth + gap;
       }
+      y -= boxHeight + 12;
     };
 
-    const drawWorkloadTable = (team) => {
-      const rows = team.workloadRows?.length
-        ? team.workloadRows
-        : (team.workload ? [{
-          client_supplier: "",
-          client_supplier_code: "",
-          inbound_count: "",
-          outbound_count: "",
-          pallet_count: "",
-          notes: team.workload,
-          warehouse: "",
-        }] : []);
-      if (rows.length === 0) return false;
+    const workloadColumns = [
+      { label: "CLIENTE", width: 94, align: "left", bold: true },
+      { label: "FORNITORE", width: 88, align: "left" },
+      { label: "IN", width: 30, align: "center" },
+      { label: "OUT", width: 32, align: "center" },
+      { label: "N° PLT", width: 36, align: "center" },
+      { label: "NOTE / INFO", width: 114, align: "left" },
+      { label: "MAG", width: 36, align: "center" },
+      { label: "COMPILATO DA", width: 85, align: "left" },
+    ];
+    const cellPadding = 7;
+    const cellTextX = (column, columnX, text, size) => {
+      if (column.align === "center") return columnX + (column.width - measureText(text, size)) / 2;
+      if (column.align === "right") return columnX + column.width - cellPadding - measureText(text, size);
+      return columnX + cellPadding;
+    };
 
-      const tableX = margin + 4;
-      const tableW = contentWidth - 8;
-      const metaH = 28;
-      const headerH = 26;
-      const rowPadY = 5;
+    const formatRowEditor = (row) => {
+      if (!row.last_modified_by) return "";
+      if (!row.last_modified_at) return row.last_modified_by;
+      const modifiedAt = dayjs(row.last_modified_at);
+      const sameDay = modifiedAt.format("YYYY-MM-DD") === dayjs(selectedDate).format("YYYY-MM-DD");
+      return `${row.last_modified_by} · ${modifiedAt.format(sameDay ? "HH:mm" : "DD/MM HH:mm")}`;
+    };
+
+    // Larghezza reale della tabella: i bordi devono cadere sui confini delle
+    // colonne, non sul margine della pagina.
+    const tableWidth = workloadColumns.reduce((sum, column) => sum + column.width, 0);
+
+    // Filetti verticali fra le colonne: separano senza tornare alla griglia
+    // nera: i bordi esterni sono appena piu' marcati degli interni.
+    const drawColumnRules = (topY, height) => {
+      let columnX = margin;
+      for (const [index, column] of workloadColumns.entries()) {
+        drawTopRect(columnX, topY, 0.5, height, index === 0 ? C.greenLine : C.line);
+        columnX += column.width;
+      }
+      drawTopRect(margin + tableWidth - 0.5, topY, 0.5, height, C.greenLine);
+    };
+
+    const drawWorkloadTableHeader = () => {
+      const headerHeight = 22;
+      drawTopRect(margin, y, tableWidth, 0.8, C.greenLine);
+      drawTopRect(margin, y, tableWidth, headerHeight, C.greenSoft);
+      let columnX = margin;
+      for (const column of workloadColumns) {
+        drawText(column.label, cellTextX(column, columnX, column.label, 7.4), y - 14.5, 7.4, { bold: true, color: C.inkSoft });
+        columnX += column.width;
+      }
+      drawColumnRules(y, headerHeight);
+      y -= headerHeight;
+      drawTopRect(margin, y, tableWidth, 0.8, C.greenLine);
+    };
+
+    const drawWorkloadTable = (rows) => {
+      const fontSize = 8.6;
       const lineGap = 11;
-      const colWidths = [82, 82, 30, 34, 38, 100, 43, 106];
-      const headers = ["CLIENTE", "FORNITORE", "IN", "OUT", "N° PLT", "NOTE/INFO", "MAG", "COMPILATO DA"];
-      const formatRowEditor = (row) => {
-        if (!row.last_modified_by) return "";
-        if (!row.last_modified_at) return row.last_modified_by;
-        const modifiedAt = dayjs(row.last_modified_at);
-        const sameDay = modifiedAt.format("YYYY-MM-DD") === dayjs(selectedDate).format("YYYY-MM-DD");
-        return `${row.last_modified_by} · ${modifiedAt.format(sameDay ? "HH:mm" : "DD/MM HH:mm")}`;
-      };
-      const total = rows.reduce((acc, row) => ({
-        inb: acc.inb + Number(row.inbound_count || 0),
-        out: acc.out + Number(row.outbound_count || 0),
-        plt: acc.plt + Number(row.pallet_count || 0),
-      }), { inb: 0, out: 0, plt: 0 });
-
-      const wrapCell = (text, width, font = lexendLight, fontSize = 8.7) =>
-        wrapText(String(text ?? "").trim() || " ", Math.max(width - 8, 8), font, fontSize);
-
-      const dataRows = rows.map((row) => ({
-        values: [
-          workloadCustomerLabel(row),
-          workloadSupplierLabel(row),
+      const measured = rows.map((row) => {
+        const values = [
+          workloadCustomerLabel(row) || "-",
+          workloadSupplierLabel(row) || "",
           String(row.inbound_count ?? 0),
           String(row.outbound_count ?? 0),
           String(row.pallet_count ?? 0),
           row.notes || "",
           row.warehouse || "",
           formatRowEditor(row),
-        ],
-        total: false,
-      }));
-      dataRows.push({
-        values: ["TOT", "", String(total.inb), String(total.out), String(total.plt), "", "", ""],
-        total: true,
-      });
-
-      const measuredRows = dataRows.map((row) => {
-        const wrapped = row.values.map((value, index) => wrapCell(value, colWidths[index], row.total ? lexendBlack : lexendLight, row.total ? 9.2 : 8.7));
+        ];
+        const wrapped = values.map((value, index) =>
+          wrapTight(value, workloadColumns[index].width - cellPadding * 2, fontSize));
         const maxLines = Math.max(...wrapped.map((lines) => lines.length), 1);
-        return { ...row, wrapped, height: maxLines * lineGap + rowPadY * 2 };
+        return { wrapped, height: maxLines * lineGap + 11 };
       });
 
-      const blockH = metaH + headerH + measuredRows.reduce((sum, row) => sum + row.height, 0);
-      ensureSpace(blockH + 6);
+      ensureSpace(22 + (measured[0]?.height ?? 24) + 6);
+      drawWorkloadTableHeader();
 
-      const leftMetaW = 174;
-      const centerMetaW = 126;
-      const rightMetaW = tableW - leftMetaW - centerMetaW;
-      const topDate = dayjs(selectedDate).format("DD/MM/YYYY");
-      const ownerLabel = `OWNER: ${team.ownerName || "-"}`;
-
-      drawTopRect(tableX, y, tableW, blockH, "#ffffff", "#202020");
-
-      let top = y;
-      drawTopRect(tableX, top, leftMetaW, metaH, "#ffffff", "#202020");
-      drawTopRect(tableX + leftMetaW, top, centerMetaW, metaH, "#ffffff", "#202020");
-      drawTopRect(tableX + leftMetaW + centerMetaW, top, rightMetaW, metaH, "#ffffff", "#202020");
-      drawText(topDate, tableX + 58, top - 18, 10.5, { bold: true, color: "#1e1e31" });
-      const miniLogoHeight = 14;
-      const miniLogoWidth = (logoImage.width / logoImage.height) * miniLogoHeight;
-      drawImageTop(logoImage, tableX + leftMetaW + (centerMetaW - miniLogoWidth) / 2, top - 7, miniLogoWidth, miniLogoHeight);
-      drawText(ownerLabel, tableX + leftMetaW + centerMetaW + 18, top - 18, 10, { bold: true, color: "#1e1e31" });
-      top -= metaH;
-
-      let cellX = tableX;
-      headers.forEach((header, index) => {
-        drawTopRect(cellX, top, colWidths[index], headerH, "#ffffff", "#202020");
-        drawText(header, cellX + 4, top - 17, 8.6, { bold: true, color: "#1e1e31" });
-        cellX += colWidths[index];
-      });
-      top -= headerH;
-
-      measuredRows.forEach((row) => {
-        let currentX = tableX;
-        const fill = row.total ? "#94d051" : "#ffffff";
-        row.wrapped.forEach((_lines, index) => {
-          drawTopRect(currentX, top, colWidths[index], row.height, fill, "#202020");
-          currentX += colWidths[index];
-        });
-        currentX = tableX;
+      measured.forEach((row, rowIndex) => {
+        if (y - row.height < contentBottom) {
+          startPage();
+          drawWorkloadTableHeader();
+        }
+        if (rowIndex % 2 === 1) drawTopRect(margin, y, tableWidth, row.height, C.zebra);
+        drawColumnRules(y, row.height);
+        let columnX = margin;
         row.wrapped.forEach((lines, index) => {
-          let textY = top - 10;
+          const column = workloadColumns[index];
+          let textY = y - 13;
           for (const line of lines) {
-            drawText(line, currentX + 4, textY, row.total ? 9.2 : 8.7, {
-              bold: row.total || index === 0,
-              color: "#1e1e31",
-            });
+            if (line.trim()) {
+              drawText(line, cellTextX(column, columnX, line, fontSize), textY, fontSize, {
+                bold: Boolean(column.bold),
+                color: column.align === "center" ? C.ink : C.inkSoft,
+              });
+            }
             textY -= lineGap;
           }
-          currentX += colWidths[index];
+          columnX += column.width;
         });
-        top -= row.height;
+        y -= row.height;
+        // Chiusura della tabella: l'ultima riga prende il filetto piu' marcato.
+        drawTopRect(margin, y, tableWidth, rowIndex === measured.length - 1 ? 0.8 : 0.5,
+          rowIndex === measured.length - 1 ? C.greenLine : C.line);
       });
-
-      y -= blockH + 6;
-      return true;
+      y -= 12;
     };
 
-    const drawTeamHeader = (team) => {
-      ensureSpace(40);
-      const badge = teamBadgeImages[team.id];
-      if (badge) drawImageTop(badge, margin, y - 2, 22, 22);
-      drawSectionHeader(team.name, { color: team.color || "#006f3d" });
+    // ── Card del personale (due colonne: le sezioni piccole non sprecano
+    // piu' una pagina intera a testa) ─────────────────────────────────────
+    const cardGap = 10;
+    const cardWidth = (contentWidth - cardGap) / 2;
+    const cardNameSize = 9.8;
+    const cardMetaSize = 8.4;
+    const cardNoteSize = 8;
+
+    const measureCard = (allocation) => {
+      const timeText = allocation.timeRange || "";
+      const timeWidth = timeText ? measureText(timeText, cardMetaSize) + 10 : 0;
+      const nameLines = wrapTight(allocation.name, cardWidth - 24 - timeWidth, cardNameSize);
+      const noteLines = allocation.note ? wrapTight(allocation.note, cardWidth - 32, cardNoteSize) : [];
+      const height = 9 + nameLines.length * 12 + (noteLines.length ? noteLines.length * 10.5 + 4 : 0) + 8;
+      return { allocation, nameLines, noteLines, timeText, height };
     };
 
+    const drawCard = (card, x, topY, accentColor) => {
+      drawTopRect(x, topY, cardWidth, card.height, C.white, C.line);
+      drawTopRect(x, topY, 2.5, card.height, accentColor || C.greenLine);
+      let textY = topY - 16;
+      card.nameLines.forEach((line) => {
+        drawText(line, x + 12, textY, cardNameSize, { bold: true, color: C.ink });
+        textY -= 12;
+      });
+      if (card.timeText) {
+        drawTextRight(card.timeText, x + cardWidth - 10, topY - 16, cardMetaSize, { color: C.inkSoft });
+      }
+      if (card.noteLines.length > 0) {
+        textY -= 2;
+        const noteTop = textY + 8;
+        const noteHeight = card.noteLines.length * 10.5 + 2;
+        drawTopRect(x + 12, noteTop, 2, noteHeight, C.green);
+        card.noteLines.forEach((line) => {
+          drawText(line, x + 18, textY, cardNoteSize, { color: C.green });
+          textY -= 10.5;
+        });
+      }
+    };
+
+    const drawCardGrid = (allocations, accentColor) => {
+      const cards = allocations.map(measureCard);
+      for (let index = 0; index < cards.length; index += 2) {
+        const rowCards = cards.slice(index, index + 2);
+        const rowHeight = Math.max(...rowCards.map((card) => card.height));
+        ensureSpace(rowHeight + 6);
+        rowCards.forEach((card, columnIndex) => {
+          drawCard({ ...card, height: rowHeight }, margin + columnIndex * (cardWidth + cardGap), y, accentColor);
+        });
+        y -= rowHeight + 6;
+      }
+    };
+
+    // ── Documento ─────────────────────────────────────────────────────────
     startPage();
 
     if (report.scopeLabel) {
-      drawWrappedParagraph(`Perimetro: ${report.scopeLabel}`, { x: margin, width: contentWidth, fontSize: 9.5, color: "#515164" });
+      const lines = wrapText(`Perimetro: ${report.scopeLabel}`, contentWidth, 9);
+      for (const line of lines) {
+        drawText(line, margin, y - 8, 9, { color: C.muted });
+        y -= 12;
+      }
+      y -= 6;
+    }
+
+    if (report.absences.length > 0) {
+      const bandHeight = 24;
+      ensureSpace(bandHeight + 40);
+      drawTopRect(margin, y, contentWidth, bandHeight, C.alertSoft);
+      drawTopRect(margin, y, 3, bandHeight, C.alert);
+      drawText(`Assenti (${report.absences.length})`, margin + 14, y - 16, 12, { bold: true, color: C.alert });
+      y -= bandHeight + 10;
+      drawCardGrid(
+        report.absences.map((item) => ({
+          name: item.name,
+          timeRange: item.displayLabel,
+          note: item.note || null,
+        })),
+        C.alert,
+      );
+      y -= 10;
+    }
+
+    // Personale in turno, raggruppato per area+immobile come in dashboard.
+    ensureSpace(60);
+    drawBlockTitle("Personale in turno", `${report.totals.allocations} allocazion${report.totals.allocations === 1 ? "e" : "i"}`);
+    if (report.areaGroups.length === 0) {
+      ensureSpace(16);
+      drawText("Nessuna allocazione per la giornata.", margin, y - 9, 9.5, { color: C.muted });
+      y -= 18;
+    }
+    for (const group of report.areaGroups) {
+      ensureSpace(38 + 46);
+      drawSectionBand(group, group.peopleCount);
+      currentSection = group;
+      drawCardGrid(group.allocations, group.color);
+      currentSection = null;
       y -= 8;
     }
 
-    if (report.allAbsences.length > 0) {
-      drawSectionHeader(`Assenti (${report.allAbsences.length})`, { color: "#dc2626" });
-      for (const item of report.allAbsences) {
-        const text = `- ${item.name} (${item.displayLabel})${item.note ? ` — ${item.note}` : ""}`;
-        const lines = wrapText(text, contentWidth - 28, lexendLight, 10.5);
-        ensureSpace(lines.length * 14 + 2);
-        drawWrappedParagraph(text, { color: "#1e1e31" });
-      }
-      y -= 8;
-    }
-
-    for (const team of report.teams) {
-      currentPageTeam = team;
-      startPage();
-
-      if (team.workloadRows?.length || team.workload) {
-        drawWorkloadTable(team);
-      }
-
-      for (const area of team.areas) {
-        ensureSpace(getAreaIntroHeight(area));
-        if (report.grouping !== "building") {
-          drawTopRect(margin + 12, y, contentWidth - 24, 20, "#f8f8fa", "#e2e2e5");
-          drawText(area.name, margin + 24, y - 14, 10.5, { bold: true, color: "#515164" });
-          y -= 28;
-        }
-
-        if (area.buildings.length > 0) {
-          for (const building of area.buildings) {
-            ensureSpace(getBuildingBlockHeight(building));
-            drawText(building.name, margin + 28, y - 10, 10.5, { bold: true, color: "#1e1e31" });
-            y -= 18;
-            if (building.allocations.length === 0) {
-              drawWrappedParagraph("Nessuna allocazione", { x: margin + 40, width: contentWidth - 68, color: "#8a8a98" });
-            } else {
-              for (const allocation of building.allocations) {
-                const text = allocationPdfText(allocation);
-                const lines = wrapText(text, contentWidth - 68, lexendLight, 10.5);
-                ensureSpace(lines.length * 14 + 2);
-                drawWrappedParagraph(text, { x: margin + 40, width: contentWidth - 68 });
-              }
+    if (report.workloadTeams.length > 0) {
+      y -= 6;
+      ensureSpace(70);
+      drawBlockTitle("Carichi di lavoro", "per squadra");
+      for (const team of report.workloadTeams) {
+        ensureSpace(38 + (team.rows.length > 0 ? 96 : 40));
+        drawSectionBand(team, 0, { rightLabel: team.ownerName ? `Owner: ${team.ownerName}` : null });
+        currentSection = team;
+        if (team.rows.length > 0) {
+          drawKpiRow(team.totals);
+          drawWorkloadTable(team.rows);
+        } else {
+          for (const line of String(team.workload).split("\n")) {
+            for (const wrapped of wrapText(line, contentWidth, 9.5)) {
+              ensureSpace(13);
+              drawText(wrapped, margin, y - 9, 9.5, { color: C.inkSoft });
+              y -= 13;
             }
-            y -= 4;
           }
+          y -= 10;
         }
-        for (const allocation of area.allocations) {
-          const text = allocationPdfText(allocation);
-          const lines = wrapText(text, contentWidth - 56, lexendLight, 10.5);
-          ensureSpace(lines.length * 14 + 2);
-          drawWrappedParagraph(text, { x: margin + 28, width: contentWidth - 56 });
-        }
-        y -= 4;
+        currentSection = null;
       }
 
-      y -= 8;
+      // Totale della giornata: somma di tutte le squadre nel perimetro.
+      ensureSpace(60);
+      drawText("Totale giornata", margin, y - 9, 10.5, { bold: true, color: C.ink });
+      y -= 16;
+      drawKpiRow(report.workloadTotals);
     }
+
+    // Footer in coda: il totale pagine si conosce solo a documento chiuso.
+    const generatedAt = dayjs().format("DD/MM/YYYY");
+    pages.forEach((currentPage, index) => {
+      page = currentPage;
+      drawTopRect(margin, footerHeight + 8, contentWidth, 0.5, C.line);
+      drawText(`Generato il ${generatedAt} · Planner operativo`, margin, footerHeight - 8, 7.6, { color: C.muted });
+      drawTextRight(`Pagina ${index + 1} di ${pages.length}`, pageWidth - margin, footerHeight - 8, 7.6, { color: C.muted });
+    });
 
     const bytes = await pdfDoc.save();
     const blob = new Blob([bytes], { type: "application/pdf" });
@@ -2053,22 +1951,8 @@ export default function PlannerPage() {
   }
 
   function handleCopyReport() {
-    setReportScope(DEFAULT_REPORT_SCOPE);
-    setReportGrouping("team");
+    setReportTeamIds([]);
     setReportOpen(true);
-  }
-
-  function toggleReportScopeFilter(key) {
-    setReportScope((current) => {
-      if (key === "allEmployees") return { ...DEFAULT_REPORT_SCOPE };
-      const next = { ...current, [key]: !current[key] };
-      next.allEmployees = !next.byTeam && !next.byRole && !next.byArea && !next.byImmobile;
-      return next;
-    });
-  }
-
-  function setReportScopeValues(key, values) {
-    setReportScope((current) => ({ ...current, [key]: values }));
   }
 
   // ── render ────────────────────────────────────────────────────────────────
@@ -2480,7 +2364,11 @@ export default function PlannerPage() {
                         const startH = timeToHour(a.start_time);
                         const endH = timeToHour(a.end_time);
                         const dur = endH - startH;
-                        const color = a.cause === "FORMAZIONE" ? TRAINING_COLOR : (areaColorMap[a.area ?? ""] ?? AREA_PALETTE[0]);
+                        const color = a.cause === "FORMAZIONE"
+                          ? TRAINING_COLOR
+                          : a.cause === "VISITA_IDONEITA"
+                            ? MEDICAL_CHECK_COLOR
+                            : (areaColorMap[a.area ?? ""] ?? AREA_PALETTE[0]);
                         const isDragged = drag?.assignmentId === a.id;
                         const breakSegment = getBreakSegmentForAssignment(emp.id, a);
                         const morningPx = breakSegment ? Math.max(0, (breakSegment.startHour - startH) * HOUR_WIDTH - BLOCK_BODY_INSET) : 0;
@@ -2926,7 +2814,9 @@ export default function PlannerPage() {
       {/* ── Area picker ─────────────────────────────────────────────── */}
       <Dialog open={!!areaPickerState} onClose={() => setAreaPickerState(null)} PaperProps={{ className: "planner-dialog" }}>
         <DialogTitle className="planner-dialog-title">
-          {areaPickerState?.mode === "formazione" ? "Ore di formazione" : "Seleziona building"}
+          {areaPickerState?.mode === "formazione"
+            ? "Ore di formazione"
+            : areaPickerState?.mode === "visita" ? "Visita di idoneità" : "Seleziona building"}
           {areaPickerState && (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
               {formatHour(areaPickerState.startHour)} – {formatHour(areaPickerState.endHour)}
@@ -2936,7 +2826,7 @@ export default function PlannerPage() {
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
-            {isAdmin && (
+            {availableBlockModes.length > 1 && (
               <TextField
                 select
                 label="Tipo"
@@ -2945,8 +2835,9 @@ export default function PlannerPage() {
                 fullWidth
                 size="small"
               >
-                <MenuItem value="presenza">Presenza</MenuItem>
-                <MenuItem value="formazione">Formazione</MenuItem>
+                {availableBlockModes.includes("presenza") && <MenuItem value="presenza">Presenza</MenuItem>}
+                {availableBlockModes.includes("formazione") && <MenuItem value="formazione">Formazione</MenuItem>}
+                {availableBlockModes.includes("visita") && <MenuItem value="visita">Visita idoneità</MenuItem>}
               </TextField>
             )}
             {areaPickerState?.mode === "formazione" ? (
@@ -2964,6 +2855,10 @@ export default function PlannerPage() {
                   <MenuItem key={course.id} value={course.id}>{course.title}</MenuItem>
                 ))}
               </TextField>
+            ) : areaPickerState?.mode === "visita" ? (
+              <Typography variant="body2" color="text.secondary">
+                La visita di idoneità registra solo la fascia oraria: nessun building da scegliere.
+              </Typography>
             ) : (
               <>
                 <TextField
@@ -3022,8 +2917,10 @@ export default function PlannerPage() {
               || createMutation.isPending
               || (areaPickerState?.mode === "formazione"
                 ? !areaPickerState?.trainingCourseId
-                : (!areaPickerState?.area
-                    || (getImmobileOptions(areaPickerState?.area, areas).length > 0 && !normalizeImmobile(areaPickerState?.area, areaPickerState?.immobile, areas))))
+                : areaPickerState?.mode === "visita"
+                  ? false
+                  : (!areaPickerState?.area
+                      || (getImmobileOptions(areaPickerState?.area, areas).length > 0 && !normalizeImmobile(areaPickerState?.area, areaPickerState?.immobile, areas))))
             }
             onClick={() => {
               if (!areaPickerState) return;
@@ -3040,6 +2937,8 @@ export default function PlannerPage() {
                   cause: "FORMAZIONE",
                   training_course_id: areaPickerState.trainingCourseId,
                 });
+              } else if (areaPickerState.mode === "visita") {
+                createMutation.mutate({ ...base, cause: "VISITA_IDONEITA" });
               } else {
                 createMutation.mutate({
                   ...base,
@@ -3068,7 +2967,11 @@ export default function PlannerPage() {
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
-            {editingBlock?.cause === "FORMAZIONE" ? (
+            {editingBlock?.cause === "VISITA_IDONEITA" ? (
+              <Typography variant="body2" color="text.secondary">
+                Visita di idoneità: si possono modificare orario e note.
+              </Typography>
+            ) : editingBlock?.cause === "FORMAZIONE" ? (
               <TextField
                 select
                 label="Titolo corso"
@@ -3338,121 +3241,19 @@ export default function PlannerPage() {
         </DialogTitle>
         <DialogContent>
           <Box sx={{ mt: 1, px: 1.5, py: 1, border: "1px solid var(--pl-border, #e2e2e5)", borderRadius: 1.5 }}>
-            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Raggruppa per</Typography>
-            <ToggleButtonGroup
-              value={reportGrouping}
-              exclusive
-              fullWidth
-              size="small"
-              onChange={(_, value) => value && setReportGrouping(value)}
-              aria-label="Raggruppamento riepilogo allocazioni"
-            >
-              <ToggleButton value="team">Squadra</ToggleButton>
-              <ToggleButton value="building">Area / Immobile</ToggleButton>
-            </ToggleButtonGroup>
+            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Perimetro del riepilogo</Typography>
+            <FilterSelect
+              label="Squadre"
+              multiple
+              value={reportTeamIds}
+              onChange={setReportTeamIds}
+              options={reportTeamOptions}
+              placeholder={reportTeamIds.length === 0 ? "Tutte le squadre" : undefined}
+              sx={{ width: "100%" }}
+            />
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
-              {reportGrouping === "building"
-                ? "Le persone sono raggruppate prima per Area e poi per Immobile. Nelle Aree senza immobili sono elencate direttamente sotto l’Area. Il carico di lavoro segue le aree indicate nella colonna «Mag» delle righe."
-                : "Le persone e il carico di lavoro sono organizzati in base alla squadra di appartenenza."}
+              Il riepilogo elenca le assenze, il personale in turno raggruppato per area e immobile e i carichi di lavoro per squadra. Senza squadre selezionate comprende tutti i dipendenti; le assenze sono sempre elencate per intero.
             </Typography>
-          </Box>
-          <Box sx={{ mt: 1, px: 1.5, py: 1, border: "1px solid var(--pl-border, #e2e2e5)", borderRadius: 1.5 }}>
-            <Typography variant="subtitle2" sx={{ mb: 0.25 }}>Perimetro del riepilogo</Typography>
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={reportScope.allEmployees}
-                  onChange={() => toggleReportScopeFilter("allEmployees")}
-                />
-              }
-              label="Tutti i dipendenti"
-              sx={{ display: "flex" }}
-            />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={reportScope.byTeam}
-                  onChange={() => toggleReportScopeFilter("byTeam")}
-                />
-              }
-              label="Filtra per squadra"
-              sx={{ display: "flex" }}
-            />
-            {reportScope.byTeam && (
-              <FilterSelect
-                label="Squadre"
-                multiple
-                value={reportScope.teamIds}
-                onChange={(values) => setReportScopeValues("teamIds", values)}
-                options={reportTeamOptions}
-                sx={{ mt: 0.5, mb: 1, width: "100%" }}
-              />
-            )}
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={reportScope.byRole}
-                  onChange={() => toggleReportScopeFilter("byRole")}
-                />
-              }
-              label="Filtra per ruolo"
-              sx={{ display: "flex" }}
-            />
-            {reportScope.byRole && (
-              <FilterSelect
-                label="Ruoli"
-                multiple
-                value={reportScope.roles}
-                onChange={(values) => setReportScopeValues("roles", values)}
-                options={reportRoleOptions}
-                sx={{ mt: 0.5, mb: 1, width: "100%" }}
-              />
-            )}
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={reportScope.byArea}
-                  onChange={() => toggleReportScopeFilter("byArea")}
-                />
-              }
-              label="Filtra per area operativa"
-              sx={{ display: "flex" }}
-            />
-            {reportScope.byArea && (
-              <FilterSelect
-                label="Aree operative"
-                multiple
-                value={reportScope.areaNames}
-                onChange={(values) => setReportScopeValues("areaNames", values)}
-                options={reportAreaOptions}
-                sx={{ mt: 0.5, mb: 1, width: "100%" }}
-              />
-            )}
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={reportScope.byImmobile}
-                  onChange={() => toggleReportScopeFilter("byImmobile")}
-                />
-              }
-              label="Filtra per immobile"
-              sx={{ display: "flex" }}
-            />
-            {reportScope.byImmobile && (
-              <FilterSelect
-                label="Immobili"
-                multiple
-                value={reportScope.immobili}
-                onChange={(values) => setReportScopeValues("immobili", values)}
-                options={reportImmobileOptions}
-                sx={{ mt: 0.5, mb: 1, width: "100%" }}
-              />
-            )}
           </Box>
           <TextField
             multiline

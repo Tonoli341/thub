@@ -11,12 +11,14 @@ from app.operational_reporting_schemas import (
     ReportingDayContextRead,
     ReportingDaySave,
     ReportingMemberRead,
+    ReportingNotificationRead,
 )
 from app.services.operational_reporting import (
     build_dashboard,
     build_day_context,
     confirm_day,
     list_eligible_customers,
+    list_reporting_notifications,
     reset_day,
     reset_member,
     save_day,
@@ -25,6 +27,14 @@ from app.services.security import get_current_user
 
 
 router = APIRouter(prefix="/operational-reporting", tags=["operational-reporting"])
+
+
+@router.get("/notifications", response_model=list[ReportingNotificationRead])
+def notifications(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    return list_reporting_notifications(db, current_user)
 
 
 @router.get("/customers", response_model=list[ReportingCustomerRead])

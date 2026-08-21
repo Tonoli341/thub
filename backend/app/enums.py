@@ -7,6 +7,7 @@ class AssignmentCause(str, enum.Enum):
     permesso = "PERMESSO"
     malattia = "MALATTIA"
     formazione = "FORMAZIONE"
+    visita_idoneita = "VISITA_IDONEITA"
     trasferta = "TRASFERTA"
     altro = "ALTRO"
 

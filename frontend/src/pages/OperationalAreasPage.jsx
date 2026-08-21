@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import FilterBar from "../components/FilterBar";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
 import {
   Alert,
   Box,
@@ -113,50 +115,15 @@ export default function OperationalAreasPage() {
     <>
       <Stack spacing={3}>
         {/* Header */}
-        <Paper
-          sx={{
-            p: 3.5,
-            borderRadius: 4,
-            background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))",
-            color: "#fff",
-            display: "flex",
-            alignItems: { xs: "flex-start", sm: "flex-end" },
-            justifyContent: "space-between",
-            flexDirection: { xs: "column", sm: "row" },
-            gap: 2,
-          }}
-        >
-          <Box>
-            <Typography variant="overline" sx={{ opacity: 0.8 }}>Configurazione</Typography>
-            <Typography variant="h4">Aree operative</Typography>
-            <Typography sx={{ mt: 0.5, maxWidth: 600, opacity: 0.85, fontSize: "0.95rem" }}>
-              Crea, modifica e disattiva le aree operative. Per ogni area puoi definire gli immobili disponibili nel Planner.
-            </Typography>
-          </Box>
-          <Stack alignItems={{ xs: "flex-start", sm: "flex-end" }} spacing={1} flexShrink={0}>
-            {!areasQuery.isLoading && (
-              <Typography variant="caption" sx={{ opacity: 0.75, fontWeight: 600, letterSpacing: "0.06em" }}>
-                {activeCount} area{activeCount !== 1 ? "e" : ""} attiv{activeCount !== 1 ? "e" : "a"}
-              </Typography>
-            )}
-            <Button
-              variant="contained"
-              onClick={openCreate}
-              sx={{
-                bgcolor: "rgba(255,255,255,0.18)",
-                color: "#fff",
-                fontWeight: 700,
-                border: "1px solid rgba(255,255,255,0.3)",
-                "&:hover": { bgcolor: "rgba(255,255,255,0.28)" },
-              }}
-            >
-              + Nuova area
-            </Button>
-          </Stack>
-        </Paper>
+        <PageHeader
+          section="Configurazione"
+          title="Aree operative"
+          meta={areasQuery.isLoading ? undefined : `${activeCount} area${activeCount !== 1 ? "e" : ""} attiv${activeCount !== 1 ? "e" : "a"}`}
+          actions={<HeaderButton onClick={openCreate}>+ Nuova area</HeaderButton>}
+        />
 
-        {/* Filters */}
-        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+        {/* Filtri (regola 3) */}
+        <FilterBar dense>
           <Stack direction="row" spacing={0.5}>
             {[
               { key: "all", label: "Tutte" },
@@ -188,7 +155,7 @@ export default function OperationalAreasPage() {
               </Typography>
             }
           />
-        </Stack>
+        </FilterBar>
 
         {/* Error alerts */}
         {areasQuery.error && <Alert severity="error">{areasQuery.error.message}</Alert>}

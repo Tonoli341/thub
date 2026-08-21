@@ -17,7 +17,6 @@ import {
   DialogTitle,
   Divider,
   IconButton,
-  MenuItem,
   Paper,
   Snackbar,
   Stack,
@@ -32,6 +31,10 @@ import {
 } from "@mui/material";
 
 import { getOperationalAreas, getWorkloadCustomerSuppliers, getWorkloadTeams, upsertStructuredWorkload } from "../api";
+import FilterBar from "../components/FilterBar";
+import FilterSelect from "../components/FilterSelect";
+import PageHeader from "../components/PageHeader";
+import { isGesapWorkloadRow } from "./workloadRows";
 
 dayjs.locale("it");
 
@@ -39,6 +42,10 @@ function createEmptyRow() {
   return {
     client_supplier_code: "",
     client_supplier: "",
+    customer_code: "",
+    customer_name: "",
+    supplier_code: "",
+    supplier_name: "",
     inbound_count: 0,
     outbound_count: 0,
     pallet_count: 0,
@@ -67,12 +74,15 @@ function serializeWarehouseValue(values) {
 function rowSignature(row) {
   return JSON.stringify({
     code: String(row?.client_supplier_code ?? "").trim(),
-    supplier: String(row?.client_supplier ?? "").trim(),
+    party: String(row?.client_supplier ?? "").trim(),
     inbound: normalizeNumericInput(row?.inbound_count),
     outbound: normalizeNumericInput(row?.outbound_count),
     pallet: normalizeNumericInput(row?.pallet_count),
     notes: String(row?.notes ?? "").trim(),
     warehouse: serializeWarehouseValue(parseWarehouseValue(row?.warehouse)),
+    customer: String(row?.customer_name ?? "").trim(),
+    supplier: String(row?.supplier_name ?? "").trim(),
+    gesapBookingId: String(row?.gesap_booking_id ?? "").trim(),
   });
 }
 
@@ -186,6 +196,27 @@ const COL_HEADER = {
 
 const NUM_CELL = { width: 96, px: 1 };
 
+// Le righe importate da ToolTo sono in sola lettura: stesso ingombro dei campi
+// modificabili, così le colonne restano allineate riga per riga.
+const GESAP_FIELD = {
+  "& .MuiOutlinedInput-root": {
+    borderRadius: "8px",
+    bgcolor: "#f8f9fb",
+    "& fieldset": { borderColor: "#e2e2e5" },
+    "&:hover fieldset": { borderColor: "#e2e2e5" },
+  },
+};
+
+const GESAP_CHIP = {
+  height: 18,
+  fontSize: 10,
+  fontWeight: 700,
+  mr: 0.75,
+  bgcolor: "#e6f0ff",
+  color: "#0057b8",
+  "& .MuiChip-label": { px: 0.75 },
+};
+
 export default function WorkloadPage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -260,7 +291,9 @@ export default function WorkloadPage() {
     if (!copyFromPreviewQuery.data || !selectedTeamId) return null;
     const team = copyFromPreviewQuery.data.find((t) => t.team_id === selectedTeamId) ?? null;
     const sourceRows = team?.rows ?? team?.table_rows ?? [];
-    return sourceRows.map((row) => ({ ...createEmptyRow(), ...row }));
+    return sourceRows
+      .filter((row) => !isGesapWorkloadRow(row))
+      .map((row) => ({ ...createEmptyRow(), ...row }));
   }, [copyFromPreviewQuery.data, selectedTeamId]);
 
   // Signatures of the rows already present, to prevent copying duplicates.
@@ -410,73 +443,34 @@ export default function WorkloadPage() {
 
   return (
     <Stack spacing={2.5}>
-      {/* ── Header ───────────────────────────────────────────────────────── */}
-      <Paper
-        elevation={0}
-        sx={{
-          p: { xs: 2, md: 2.5 },
-          borderRadius: 3,
-          border: "1px solid #e2e2e5",
-          boxShadow: "0 0 1px rgba(226,226,229,.95), 0 4px 16px rgba(30,30,49,.04)",
-        }}
-      >
-        <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ xs: "stretch", md: "center" }} justifyContent="space-between">
-          <Stack direction="row" spacing={1.5} alignItems="center">
-            <Box
-              sx={{
-                width: 44,
-                height: 44,
-                borderRadius: "13px",
-                background: "linear-gradient(160deg, #009e5a 0%, #007040 100%)",
-                display: "grid",
-                placeItems: "center",
-                fontSize: 22,
-                flexShrink: 0,
-              }}
-            >
-              📦
-            </Box>
-            <Box>
-              <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.2, color: "#1e1e31" }}>
-                Carichi di lavoro
-              </Typography>
-              <Typography sx={{ fontSize: 13, color: "text.secondary", mt: 0.25, textTransform: "capitalize" }}>
-                {dateLabel}
-              </Typography>
-            </Box>
-          </Stack>
+      {/* ── Testata: banda di sezione (regola 1) e filtri in barra a sé (regole 2-3) ── */}
+      <PageHeader
+        section="Impresa"
+        title="Carichi di lavoro"
+        meta={dateLabel}
+      />
 
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
-            <TextField
-              type="date"
-              size="small"
-              label="Data"
-              value={selectedDate}
-              onChange={(event) => setSelectedDate(event.target.value)}
-              InputLabelProps={{ shrink: true }}
-              sx={{ "& .MuiOutlinedInput-root": { borderRadius: "10px" } }}
-            />
-            <TextField
-              select
-              size="small"
-              label="Squadra"
-              value={selectedTeamId}
-              onChange={(event) => setSelectedTeamId(event.target.value)}
-              sx={{ minWidth: 220, "& .MuiOutlinedInput-root": { borderRadius: "10px" } }}
-              disabled={!teams.length}
-            >
-              <MenuItem value="">
-                <em>Seleziona squadra</em>
-              </MenuItem>
-              {teams.map((team) => (
-                <MenuItem key={team.team_id} value={team.team_id}>
-                  {team.team_icon} {team.team_name}
-                </MenuItem>
-              ))}
-            </TextField>
-          </Stack>
-        </Stack>
-      </Paper>
+      <FilterBar>
+        <TextField
+          type="date"
+          size="small"
+          label="Data"
+          value={selectedDate}
+          onChange={(event) => setSelectedDate(event.target.value)}
+          InputLabelProps={{ shrink: true }}
+        />
+        <FilterSelect
+          label="Squadra"
+          value={selectedTeamId}
+          onChange={setSelectedTeamId}
+          options={teams.map((team) => ({
+            value: team.team_id,
+            label: `${team.team_icon} ${team.team_name}`,
+          }))}
+          placeholder="Seleziona squadra"
+          disabled={!teams.length}
+        />
+      </FilterBar>
 
       {!teams.length ? (
         <Alert severity="info" sx={{ borderRadius: 2.5 }}>
@@ -581,12 +575,13 @@ export default function WorkloadPage() {
             </Box>
 
             <Box sx={{ overflowX: "auto" }}>
-              <Box sx={{ minWidth: 1080 }}>
+              <Box sx={{ minWidth: 1260 }}>
                 <Table size="small" sx={{ "& .MuiTableCell-root": { verticalAlign: "middle" } }}>
                   <TableHead>
                     {/* Row 1 — group headers */}
                     <TableRow>
-                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, pl: 2.5, width: "32%", verticalAlign: "middle" }}>Cliente / Fornitore</TableCell>
+                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, pl: 2.5, width: 220, verticalAlign: "middle" }}>Cliente</TableCell>
+                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: 200, verticalAlign: "middle" }}>Fornitore</TableCell>
                       <TableCell
                         colSpan={2}
                         sx={{
@@ -624,7 +619,7 @@ export default function WorkloadPage() {
                   <TableBody>
                     {rows.map((row, index) => (
                       <TableRow
-                        key={index}
+                        key={row.row_id || index}
                         sx={{
                           bgcolor: index % 2 === 0 ? "#fff" : "#fafbfc",
                           "&:hover": { bgcolor: "#f0f7f4" },
@@ -632,7 +627,22 @@ export default function WorkloadPage() {
                         }}
                       >
                         <TableCell sx={{ pl: 2.5, py: 1 }}>
-                          <Autocomplete
+                          {isGesapWorkloadRow(row) ? (
+                            <TextField
+                              value={row.customer_name || ""}
+                              size="small"
+                              fullWidth
+                              InputProps={{
+                                readOnly: true,
+                                startAdornment: (
+                                  <Tooltip title="Riga importata da ToolTo" placement="top">
+                                    <Chip label="ToolTo" size="small" sx={GESAP_CHIP} />
+                                  </Tooltip>
+                                ),
+                              }}
+                              sx={GESAP_FIELD}
+                            />
+                          ) : <Autocomplete
                             options={customerSuppliers}
                             value={customerSuppliers.find((item) => item.code === (row.client_supplier_code || "")) ?? null}
                             onChange={(_event, option) => updateClientSupplier(index, option?.code ?? "")}
@@ -655,7 +665,20 @@ export default function WorkloadPage() {
                               />
                             )}
                             fullWidth
-                          />
+                          />}
+                        </TableCell>
+                        <TableCell sx={{ py: 1 }}>
+                          {isGesapWorkloadRow(row) ? (
+                            <TextField
+                              value={row.supplier_name || ""}
+                              size="small"
+                              fullWidth
+                              InputProps={{ readOnly: true }}
+                              sx={GESAP_FIELD}
+                            />
+                          ) : (
+                            <Typography sx={{ color: "text.disabled", fontSize: 13 }}>—</Typography>
+                          )}
                         </TableCell>
                         <TableCell sx={{ ...NUM_CELL, py: 1 }}>
                           <TextField
@@ -663,6 +686,7 @@ export default function WorkloadPage() {
                             value={row.inbound_count}
                             onChange={(event) => updateRow(index, "inbound_count", event.target.value)}
                             size="small"
+                            InputProps={{ readOnly: isGesapWorkloadRow(row) }}
                             inputProps={{ min: 0, style: { textAlign: "center", fontWeight: 600 } }}
                             sx={{
                               "& .MuiOutlinedInput-root": {
@@ -681,6 +705,7 @@ export default function WorkloadPage() {
                             value={row.outbound_count}
                             onChange={(event) => updateRow(index, "outbound_count", event.target.value)}
                             size="small"
+                            InputProps={{ readOnly: isGesapWorkloadRow(row) }}
                             inputProps={{ min: 0, style: { textAlign: "center", fontWeight: 600 } }}
                             sx={{
                               "& .MuiOutlinedInput-root": {
@@ -719,6 +744,7 @@ export default function WorkloadPage() {
                             fullWidth
                             multiline
                             minRows={1}
+                            InputProps={{ readOnly: isGesapWorkloadRow(row) }}
                             placeholder="Note…"
                             sx={{ "& .MuiOutlinedInput-root": { borderRadius: "8px" } }}
                           />
@@ -756,11 +782,11 @@ export default function WorkloadPage() {
                           <RowStamp row={row} />
                         </TableCell>
                         <TableCell sx={{ pr: 1.5, py: 1 }}>
-                          <Tooltip title="Elimina riga" placement="left">
+                          <Tooltip title={isGesapWorkloadRow(row) ? "La riga è gestita da ToolTo" : "Elimina riga"} placement="left">
                             <IconButton
                               size="small"
                               onClick={() => removeRow(index)}
-                              disabled={saveMutation.isPending}
+                              disabled={saveMutation.isPending || isGesapWorkloadRow(row)}
                               sx={{
                                 color: "#aaa",
                                 borderRadius: "8px",
@@ -778,6 +804,7 @@ export default function WorkloadPage() {
                     {/* Totals row */}
                     <TableRow>
                       <TableCell
+                        colSpan={2}
                         sx={{
                           pl: 2.5,
                           py: 1.25,

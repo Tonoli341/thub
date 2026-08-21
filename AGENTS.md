@@ -170,6 +170,7 @@ qui vale più dell'eleganza del singolo file.
 | Commenti in italiano che spiegano **il perché**, non il cosa | È lo stile del repo e ha valore reale: vedi i commenti su `liste_aperte_query` in `config.py` o su `rate_limit.py` |
 | Test pytest con SQLite in-memory + fixture di `conftest.py` (`make_admin_token`, `make_linked_user_token`, `auth_headers`) | Girano in 36s senza toccare Postgres né i sistemi esterni |
 | Logica pura del frontend estratta e testata con `node:test` (vedi `calendarOverlap.js`) | Nessun test runner nel frontend: questo è il modo che funziona qui, senza aggiungere Vitest |
+| Testata, filtri e tabelle dai componenti di `frontend/src/components/` (`PageHeader`, `FilterBar`, `FilterSelect`, `tableStyles`) | Le 7 regole di layout valgono per tutte le pagine: implementarle a mano una pagina alla volta è come sono nate le divergenze attuali. Vedi [docs/LAYOUT_PAGINE.md](docs/LAYOUT_PAGINE.md) |
 
 ---
 
@@ -197,85 +198,18 @@ qui vale più dell'eleganza del singolo file.
 
 ---
 
-## 5. 🔬 Convalida — da eseguire dopo ogni modifica
+## 5. 🔬 Convalida — eseguita dall'utente
 
-> **Docker non è utilizzabile dalla shell dell'agente** (`permission denied` su
-> `/var/run/docker.sock`). Usa il virtualenv già presente in `backend/.venv`.
-> Non tentare `docker compose up/restart`: l'ambiente è condiviso e monta un DB reale.
+Gli agenti **non eseguono automaticamente test, lint, build, smoke test, migrazioni o
+riavvii**. La convalida viene avviata dall'utente quando lo richiede esplicitamente.
 
-La convalida ha **due livelli** e servono entrambi. I test unitari montano l'app in
-memoria: non passano dal proxy e non si accorgono mai che il servizio reale è caduto.
-Lo smoke test copre proprio quel buco.
+Nel riepilogo finale l'agente deve dichiarare chiaramente che i controlli non sono stati
+eseguiti e indicare quali sarebbero opportuni in base ai file modificati. I test possono
+essere aggiunti o aggiornati quando fanno parte dell'intervento, ma non vanno lanciati
+senza un comando dell'utente.
 
-### 5.1 Test — obbligatori sempre
-
-```bash
-cd /opt/thub/backend
-./.venv/bin/python -m pytest -q          # atteso: 268 passed, 1 skipped (~43s)
-./.venv/bin/ruff check app tests         # deve chiudere pulito
-
-cd /opt/thub/frontend
-node --test src/pages/                   # atteso: 7 pass
-npm run build                            # deve completare senza errori
-```
-
-### 5.2 Smoke — tutte le sezioni devono rispondere
-
-**Questo è il controllo che evita il "Connection Refused".** Un import rotto, un
-decoratore sbagliato o un router non registrato non fanno fallire i test funzionali —
-fanno morire uvicorn all'avvio. nginx resta senza upstream e l'utente riceve un errore di
-connessione, non un 500. Nessuno se ne accorge finché non apre il browser.
-
-**a) Smoke offline — gira sempre, incluso in CI.** È dentro `pytest`, in
-[backend/tests/test_smoke_routes.py](backend/tests/test_smoke_routes.py) (174 test
-parametrici):
-
-| Test | Cosa garantisce |
-|---|---|
-| `test_app_si_importa_e_monta_le_route` | L'app si importa e monta >150 route. Se fallisce, **in produzione uvicorn non parte**: è letteralmente la causa del Connection Refused |
-| `test_ogni_router_e_registrato` | Ogni modulo di `app/api/` compare tra le route montate. Un router dimenticato in `api/__init__.py` è una sezione che risponde 404 |
-| `test_ogni_sezione_get_risponde` | Bussa a **tutti i 91 endpoint GET**. Un 500 significa che la sezione esplode prima ancora di validare i permessi |
-| `test_ogni_sezione_protetta_rifiuta_gli_anonimi` | Ogni GET sotto `/api/` risponde 401/403/503 a un anonimo. Unica esenzione: `/api/health` |
-
-Gli endpoint nuovi entrano nei test **automaticamente** (sono parametrizzati sulle route
-dell'app): non serve manutenzione, ma se aggiungi un endpoint volutamente pubblico devi
-dichiararlo nell'esenzione e spiegare perché.
-
-**b) Smoke sull'app viva — quando i container girano:**
-
-```bash
-./scripts/smoke.sh                                  # default http://localhost:8088
-BASE_URL=http://thub.tonoli.com ./scripts/smoke.sh  # altro ambiente
-```
-
-45 controlli, esce 1 al primo problema:
-- **backend**: `/health` e `/api/health/ready`
-- **26 sezioni frontend**: in dev il server Vite trasforma ogni pagina su richiesta, quindi
-  il 500 di una pagina che non compila viene intercettato — è la schermata bianca che
-  vedrebbe l'utente. In build statica lo salta, perché `npm run build` ha già validato
-- **17 endpoint API**: qui **401 è un successo** (l'app è viva e il gate funziona)
-
-Distingue esplicitamente `CONNECTION REFUSED` da un codice di stato inatteso, e in caso di
-fallimento stampa i comandi diagnostici (`docker compose logs backend`,
-`python -c 'import app.main'`).
-
-⚠️ Le route del frontend rispondono 200 **per qualunque path** (fallback SPA): un 200 su
-`/planner` prova solo che il server è in piedi. Per questo lo script controlla i moduli
-delle pagine, non le URL.
-
-### 5.3 Regole di convalida
-- **Esegui i test prima e dopo** la modifica. Se erano già rossi, dillo: non attribuirti
-  un fallimento preesistente né nasconderlo. Al 2026-08-18 la suite e il lint sono verdi:
-  qualunque rosso che vedi è stato introdotto da te o da chi sta lavorando in parallelo.
-- Se tocchi backend **e** frontend, esegui entrambe le suite.
-- **Dopo ogni modifica che tocchi route, import, router o pagine: esegui lo smoke.**
-  Se i container non girano, il livello offline (5.2a) è comunque obbligatorio.
-- Se tocchi lo schema: `alembic revision --autogenerate -m "..."`, **rileggi la migration
-  generata riga per riga** (l'autogenerate propone anche DROP che non vuoi), poi
-  `alembic upgrade head`. Verifica `alembic heads`: deve restarne **una sola**.
-- Se aggiungi un endpoint o un permesso: **aggiungi un test** in `backend/tests/`.
-  I test di permesso e di scope sono la parte più preziosa della suite.
-- Non dichiarare "fatto" senza aver eseguito i comandi. Riporta l'output vero.
+Le migrazioni Alembic devono comunque essere additive, rilette nel diff e collegate
+all'head corrente; l'applicazione al database resta sempre a comando dell'utente.
 
 ---
 
@@ -300,9 +234,9 @@ delle pagine, non le URL.
 8. Non toccare `.env`. Se serve una variabile nuova, aggiornala in `.env.example` e dillo.
 
 **Dopo aver modificato**
-9. Esegui la convalida di §5.
-10. Riepilogo in italiano: cosa hai cambiato, quali file, esito dei test, cosa hai
-    volutamente lasciato fuori.
+9. Non eseguire la convalida salvo richiesta esplicita dell'utente, come indicato in §5.
+10. Riepilogo in italiano: cosa hai cambiato, quali file, controlli non eseguiti e cosa
+    hai volutamente lasciato fuori.
 11. **Non committare e non pushare** se non te lo chiedono. Se te lo chiedono, controlla
     `git status` prima: il working tree contiene molto lavoro non tuo.
 
@@ -360,6 +294,7 @@ innesco nell'interfaccia. Sono candidati al completamento, non alla cancellazion
 
 | Elemento | File | Nota |
 |---|---|---|
+| `getPortalRoleDisplayLabel(appRole, hasDirectReports)` | [pages/EmployeesPage.jsx](frontend/src/pages/EmployeesPage.jsx) | Etichetta corta del ruolo portale (`Mgr`, `Collab`). Rimasta senza chiamanti quando la colonna *Ruolo portale* è passata a sola icona con tooltip: il tooltip usa l'etichetta estesa di `portalRoleMeta` |
 | `theme.js` (35 righe) | [frontend/src/theme.js](frontend/src/theme.js) | `createTheme` MUI **mai importato**: il tema vivo è quello di [ThemeContext.jsx](frontend/src/ThemeContext.jsx). File residuo, rimuovibile con più sicurezza degli altri — ma sempre da §2 |
 | Le 6 funzioni di `api.js` di §7.1 | [frontend/src/api.js](frontend/src/api.js) | Unici export del client HTTP senza consumatori |
 
@@ -373,7 +308,7 @@ Non collegati all'app **di proposito**. Lasciali dove sono.
 | Elemento | Natura |
 |---|---|
 | [backend/insert_ferie.py](backend/insert_ferie.py), [backend/import_ninjaone_deliveries.py](backend/import_ninjaone_deliveries.py), [backend/scripts/import_consegne_dump.py](backend/scripts/import_consegne_dump.py) | Script one-off, si eseguono a mano. Rientrano nella regola §2 sui backfill: non lanciarli mai spontaneamente |
-| [frontend/src/pages/calendarOverlap.test.js](frontend/src/pages/calendarOverlap.test.js) | Test, eseguito da `node --test src/pages/` |
+| [frontend/src/pages/calendarOverlap.test.js](frontend/src/pages/calendarOverlap.test.js) | Test, eseguito da `node --test src/` |
 | `export-consegne-data.sql` (8,4 MB, in due copie: root e `backend/`) | Dump di dati, aggiunto a `.gitignore`. La copia duplicata è probabilmente da eliminare dal filesystem — chiedi prima |
 | [EXPORT-CONSEGNE.md](EXPORT-CONSEGNE.md) | Documentazione dell'export, non referenziata dal codice |
 

@@ -275,7 +275,7 @@ Restituisce la giornata già registrata per il dipendente autenticato e per la d
 
 ### Richiesta ferie (`/api/absence-requests`)
 
-Vista semplificata dello stesso sistema di assenze usato dal portale (box "Assenze"): il dipendente può richiedere, modificare e cancellare **solo le proprie** ferie. Il tipo è sempre `FERIE` (come nella UI semplificata "Assenza" del portale, dove la distinzione è solo tra **Giorno** — orario custom, `start_date == end_date` — e **Giorni** — intervallo di giorni interi, tipicamente `start_time=08:00`/`end_time=17:00`: questa scelta va fatta lato client esattamente come nel portale). Tutti richiedono il Bearer token del login locale.
+Vista semplificata dello stesso sistema di assenze usato dal portale (box "Assenze"): il dipendente può richiedere, modificare e cancellare **solo le proprie** ferie. Il tipo è sempre `FERIE` (come nella UI semplificata "Assenza" del portale, dove la distinzione è solo tra **Giorno** — orario custom, `start_date == end_date` — e **Giorni** — intervallo di giorni interi, `start_time=08:00`/`end_time=18:00`; il vecchio `end_time=17:00` resta letto come giornata intera per le richieste già inviate: questa scelta va fatta lato client esattamente come nel portale). Tutti richiedono il Bearer token del login locale.
 
 Se il dipendente ha `absence_requires_approval` attivo, la richiesta nasce `pending` e notifica gli approvatori configurati (stesso flusso del portale); altrimenti nasce già `approved`. **Una volta `approved` o `rejected`, la richiesta non può più essere modificata né cancellata** (stessa regola già applicata nel portale interno).
 
@@ -294,7 +294,7 @@ POST /api/absence-requests
   "start_date": "2026-08-10",
   "end_date": "2026-08-14",
   "start_time": "08:00",
-  "end_time": "17:00"
+  "end_time": "18:00"
 }
 ```
 
@@ -308,7 +308,7 @@ POST /api/absence-requests
   "start_date": "2026-08-10",
   "end_date": "2026-08-14",
   "start_time": "08:00:00",
-  "end_time": "17:00:00",
+  "end_time": "18:00:00",
   "approval_status": "pending",
   "approval_required": true,
   "approver_1_employee_name": "BIANCHI GIULIO",

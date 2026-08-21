@@ -14,6 +14,10 @@ class ReportingAllocationInput(BaseModel):
     # Facoltativa solo per permettere di modificare vecchie rendicontazioni
     # create prima dell'introduzione del secondo livello Jupiter.
     jupiter_description: str | None = None
+    # Destinazione della singola attività. Assente significa "quella del
+    # blocco": è il caso di chi non si è spostato durante il blocco.
+    actual_area_id: str | None = None
+    actual_building: str | None = None
     start_offset_minutes: int | None = Field(default=None, ge=0)
     minutes: int = Field(ge=10)
     notes: str | None = None
@@ -62,11 +66,18 @@ class ReportingAllocationRead(BaseModel):
     customer_code: str
     customer_description: str
     jupiter_description: str | None = None
+    actual_area_id: str | None = None
+    actual_area_name: str | None = None
+    actual_building: str | None = None
     sequence: int = 0
     start_offset_minutes: int = 0
     minutes: int
     notes: str | None = None
     eligible_mapping_ids: list[str] = Field(default_factory=list)
+    created_by_name: str | None = None
+    created_at: datetime | None = None
+    last_modified_by_name: str | None = None
+    last_modified_at: datetime | None = None
 
 
 class ReportingBlockRead(BaseModel):
@@ -122,6 +133,18 @@ class ReportingDayContextRead(BaseModel):
     work_date: date
     areas: list[dict] = Field(default_factory=list)
     teams: list[ReportingTeamRead] = Field(default_factory=list)
+
+
+class ReportingNotificationRead(BaseModel):
+    id: str
+    title: str
+    message: str
+    work_date: date
+    team_id: str
+    team_name: str
+    missing_count: int
+    missing_employee_ids: list[str] = Field(default_factory=list)
+    missing_employee_names: list[str] = Field(default_factory=list)
 
 
 class ReportingDashboardSummaryRead(BaseModel):

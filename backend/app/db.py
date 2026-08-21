@@ -267,14 +267,29 @@ def ensure_schema_updates() -> None:
                 connection.execute(text("ALTER TABLE org_departments ADD COLUMN function_id VARCHAR(36)"))
     if inspector.has_table("infinity_billing_customer_supplier_map"):
         col_map = {col["name"]: col for col in inspector.get_columns("infinity_billing_customer_supplier_map")}
-        # Il vincolo univoco copriva solo (voce, codice cliente/fornitore),
-        # impedendo più incroci per lo stesso cliente verso la stessa voce
-        # Infinity (es. MAINA/DDT IN -> DDT e MAINA/DDT OUT -> DDT). Ora
-        # include anche jupiter_description, il campo con cui questi incroci
-        # si distinguono tra loro.
+        # Il vincolo univoco si è allargato due volte. Copriva solo (voce,
+        # codice cliente/fornitore), impedendo più incroci per lo stesso cliente
+        # verso la stessa voce Infinity (es. MAINA/DDT IN -> DDT e MAINA/DDT OUT
+        # -> DDT): è stato aggiunto jupiter_description, il campo con cui quegli
+        # incroci si distinguono. Ora include anche area operativa e immobili,
+        # perché lo stesso cliente sulla stessa voce va rendicontato in luoghi
+        # diversi (es. Dronero TONOLI EXTRA e Rossana TONOLI EXTRA).
+        # Si allarga sempre: le forme precedenti erano più strette, quindi
+        # nessuna riga già a DB può violare quella nuova.
+        unique_pair_columns = [
+            "infinity_billing_item_id",
+            "customer_supplier_code",
+            "jupiter_description",
+            "operational_area_id",
+            "buildings",
+        ]
         unique_constraints = inspector.get_unique_constraints("infinity_billing_customer_supplier_map")
-        legacy_pair_constraint = next(
-            (uc for uc in unique_constraints if uc["column_names"] == ["infinity_billing_item_id", "customer_supplier_code"]),
+        outdated_pair_constraint = next(
+            (
+                uc
+                for uc in unique_constraints
+                if set(uc["column_names"]) < set(unique_pair_columns)
+            ),
             None,
         )
         constraint_names = {uc["name"] for uc in unique_constraints}
@@ -289,16 +304,16 @@ def ensure_schema_updates() -> None:
                 connection.execute(text("ALTER TABLE infinity_billing_customer_supplier_map ALTER COLUMN buildings DROP DEFAULT"))
                 connection.execute(text("ALTER TABLE infinity_billing_customer_supplier_map ALTER COLUMN buildings TYPE JSONB USING buildings::jsonb"))
                 connection.execute(text("ALTER TABLE infinity_billing_customer_supplier_map ALTER COLUMN buildings SET DEFAULT '[]'"))
-            if legacy_pair_constraint:
+            if outdated_pair_constraint:
                 connection.execute(
-                    text(f'ALTER TABLE infinity_billing_customer_supplier_map DROP CONSTRAINT "{legacy_pair_constraint["name"]}"')
+                    text(f'ALTER TABLE infinity_billing_customer_supplier_map DROP CONSTRAINT "{outdated_pair_constraint["name"]}"')
                 )
-            if legacy_pair_constraint or "uq_infinity_billing_customer_supplier_map_pair" not in constraint_names:
+            if outdated_pair_constraint or "uq_infinity_billing_customer_supplier_map_pair" not in constraint_names:
                 connection.execute(
                     text(
                         "ALTER TABLE infinity_billing_customer_supplier_map "
                         "ADD CONSTRAINT uq_infinity_billing_customer_supplier_map_pair "
-                        "UNIQUE (infinity_billing_item_id, customer_supplier_code, jupiter_description)"
+                        "UNIQUE (" + ", ".join(unique_pair_columns) + ")"
                     )
                 )
     if inspector.has_table("field_definitions"):
@@ -449,6 +464,15 @@ def ensure_schema_updates() -> None:
                 connection.execute(text(
                     "ALTER TABLE teams ADD COLUMN operational_reporting_notifications_enabled "
                     "BOOLEAN DEFAULT FALSE NOT NULL"
+                ))
+            if "operational_reporting_email_enabled" not in columns:
+                connection.execute(text(
+                    "ALTER TABLE teams ADD COLUMN operational_reporting_email_enabled "
+                    "BOOLEAN DEFAULT FALSE NOT NULL"
+                ))
+            if "operational_reporting_last_email_date" not in columns:
+                connection.execute(text(
+                    "ALTER TABLE teams ADD COLUMN operational_reporting_last_email_date DATE"
                 ))
     if inspector.has_table("device_assets"):
         col_map = {col["name"]: col for col in inspector.get_columns("device_assets")}

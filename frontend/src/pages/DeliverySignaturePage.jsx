@@ -148,6 +148,7 @@ export default function DeliverySignaturePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["my-device-delivery", deliveryId] });
       queryClient.invalidateQueries({ queryKey: ["device-deliveries"] });
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
       setSignedNow(true);
       setErrorMessage(null);
     },

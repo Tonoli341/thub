@@ -459,6 +459,7 @@ class EmployeeRead(BaseModel):
     config_can_access_expirations: bool
     config_expirations_scope: Literal["none", "reports", "all"] = "all"
     config_can_access_deliveries: bool
+    config_can_access_maintenance: bool
     app_role: str | None
     planner_access_level: str | None = None
     default_operational_area_id: str | None
@@ -522,6 +523,7 @@ class EmployeeConfigurationPermissionsUpdate(BaseModel):
     config_can_access_expirations: bool = True
     config_expirations_scope: Literal["none", "reports", "all"] | None = None
     config_can_access_deliveries: bool = False
+    config_can_access_maintenance: bool = False
 
 
 class EmployeeRoleUpdate(BaseModel):
@@ -868,7 +870,7 @@ class AssignmentBase(BaseModel):
 
 
 class AssignmentCreate(AssignmentBase):
-    pass
+    copy_source_date: date | None = None
 
 
 class AssignmentUpdate(BaseModel):
@@ -908,8 +910,18 @@ class AssignmentRead(BaseModel):
     workload: str | None
     training_course_id: str | None = None
     training_course_title: str | None = None
+    last_modified_by_name: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PlannerDayAuditRead(BaseModel):
+    work_date: date
+    first_copied_from_date: date | None = None
+    first_copied_by_name: str | None = None
+    first_copied_at: datetime | None = None
+    last_modified_by_name: str | None = None
+    last_modified_at: datetime | None = None
 
 
 class JustificationBase(BaseModel):
@@ -1016,12 +1028,40 @@ class JustificationApprovalUpdate(BaseModel):
     approval_status: JustificationApprovalStatus
 
 
+class DashboardAreaPerson(BaseModel):
+    """Una persona dentro un'area del Planner, con la fascia oraria di quel turno."""
+
+    employee_id: str
+    employee_name: str
+    time_range: str | None = None
+
+
 class DashboardDetail(BaseModel):
     employee_id: str
     employee_name: str
     info: str
     start_time: str | None = None
     end_time: str | None = None
+    # Valorizzato solo per le righe che nascono da una giustificazione (assenti di
+    # oggi, richieste in attesa): permette alla home di aprire quella richiesta.
+    justification_id: str | None = None
+    # Valorizzato solo per il raggruppamento per area operativa: chi e' allocato
+    # su piu' immobili nella stessa giornata compare in ognuno con il proprio
+    # orario, che da "info" (nomi separati da virgola) non si potrebbe ricavare.
+    people: list[DashboardAreaPerson] = []
+
+
+class DashboardBirthdayItem(BaseModel):
+    employee_id: str
+    employee_name: str
+    birth_date: date
+    next_birthday: date
+    days_remaining: int
+
+
+class DashboardBirthdaysResponse(BaseModel):
+    days: int
+    items: list[DashboardBirthdayItem]
 
 
 class DashboardResponse(BaseModel):
@@ -1174,6 +1214,7 @@ class AuthUserRead(BaseModel):
     can_access_expirations: bool = False
     expirations_scope: Literal["none", "reports", "all"] = "none"
     can_access_deliveries: bool = False
+    can_access_maintenance: bool = False
     timesheets_scope: str = "team"
     planner_access_level: str | None = None
     absence_scope: str = "self"
@@ -1592,6 +1633,7 @@ class TeamUpdate(BaseModel):
     workload_owner_employee_id: str | None = None
     operational_reporting_owner_employee_id: str | None = None
     operational_reporting_notifications_enabled: bool | None = None
+    operational_reporting_email_enabled: bool | None = None
 
 
 class TeamMemberSummary(BaseModel):
@@ -1618,6 +1660,7 @@ class TeamRead(BaseModel):
     operational_reporting_owner_employee_id: str | None = None
     operational_reporting_owner_employee_name: str | None = None
     operational_reporting_notifications_enabled: bool = False
+    operational_reporting_email_enabled: bool = False
     created_at: datetime
     updated_at: datetime
     members: list[TeamMemberSummary] = Field(default_factory=list)
@@ -1636,8 +1679,22 @@ class WorkloadTableRow(BaseModel):
     pallet_count: int = Field(default=0, ge=0)
     notes: str | None = None
     warehouse: str | None = Field(default=None, max_length=120)
+    customer_code: str | None = Field(default=None, max_length=64)
+    customer_name: str | None = Field(default=None, max_length=160)
+    supplier_code: str | None = Field(default=None, max_length=64)
+    supplier_name: str | None = Field(default=None, max_length=160)
+    gesap_booking_id: str | None = Field(default=None, max_length=64)
+    gesap_booking_date: date | None = None
+    gesap_status: str | None = Field(default=None, max_length=64)
+    gesap_locked: bool = False
     last_modified_by: str | None = Field(default=None, max_length=160)
     last_modified_at: datetime | None = None
+
+
+class GesapWorkloadImportCreate(BaseModel):
+    team_id: str = Field(min_length=1, max_length=36)
+    work_date: date
+    booking_id: str = Field(min_length=1, max_length=64)
 
 
 class TeamDailyNoteUpsert(BaseModel):

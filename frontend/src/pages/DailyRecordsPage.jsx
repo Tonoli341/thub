@@ -12,6 +12,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  IconButton,
   Paper,
   Skeleton,
   Snackbar,
@@ -22,13 +23,17 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 
 import { deleteDailyRecordAdmin, getDailyRecords, getEmployees, getOperationalAreas, updateDailyRecordAdmin } from "../api";
 import { useAuth } from "../auth";
 import { reportingBuildingCodes } from "../buildings";
+import PageHeader from "../components/PageHeader";
 import ReportingPeriodFilter from "../components/ReportingPeriodFilter";
+import { bodyRowSx, headRowSx, stickyFirstColumnSx, tableSx } from "../components/tableStyles";
+import { dailyRecordsColumns } from "./dailyRecordsColumns";
 
 function fmtDate(value) {
   return value ? dayjs(value).format("DD/MM/YYYY") : "—";
@@ -437,19 +442,19 @@ export default function DailyRecordsPage() {
     setFilters((current) => ({ ...current, [key]: value }));
   }
 
+  const columns = dailyRecordsColumns(isAdmin);
+
   function updatePeriod({ start, end }) {
     setFilters((current) => ({ ...current, startDate: start, endDate: end }));
   }
 
   return (
     <Stack spacing={3}>
-      <Paper sx={{ p: 3.5, borderRadius: 4, background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))", color: "#fff" }}>
-        <Typography variant="overline" sx={{ opacity: 0.8 }}>Rendicontazioni</Typography>
-        <Typography variant="h4">Presenze</Typography>
-        <Typography sx={{ mt: 0.5, maxWidth: 680, opacity: 0.9, fontSize: "0.95rem" }}>
-          Elenco delle giornate registrate dal client presenze con orari di inizio, fine, pause e monte ore dichiarato.
-        </Typography>
-      </Paper>
+      <PageHeader
+        section="Rendicontazioni"
+        title="Presenze"
+        meta={isLoading ? undefined : `${rows.length} presenze · ${fmtDuration(totalWorkSeconds)} lavorate · ${fmtDuration(totalOvertimeSeconds)} straordinario`}
+      />
 
       <ReportingPeriodFilter
         start={filters.startDate}
@@ -485,16 +490,6 @@ export default function DailyRecordsPage() {
       {error && <Alert severity="error">{error.message}</Alert>}
 
       <Paper sx={{ borderRadius: 3, overflow: "hidden" }}>
-        <Box sx={{ px: 3, py: 2, borderBottom: "1px solid rgba(226,226,229,0.9)", bgcolor: "#faf7f2" }}>
-          {isLoading ? (
-            <Skeleton width={260} height={28} />
-          ) : (
-            <Typography variant="h6" sx={{ fontWeight: 800 }}>
-              {rows.length} presenze · {fmtDuration(totalWorkSeconds)} lavorate · {fmtDuration(totalOvertimeSeconds)} straordinario
-            </Typography>
-          )}
-        </Box>
-
         {isLoading && (
           <Stack>
             {[1, 2, 3, 4, 5].map((i) => (
@@ -515,27 +510,19 @@ export default function DailyRecordsPage() {
 
         {!isLoading && rows.length > 0 && (
           <Box sx={{ overflowX: "auto" }}>
-            <Table size="small" sx={{ minWidth: 1260 }}>
+            <Table size="small" sx={{ ...tableSx({ minWidth: 1120, dense: true }), ...stickyFirstColumnSx }}>
               <TableHead>
-                <TableRow>
-                  <TableCell>Dipendente</TableCell>
-                  <TableCell>Data</TableCell>
-                  <TableCell>Inizio</TableCell>
-                  <TableCell>Fine</TableCell>
-                  <TableCell>Area</TableCell>
-                  <TableCell>Immobile</TableCell>
-                  <TableCell>Pause</TableCell>
-                  <TableCell>Tempo pausa</TableCell>
-                  <TableCell>Tempo standard</TableCell>
-                  <TableCell>Tempo lavoro</TableCell>
-                  <TableCell>Straordinario</TableCell>
-                  <TableCell>Creato il</TableCell>
-                  {isAdmin && <TableCell>Azioni Admin</TableCell>}
+                <TableRow sx={headRowSx}>
+                  {columns.map((column) => (
+                    <TableCell key={column.key} sx={{ width: `${column.width}%` }}>
+                      {column.label}
+                    </TableCell>
+                  ))}
                 </TableRow>
               </TableHead>
               <TableBody>
                 {rows.map((row) => (
-                  <TableRow key={row.id} hover>
+                  <TableRow key={row.id} hover sx={bodyRowSx()}>
                     <TableCell>
                       <Typography variant="body2" fontWeight={700} noWrap>
                         {row.employee_name}
@@ -557,8 +544,10 @@ export default function DailyRecordsPage() {
                         <Typography variant="caption" color="text.disabled">—</Typography>
                       )}
                     </TableCell>
-                    <TableCell>{row.building || "—"}</TableCell>
-                    <TableCell sx={{ minWidth: 220 }}>
+                    <TableCell title={row.building || ""}>
+                      <Typography variant="body2" noWrap>{row.building || "—"}</Typography>
+                    </TableCell>
+                    <TableCell>
                       <PauseChips pauses={row.pauses} />
                     </TableCell>
                     <TableCell>{fmtDuration(row.pause_seconds)}</TableCell>
@@ -589,13 +578,17 @@ export default function DailyRecordsPage() {
                     </TableCell>
                     {isAdmin && (
                       <TableCell>
-                        <Stack direction="row" spacing={1}>
-                          <Button size="small" variant="outlined" startIcon={<span aria-hidden="true">✏️</span>} onClick={() => setEditRecord(row)}>
-                            Modifica
-                          </Button>
-                          <Button size="small" variant="outlined" color="error" startIcon={<span aria-hidden="true">🗑️</span>} onClick={() => setConfirmDelete(row)}>
-                            Elimina
-                          </Button>
+                        <Stack direction="row" spacing={0.25}>
+                          <Tooltip title="Modifica presenza">
+                            <IconButton size="small" aria-label="Modifica presenza" onClick={() => setEditRecord(row)}>
+                              <Box component="span" aria-hidden="true" sx={{ fontSize: 14 }}>✏️</Box>
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Elimina presenza">
+                            <IconButton size="small" color="error" aria-label="Elimina presenza" onClick={() => setConfirmDelete(row)}>
+                              <Box component="span" aria-hidden="true" sx={{ fontSize: 14 }}>🗑️</Box>
+                            </IconButton>
+                          </Tooltip>
                         </Stack>
                       </TableCell>
                     )}

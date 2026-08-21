@@ -1,4 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import FilterBar from "../components/FilterBar";
+import FilterSelect from "../components/FilterSelect";
+import PageHeader from "../components/PageHeader";
 import {
   Alert,
   Box,
@@ -58,21 +61,7 @@ export default function TrainingConfigPage() {
   return (
     <>
       <Stack spacing={3}>
-        <Paper
-          sx={{
-            p: 3.5,
-            borderRadius: 4,
-            background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))",
-            color: "#fff",
-          }}
-        >
-          <Typography variant="overline" sx={{ opacity: 0.8 }}>Configurazione</Typography>
-          <Typography variant="h4">Formazione</Typography>
-          <Typography sx={{ mt: 0.5, maxWidth: 640, opacity: 0.85, fontSize: "0.95rem" }}>
-            Gestisci i titoli dei corsi e le macro aree, e consulta il report delle ore di formazione
-            registrate nel Planner.
-          </Typography>
-        </Paper>
+        <PageHeader section="Configurazione" title="Formazione" />
 
         <Tabs value={tab} onChange={(_, v) => setTab(v)}>
           <Tab value="config" label="Corsi & Macro aree" />
@@ -326,18 +315,23 @@ function ReportTab({ onNotify }) {
 
   return (
     <Paper sx={{ p: 2.5, borderRadius: 3 }}>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "flex-end" }} mb={2} flexWrap="wrap" useFlexGap>
-        <TextField type="date" label="Dal" size="small" InputLabelProps={{ shrink: true }} value={start} onChange={(e) => setStart(e.target.value)} />
-        <TextField type="date" label="Al" size="small" InputLabelProps={{ shrink: true }} value={end} onChange={(e) => setEnd(e.target.value)} />
-        <TextField select size="small" label="Dipendente" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} sx={{ minWidth: 220 }}>
-          <MenuItem value="">Tutti</MenuItem>
-          {employees.map((emp) => <MenuItem key={emp.id} value={emp.id}>{emp.full_name}</MenuItem>)}
-        </TextField>
-        <Box sx={{ flex: 1 }} />
-        <Button variant="outlined" onClick={handleExport} disabled={downloading || !report?.rows?.length}>
-          {downloading ? "Esporto…" : "Esporta CSV"}
-        </Button>
-      </Stack>
+      <Box sx={{ mb: 2 }}>
+        <FilterBar>
+          <TextField type="date" label="Dal" size="small" InputLabelProps={{ shrink: true }} value={start} onChange={(e) => setStart(e.target.value)} />
+          <TextField type="date" label="Al" size="small" InputLabelProps={{ shrink: true }} value={end} onChange={(e) => setEnd(e.target.value)} />
+          <FilterSelect
+            label="Dipendente"
+            value={employeeId}
+            onChange={setEmployeeId}
+            options={employees.map((emp) => ({ value: emp.id, label: emp.full_name }))}
+            placeholder="Tutti"
+          />
+          <Box sx={{ flex: 1 }} />
+          <Button variant="outlined" size="small" onClick={handleExport} disabled={downloading || !report?.rows?.length}>
+            {downloading ? "Esporto…" : "Esporta CSV"}
+          </Button>
+        </FilterBar>
+      </Box>
 
       {reportQuery.isLoading ? (
         <CircularProgress size={24} />

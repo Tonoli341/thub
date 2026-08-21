@@ -1,6 +1,10 @@
 import dayjs from "dayjs";
+
+import FilterSelect from "../components/FilterSelect";
+import { absenceWindowLabel } from "./presenceLookup";
+import PageHeader from "../components/PageHeader";
 import isoWeek from "dayjs/plugin/isoWeek";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -27,7 +31,7 @@ import {
 } from "@mui/material";
 
 import { useAuth } from "../auth";
-import { getDashboard, getDashboardApprover, getDashboardExpirations, getDashboardMe, getJustifications, getEmployeePhoto, updateJustificationApproval } from "../api";
+import { getDashboard, getDashboardApprover, getDashboardBirthdays, getDashboardExpirations, getDashboardMe, getEmployeeOptions, getJustifications, getEmployeePhoto, updateJustificationApproval } from "../api";
 
 dayjs.extend(isoWeek);
 
@@ -127,11 +131,12 @@ function getDashboardPanelPreferences(storageKey) {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey));
     return {
+      presenceExpanded: saved?.presenceExpanded ?? true,
       weekExpanded: saved?.weekExpanded ?? true,
       monthExpanded: saved?.monthExpanded ?? true,
     };
   } catch {
-    return { weekExpanded: true, monthExpanded: true };
+    return { presenceExpanded: true, weekExpanded: true, monthExpanded: true };
   }
 }
 
@@ -197,14 +202,24 @@ const ORG_CARDS = [
 // ─── generic helpers ──────────────────────────────────────────────────────────
 
 const FULL_DAY_START = "08:00";
-const FULL_DAY_END = "17:00";
+const FULL_DAY_END = "18:00";
+// Marcatore storico della giornata intera, ancora presente sulle assenze gia'
+// salvate e su quelle create dai client esterni.
+const LEGACY_FULL_DAY_END = "17:00";
 
 function fmtAbsenceTime(startTime, endTime) {
   if (!startTime || !endTime) return null;
   const s = String(startTime).slice(0, 5);
   const e = String(endTime).slice(0, 5);
-  if (s === FULL_DAY_START && e === FULL_DAY_END) return "Giornata intera";
+  if (s === FULL_DAY_START && (e === FULL_DAY_END || e === LEGACY_FULL_DAY_END)) return "Giornata intera";
   return `${s}–${e}`;
+}
+
+// Persone distinte dentro un'area: la stessa persona puo' avere piu' turni
+// nello stesso immobile, ma nel conteggio va contata una volta sola.
+function areaPeopleCount(item) {
+  if (item.people?.length) return new Set(item.people.map((person) => person.employee_id)).size;
+  return item.info ? item.info.split(",").filter(Boolean).length : 0;
 }
 
 function StatusBadge({ status }) {
@@ -609,7 +624,7 @@ function OrgMetricCard({ title, value, accent, onClick, active, showBell = false
   );
 }
 
-function OrgDetailPanel({ title, accent, items, altItems, altTitle }) {
+function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustification }) {
   const [view, setView] = useState("area");
   const hasAlt = Boolean(altItems);
   const displayed = hasAlt && view === "area" ? altItems : items;
@@ -635,9 +650,24 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle }) {
         ? <Box sx={{ px: 2, py: 1.5 }}><Typography color="text.secondary" fontSize={13}>Nessun elemento.</Typography></Box>
         : (
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", lg: "repeat(3, 1fr)" }, px: 0.75, py: 0.5, gap: 0.5 }}>
-            {displayed.map((item, i) => (
+            {displayed.map((item, i) => {
+              // Le righe che nascono da una giustificazione portano il suo id:
+              // solo quelle possono aprire il pannello di approvazione.
+              const openable = Boolean(item.justification_id && onOpenJustification);
+              const open = () => onOpenJustification(item.justification_id);
+              return (
               <Box
                 key={`${item.employee_id}-${i}`}
+                role={openable ? "button" : undefined}
+                tabIndex={openable ? 0 : undefined}
+                title={openable ? "Apri la richiesta in Assenze › Richieste" : undefined}
+                onClick={openable ? open : undefined}
+                onKeyDown={openable ? (event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    open();
+                  }
+                } : undefined}
                 sx={{
                   display: "flex",
                   flexDirection: "column",
@@ -648,9 +678,11 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle }) {
                   py: 0.875,
                   borderRadius: 2,
                   gap: 0.75,
+                  cursor: openable ? "pointer" : "default",
                   background: isAreaView ? `${accent}08` : "transparent",
                   border: isAreaView ? `1px solid ${accent}22` : "1px solid transparent",
                   "&:hover": { bgcolor: isAreaView ? `${accent}10` : "#f8f8fa" },
+                  "&:focus-visible": { outline: `2px solid ${accent}`, outlineOffset: 2 },
                 }}
               >
                 <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between" sx={{ minWidth: 0 }}>
@@ -668,11 +700,34 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle }) {
                   )}
                   {isAreaView && (
                     <Box sx={{ px: 0.75, py: 0.2, borderRadius: 999, bgcolor: `${accent}18`, color: accent, fontSize: 10, fontWeight: 800, flexShrink: 0, whiteSpace: "nowrap" }}>
-                      {(item.info ? item.info.split(",").filter(Boolean).length : 0)} pers.
+                      {areaPeopleCount(item)} pers.
                     </Box>
                   )}
                 </Stack>
                 <Stack direction="row" spacing={0.5} alignItems="flex-start" justifyContent="space-between" sx={{ minWidth: 0, gap: 1 }}>
+                  {isAreaView && item.people?.length > 0 ? (
+                    <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>
+                      {item.people.map((person, personIndex) => (
+                        <Stack
+                          key={`${person.employee_id}-${personIndex}`}
+                          direction="row"
+                          spacing={0.75}
+                          alignItems="baseline"
+                          justifyContent="space-between"
+                          sx={{ minWidth: 0 }}
+                        >
+                          <Typography fontSize={11.5} sx={{ minWidth: 0, color: "text.primary", overflowWrap: "anywhere" }}>
+                            {person.employee_name}
+                          </Typography>
+                          {person.time_range && (
+                            <Box sx={{ px: 0.55, py: 0.1, borderRadius: 1, bgcolor: `${accent}14`, color: accent, fontSize: 10, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
+                              {person.time_range}
+                            </Box>
+                          )}
+                        </Stack>
+                      ))}
+                    </Stack>
+                  ) : (
                   <Typography
                     fontSize={11}
                     color="text.secondary"
@@ -689,6 +744,7 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle }) {
                   >
                     {item.info}
                   </Typography>
+                  )}
                   {fmtAbsenceTime(item.start_time, item.end_time) && (
                     <Box sx={{ px: 0.6, py: 0.1, borderRadius: 1, bgcolor: "rgba(0,0,0,0.06)", fontSize: 10, fontWeight: 700, color: "text.secondary", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
                       {fmtAbsenceTime(item.start_time, item.end_time)}
@@ -696,11 +752,130 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle }) {
                   )}
                 </Stack>
               </Box>
-            ))}
+              );
+            })}
           </Box>
         )
       }
     </Paper>
+  );
+}
+
+/**
+ * Ricerca della presenza di oggi per un singolo dipendente.
+ *
+ * Non chiama il backend: incrocia i due elenchi che il box Organizzazione ha già
+ * in pagina — assenti di oggi e assegnazioni Planner di oggi — così la risposta
+ * è immediata e non può divergere dai contatori qui sopra. "Assente" segue la
+ * stessa regola della card Assenti (giustificazione che copre oggi e non
+ * rifiutata), quindi comprende anche le richieste ancora da approvare.
+ */
+function PresenceLookup({ employees, absentToday, presentToday, isLoading, expanded, onToggleExpanded }) {
+  const [employeeId, setEmployeeId] = useState("");
+
+  const options = useMemo(
+    () => employees.map((employee) => ({ value: employee.id, label: employee.full_name })),
+    [employees],
+  );
+
+  const selected = employees.find((employee) => employee.id === employeeId) ?? null;
+  // filter e non find: più giustificazioni possono coprire lo stesso giorno
+  // (per esempio due permessi orari).
+  const absences = absentToday.filter((item) => item.employee_id === employeeId);
+  const planned = presentToday.find((item) => item.employee_id === employeeId) ?? null;
+  const isAbsent = absences.length > 0;
+  const accent = isAbsent ? "#bc4749" : "#007040";
+  // present_detail porta l'area del Planner, ma vale "—" quando l'assegnazione
+  // non ne ha una: in quel caso si dice solo che è in Planner.
+  const plannerInfo = planned
+    ? (planned.info && planned.info !== "—" ? `In Planner oggi · ${planned.info}` : "In Planner oggi")
+    : null;
+
+  return (
+    <Box>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
+        <Box sx={{ width: 3, height: 18, borderRadius: 2, bgcolor: "#0e6e8a", flexShrink: 0 }} />
+        <Typography sx={{ fontSize: 12, fontWeight: 800, color: "#0e6e8a", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Verifica Presenza Oggi:
+        </Typography>
+        <Tooltip title={expanded ? "Comprimi" : "Espandi"}>
+          <IconButton
+            size="small"
+            aria-label={expanded ? "Comprimi verifica presenza" : "Espandi verifica presenza"}
+            aria-expanded={expanded}
+            aria-controls="presence-lookup-panel"
+            onClick={onToggleExpanded}
+            sx={{
+              width: 24,
+              height: 24,
+              color: "#0e6e8a",
+              fontSize: 12,
+              transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+              transition: "transform 0.2s",
+            }}
+          >
+            ▾
+          </IconButton>
+        </Tooltip>
+      </Box>
+      <Collapse in={expanded} timeout="auto">
+        <Paper id="presence-lookup-panel" elevation={0} sx={{ border: "1.5px solid rgba(226,226,229,0.9)", borderRadius: 2, px: 1.5, py: 1.25 }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+            <FilterSelect
+              label="Cerca dipendente"
+              placeholder="Nome e cognome"
+              value={employeeId}
+              onChange={setEmployeeId}
+              options={options}
+              disabled={isLoading || options.length === 0}
+              sx={{ width: { xs: "100%", sm: 300 }, flexShrink: 0 }}
+            />
+
+            {!selected ? (
+              <Typography fontSize={12.5} color="text.secondary">
+                {isLoading ? "Caricamento dipendenti…" : "Cerca un dipendente per sapere se oggi è presente."}
+              </Typography>
+            ) : (
+              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+                <EmployeeAvatar name={selected.full_name} employeeId={selected.id} size={36} />
+                <Box sx={{ minWidth: 0 }}>
+                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                    <Typography fontSize={13} fontWeight={700} noWrap title={selected.full_name}>
+                      {selected.full_name}
+                    </Typography>
+                    <Box sx={{ px: 0.75, py: 0.15, borderRadius: 999, bgcolor: `${accent}18`, color: accent, fontSize: 11, fontWeight: 800, flexShrink: 0 }}>
+                      {isAbsent ? "Assente" : "Presente"}
+                    </Box>
+                  </Stack>
+
+                  {isAbsent ? (
+                    <Stack spacing={0.15} sx={{ mt: 0.25 }}>
+                      {absences.map((item, index) => {
+                        const hours = fmtAbsenceTime(item.start_time, item.end_time);
+                        return (
+                          <Typography
+                            key={`${item.employee_id}-${index}`}
+                            fontSize={12}
+                            color="text.secondary"
+                            sx={{ fontVariantNumeric: "tabular-nums" }}
+                          >
+                            {absenceWindowLabel(item.info)}{hours ? ` · ${hours}` : ""}
+                          </Typography>
+                        );
+                      })}
+                    </Stack>
+                  ) : (
+                    <Typography fontSize={12} color="text.secondary" noWrap>
+                      {plannerInfo ?? "Nessuna assenza registrata per oggi"}
+                    </Typography>
+                  )}
+                </Box>
+              </Stack>
+            )}
+          </Stack>
+        </Paper>
+      </Collapse>
+    </Box>
   );
 }
 
@@ -1213,6 +1388,7 @@ export default function DashboardPage() {
   const [activeOrgCard, setActiveOrgCard] = useState(null);
   const [expirationDays, setExpirationDays] = useState(30);
   const [companyExpanded, setCompanyExpanded] = useState(false);
+  const [presenceLookupExpanded, setPresenceLookupExpanded] = useState(initialPanelPreferences.presenceExpanded);
   const [weekAbsencesExpanded, setWeekAbsencesExpanded] = useState(initialPanelPreferences.weekExpanded);
   const [monthAbsencesExpanded, setMonthAbsencesExpanded] = useState(initialPanelPreferences.monthExpanded);
   const [weekOffset, setWeekOffset] = useState(0);
@@ -1227,6 +1403,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const preferences = getDashboardPanelPreferences(dashboardPanelPreferencesKey);
+    setPresenceLookupExpanded(preferences.presenceExpanded);
     setWeekAbsencesExpanded(preferences.weekExpanded);
     setMonthAbsencesExpanded(preferences.monthExpanded);
   }, [dashboardPanelPreferencesKey]);
@@ -1243,6 +1420,12 @@ export default function DashboardPage() {
     queryKey: ["dashboard", todayStr],
     queryFn: () => getDashboard(todayStr),
     enabled: hasAdminHomeAccess,
+  });
+
+  const birthdaysQuery = useQuery({
+    queryKey: ["dashboard-birthdays", 7],
+    queryFn: () => getDashboardBirthdays(7),
+    staleTime: 30 * 60 * 1000,
   });
 
   const meQuery = useQuery({
@@ -1279,12 +1462,22 @@ export default function DashboardPage() {
     enabled: Boolean(user?.linked_employee_id) && isManagerOrAbove,
   });
 
+  // Stessa queryKey delle altre pagine: l'elenco viaggia una volta sola e resta
+  // condiviso nella cache di react-query.
+  const employeeOptionsQuery = useQuery({
+    queryKey: ["employee-options"],
+    queryFn: () => getEmployeeOptions(),
+    enabled: hasAdminHomeAccess,
+    staleTime: 30 * 60 * 1000,
+  });
+
   const approverMutation = useMutation({
     mutationFn: ({ justificationId, status }) =>
       updateJustificationApproval(justificationId, { approval_status: status }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["dashboard-approver", user?.linked_employee_id] });
       queryClient.invalidateQueries({ queryKey: ["dashboard", todayStr] });
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
     },
   });
 
@@ -1303,20 +1496,40 @@ export default function DashboardPage() {
     <Stack spacing={2.5}>
 
       {/* ── header ── */}
-      <Paper elevation={0} sx={{ px: 3.5, py: 2.5, background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))", color: "#fff", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 2 }}>
-        <Box>
-          <Typography sx={{ fontSize: 13, opacity: 0.75, lineHeight: 1 }}>Home</Typography>
-          <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.25 }}>
-            {firstName ? `Ciao, ${firstName}` : "Panoramica operativa"}
-          </Typography>
-        </Box>
-        <Box sx={{ textAlign: { xs: "left", sm: "right" } }}>
-          <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{today.format("DD/MM/YYYY")}</Typography>
-          <Typography sx={{ fontSize: 12, opacity: 0.7, mt: 0.25 }}>
-            {orgData?.total_active_employees != null ? `${orgData.total_active_employees} dipendenti attivi` : "—"}
-          </Typography>
-        </Box>
-      </Paper>
+      <PageHeader
+        section="Home"
+        title={firstName ? `Ciao, ${firstName}` : "Panoramica operativa"}
+        meta={`${today.format("DD/MM/YYYY")}${orgData?.total_active_employees != null ? ` · ${orgData.total_active_employees} dipendenti attivi` : ""}`}
+      />
+
+      {(birthdaysQuery.data?.items?.length ?? 0) > 0 && (
+        <SectionShell
+          tone="amber"
+          title="Compleanni imminenti"
+          subtitle="Oggi e nei prossimi 7 giorni"
+          bodySx={{ px: 2, py: 1.5 }}
+        >
+          <Stack direction="row" spacing={1.25} useFlexGap flexWrap="wrap">
+            {birthdaysQuery.data.items.map((item) => (
+              <Paper
+                key={item.employee_id}
+                elevation={0}
+                sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.9, border: "1px solid rgba(217,119,6,0.2)", borderRadius: 2, bgcolor: "rgba(255,251,235,0.72)" }}
+              >
+                <EmployeeAvatar name={item.employee_name} employeeId={item.employee_id} size={32} />
+                <Box>
+                  <Typography sx={{ fontSize: 12.5, fontWeight: 750 }}>{item.employee_name}</Typography>
+                  <Typography sx={{ fontSize: 11, color: "#b45309", fontWeight: 650 }}>
+                    🎂 {item.days_remaining === 0
+                      ? "Oggi"
+                      : `${dayjs(item.next_birthday).format("D MMMM")} · tra ${item.days_remaining} giorn${item.days_remaining === 1 ? "o" : "i"}`}
+                  </Typography>
+                </Box>
+              </Paper>
+            ))}
+          </Stack>
+        </SectionShell>
+      )}
 
       {/* ── organizzazione — visibile solo per admin e hr ── */}
       {hasAdminHomeAccess && (
@@ -1417,6 +1630,11 @@ export default function DashboardPage() {
                 title={activeOrgConfig.detailTitle}
                 accent={activeOrgConfig.accent}
                 items={orgData[activeOrgConfig.detailKey] ?? []}
+                // Il link porta su Assenze › Richieste: si offre solo a chi quella
+                // pagina può aprirla davvero, altrimenti la route lo rimanda alla home.
+                onOpenJustification={user?.can_access_calendar
+                  ? (justificationId) => navigate(`/calendario?tab=richieste&richiesta=${justificationId}`)
+                  : undefined}
                 altItems={activeOrgConfig.key === "present" ? (orgData.present_by_area ?? []) : undefined}
                 altTitle="In Planner oggi · per area operativa"
               />
@@ -1433,6 +1651,22 @@ export default function DashboardPage() {
               isLoading={expirationsQuery.isLoading || expirationsQuery.isFetching}
             />
           )}
+
+          {/* ricerca presenza del singolo dipendente */}
+          <PresenceLookup
+            employees={employeeOptionsQuery.data ?? []}
+            absentToday={orgData?.absent_today_detail ?? []}
+            presentToday={orgData?.present_detail ?? []}
+            isLoading={employeeOptionsQuery.isLoading || orgQuery.isLoading}
+            expanded={presenceLookupExpanded}
+            onToggleExpanded={() => {
+              const nextExpanded = !presenceLookupExpanded;
+              setPresenceLookupExpanded(nextExpanded);
+              saveDashboardPanelPreference(dashboardPanelPreferencesKey, "presenceExpanded", nextExpanded);
+            }}
+          />
+
+          <Divider />
 
           {/* settimana */}
           <Box>

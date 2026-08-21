@@ -79,10 +79,24 @@ class OperationalReportAllocation(Base):
     customer_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     customer_description_snapshot: Mapped[str] = mapped_column(String(160), nullable=False)
     jupiter_description_snapshot: Mapped[str | None] = mapped_column(Text)
+    # Posizione della singola attività: chi si sposta durante lo stesso blocco
+    # pianificato rendiconta ogni box dove ha lavorato davvero. ``NULL`` vale
+    # "eredita dal blocco" e copre le rendicontazioni precedenti a questo campo.
+    actual_area_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    actual_area_name_snapshot: Mapped[str | None] = mapped_column(String(120))
+    actual_building: Mapped[str | None] = mapped_column(String(50))
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     start_offset_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
     eligible_mapping_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    # Tracciamento come nel Planner (``assignments.last_modified_by_name``): il
+    # nome è denormalizzato perché resti leggibile anche se l'utente viene
+    # disattivato, e i timestamp sono nullable perché le caselle già a DB prima
+    # di questo campo non hanno una data vera da mostrare.
+    created_by_name: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_modified_by_name: Mapped[str | None] = mapped_column(String(120))
+    last_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     block: Mapped[OperationalReportBlock] = relationship(back_populates="allocations")

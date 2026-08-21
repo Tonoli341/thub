@@ -70,7 +70,7 @@ else
   for pagina in \
     ActiveActivitiesPage AuditLogPage CalendarPage ConsegnePage DailyRecordsPage \
     DashboardPage DeliverySignaturePage EmployeesPage EndpointsPage \
-    FunctionsDepartmentsPage IntegrationsPage LdapEmployeesPage LoginPage \
+    FunctionsDepartmentsPage IntegrationsPage LdapEmployeesPage LoginPage MaintenancePage \
     OperationalAreasPage OperationalReportingDashboardPage OperationalReportingPage \
     OrgChartPage PlannerPage ProjectsPage SquadrePage SystemStatusPage \
     TimesheetDashboardPage TimesheetListPage ToolChangesPage TrainingConfigPage \
@@ -110,6 +110,7 @@ http "record giornalieri"      /api/daily-records              "401"
 http "integrazioni"            /api/system/integrations/office365 "401"
 http "modifiche tool"          /api/tool-changes               "401 422"
 http "commesse Jupiter"        /api/projects                   "401 422"
+http "questionario manutenzioni" /api/maintenance/questionnaire "401"
 
 echo
 echo "────────────────────────────────────────────────────────────────────────"

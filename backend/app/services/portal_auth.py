@@ -114,6 +114,7 @@ def _build_permission_fields(
         )
     expirations_enabled = expirations_scope != "none"
     deliveries_enabled = bool(employee and employee.config_can_access_deliveries)
+    maintenance_enabled = bool(employee and employee.config_can_access_maintenance)
 
     if is_portal:
         can_access_timesheets = True
@@ -123,6 +124,7 @@ def _build_permission_fields(
         can_access_workloads = False
         can_access_expirations = False
         can_access_deliveries = False
+        can_access_maintenance = False
         timesheets_scope = "all"
     else:
         can_access_timesheets = effective_role == "admin" or (
@@ -137,6 +139,7 @@ def _build_permission_fields(
         can_access_workloads = effective_role == "admin" or workloads_enabled
         can_access_expirations = effective_role == "admin" or expirations_enabled
         can_access_deliveries = is_admin_or_hr or deliveries_enabled
+        can_access_maintenance = effective_role == "admin" or maintenance_enabled
         timesheets_scope = "all" if is_admin_or_hr else "team"
 
     planner_access_level = resolve_planner_access_level(employee, effective_role, is_portal=is_portal)
@@ -161,6 +164,7 @@ def _build_permission_fields(
         can_access_expirations=can_access_expirations,
         expirations_scope=expirations_scope,
         can_access_deliveries=can_access_deliveries,
+        can_access_maintenance=can_access_maintenance,
         timesheets_scope=timesheets_scope,
         planner_access_level=planner_access_level,
         absence_scope=absence_scope,

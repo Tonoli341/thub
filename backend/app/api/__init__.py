@@ -24,6 +24,8 @@ from app.api.infinity_billing_items import router as infinity_billing_items_rout
 from app.api.integrations import router as integrations_router
 from app.api.justifications import router as justifications_router
 from app.api.ldap_employees import router as ldap_employees_router
+from app.api.maintenance import router as maintenance_router
+from app.api.notifications import router as notifications_router
 from app.api.org_entities import router as org_entities_router
 from app.api.operational_reporting import router as operational_reporting_router
 from app.api.projects import router as projects_router
@@ -55,6 +57,7 @@ api_router.include_router(device_assets_router)
 api_router.include_router(device_deliveries_router)
 api_router.include_router(employees_router)
 protected_router.include_router(ldap_employees_router)
+protected_router.include_router(maintenance_router)
 protected_router.include_router(projects_router)
 protected_router.include_router(infinity_billing_customer_supplier_map_router)
 protected_router.include_router(infinity_billing_items_router)
@@ -72,6 +75,7 @@ protected_router.include_router(teams_router)
 protected_router.include_router(tool_changes_router)
 protected_router.include_router(timesheets_router)
 protected_router.include_router(org_entities_router)
+protected_router.include_router(notifications_router)
 protected_router.include_router(operational_reporting_router)
 protected_router.include_router(workloads_router)
 protected_router.include_router(training_macro_areas_router)

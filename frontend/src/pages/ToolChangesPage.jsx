@@ -15,6 +15,8 @@ import {
 } from "@mui/material";
 
 import { getToolChanges, createToolChange, updateToolChange, deleteToolChange } from "../api";
+import FilterBar from "../components/FilterBar";
+import PageHeader from "../components/PageHeader";
 
 function TrashIcon() {
   return (

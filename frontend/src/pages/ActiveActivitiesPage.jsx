@@ -27,6 +27,9 @@ import {
 import { closeActiveActivityAdmin, discardActiveActivityAdmin, getActiveActivitiesAdmin } from "../api";
 import { useAuth } from "../auth";
 import ReportingPeriodFilter from "../components/ReportingPeriodFilter";
+import PageHeader from "../components/PageHeader";
+import { headRowSx, tableSx } from "../components/tableStyles";
+import { activeActivitiesColumns } from "./activeActivitiesColumns";
 
 const REFRESH_INTERVAL_MS = 20000;
 const STALE_HEARTBEAT_SECONDS = 5 * 60;
@@ -177,37 +180,28 @@ export default function ActiveActivitiesPage() {
     },
   });
 
+  const columns = activeActivitiesColumns(isAdmin);
+
   return (
     <Stack spacing={3}>
-      <Paper sx={{ p: 3.5, borderRadius: 4, background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))", color: "#fff" }}>
-        <Typography variant="overline" sx={{ opacity: 0.8 }}>Rendicontazioni</Typography>
-        <Typography variant="h4">Timer attivi</Typography>
-        <Typography sx={{ mt: 0.5, maxWidth: 680, opacity: 0.9, fontSize: "0.95rem" }}>
-          Attività in corso o in pausa, filtrate per data di avvio. Un heartbeat fermo da oltre 5 minuti indica una sessione probabilmente abbandonata (app chiusa senza salvare).
-        </Typography>
-      </Paper>
+      <PageHeader
+        section="Rendicontazioni"
+        title="Timer attivi"
+        meta={isLoading ? undefined : `${data.length} timer ${data.length === 1 ? "aperto" : "aperti"} nel periodo`}
+      />
 
       <ReportingPeriodFilter start={range.start} end={range.end} onChange={setRange} />
 
       {error && <Alert severity="error">{error.message}</Alert>}
 
       <Paper sx={{ borderRadius: 3, overflow: "hidden" }}>
-        <Box sx={{ px: 3, py: 2, borderBottom: "1px solid rgba(226,226,229,0.9)", bgcolor: "#faf7f2" }}>
-          <Stack direction="row" spacing={1.5} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
-            {isLoading ? (
-              <Skeleton width={200} height={28} />
-            ) : (
-              <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                {data.length} timer {data.length === 1 ? "aperto" : "aperti"} avviati nel periodo
-              </Typography>
-            )}
-            <Chip
-              label="🔄 Aggiornamento automatico ogni 20s"
-              size="small"
-              variant="outlined"
-              sx={{ fontSize: "0.72rem", color: "text.secondary" }}
-            />
-          </Stack>
+        <Box sx={{ px: 2, py: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+          <Chip
+            label="🔄 Aggiornamento automatico ogni 20s"
+            size="small"
+            variant="outlined"
+            sx={{ fontSize: "0.72rem", color: "text.secondary" }}
+          />
         </Box>
 
         {isLoading && (
@@ -230,17 +224,14 @@ export default function ActiveActivitiesPage() {
 
         {!isLoading && data.length > 0 && (
           <Box sx={{ overflowX: "auto" }}>
-            <Table size="small" sx={{ minWidth: 960 }}>
+            <Table size="small" sx={tableSx({ minWidth: 900, dense: true })}>
               <TableHead>
-                <TableRow>
-                  <TableCell>Dipendente</TableCell>
-                  <TableCell>Incrocio</TableCell>
-                  <TableCell>Area / Immobile</TableCell>
-                  <TableCell>Inizio</TableCell>
-                  <TableCell>Stato</TableCell>
-                  <TableCell>Trascorso</TableCell>
-                  <TableCell>Ultimo heartbeat</TableCell>
-                  {isAdmin && <TableCell>Azioni Admin</TableCell>}
+                <TableRow sx={headRowSx}>
+                  {columns.map((column) => (
+                    <TableCell key={column.key} sx={{ width: `${column.width}%` }}>
+                      {column.label}
+                    </TableCell>
+                  ))}
                 </TableRow>
               </TableHead>
               <TableBody>

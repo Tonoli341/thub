@@ -1,4 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import FilterBar from "../components/FilterBar";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
+import { headRowSx, tableSx } from "../components/tableStyles";
+import { employeesColumns } from "./employeesColumns";
 import {
   Alert,
   Autocomplete,
@@ -87,7 +91,7 @@ const portalRoleFilterOptions = [
   { value: "admin", label: "Admin", icon: "admin-eye" },
   { value: "hr", label: "HR", icon: "🧾" },
   { value: "manager", label: "Manager", icon: "👔" },
-  { value: "collaboratore", label: "Collaboratore", icon: "👤" },
+  { value: "collaboratore", label: "Collaboratore", icon: "👨🏻" },
 ];
 
 const portalRoleVisualStyles = {
@@ -121,6 +125,9 @@ const filterCategoryStyles = {
   },
 };
 
+// Testo lungo troncato con l'ellissi: il valore pieno resta nel `title`.
+const ellipsisCellSx = { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+
 function roleMeta(role) {
   return roleOptions.find((option) => option.value === role) ?? { label: role || "Altro", icon: "👤" };
 }
@@ -138,11 +145,11 @@ const EMPTY_SCHEDULE = [
 ];
 
 const DEFAULT_SCHEDULE = [
-  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
-  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
-  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
-  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
-  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "17:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "18:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "18:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "18:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "18:00" },
+  { enabled: true, morning_start: "08:00", morning_end: "12:00", afternoon_start: "13:00", afternoon_end: "18:00" },
   { enabled: false, morning_start: null,    morning_end: null,    afternoon_start: null,    afternoon_end: null    },
   { enabled: false, morning_start: null,    morning_end: null,    afternoon_start: null,    afternoon_end: null    },
 ];
@@ -478,6 +485,7 @@ function EmployeeProfileDialog({
     config_can_access_expirations: true,
     config_expirations_scope: "all",
     config_can_access_deliveries: false,
+    config_can_access_maintenance: false,
   });
   const [managerEmployeeId, setManagerEmployeeId] = useState(null);
   const [departmentDraft, setDepartmentDraft] = useState(null);
@@ -551,6 +559,7 @@ function EmployeeProfileDialog({
       config_expirations_scope: employee.config_expirations_scope
         ?? ((employee.config_can_access_expirations ?? true) ? "all" : "none"),
       config_can_access_deliveries: employee.config_can_access_deliveries ?? false,
+      config_can_access_maintenance: employee.config_can_access_maintenance ?? false,
     });
 
     setManagerEmployeeId(employee.manager_employee_id ?? null);
@@ -626,6 +635,7 @@ function EmployeeProfileDialog({
         config_can_access_expirations: roleConfig.config_expirations_scope !== "none",
         config_expirations_scope: roleConfig.config_expirations_scope,
         config_can_access_deliveries: roleConfig.config_can_access_deliveries,
+        config_can_access_maintenance: roleConfig.config_can_access_maintenance,
       });
       await onSaveAppRole(employee.id, {
         app_role: roleConfig.app_role,
@@ -1459,6 +1469,30 @@ function EmployeeProfileDialog({
                 sx={{ alignItems: "flex-start", mt: 0 }}
               />
             </Box>
+            <Box sx={{ p: 2, borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={Boolean(roleConfig.config_can_access_maintenance)}
+                    onChange={(e) =>
+                      setRoleConfig((current) => ({ ...current, config_can_access_maintenance: e.target.checked }))
+                    }
+                    color="primary"
+                    size="small"
+                    disabled={!isAdmin}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body2" fontWeight={600}>Accesso manutenzioni</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Admin sempre abilitato. Per gli altri utenti il toggle rende visibile la sezione Manutenzioni e il questionario condiviso.
+                    </Typography>
+                  </Box>
+                }
+                sx={{ alignItems: "flex-start", mt: 0 }}
+              />
+            </Box>
             {saveError && <Alert severity="error" onClose={() => setSaveError(null)}>{saveError}</Alert>}
             {saveButton("Salva accessi", handleSaveAccess, !isAdmin)}
           </Stack>
@@ -1645,7 +1679,7 @@ function EmployeeProfileDialog({
                               morning_start: "08:00",
                               morning_end: "12:00",
                               afternoon_start: "13:00",
-                              afternoon_end: "17:00",
+                              afternoon_end: "18:00",
                             });
                           } else {
                             updateDay(idx, {
@@ -1948,431 +1982,416 @@ export default function EmployeesPage({ onImpersonate }) {
   );
 
   const areas = areasQuery.data ?? [];
+  const columns = employeesColumns({ withImpersonate: Boolean(onImpersonate) });
+
+  // "Azzera filtri" resta spento finché tutti i filtri sono sui valori iniziali
+  // (lo stato parte da "active", non da nessun filtro).
+  const filtersActive = Boolean(search)
+    || selectedRole !== null
+    || selectedPortalRole !== null
+    || selectedStatus !== "active"
+    || selectedBadgeFilter !== null;
 
   return (
     <Stack spacing={3}>
       {/* ── Header ── */}
-      <Paper
-        sx={{
-          p: 3.5,
-          borderRadius: 4,
-          background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))",
-          color: "#fff",
-        }}
-      >
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={2}
-          alignItems={{ md: "center" }}
-          justifyContent="space-between"
-        >
-          <Box>
-            <Typography variant="overline" sx={{ opacity: 0.8 }}>Impresa</Typography>
-            <Typography variant="h4">Dipendenti</Typography>
-            <Typography sx={{ mt: 0.5, maxWidth: 600, opacity: 0.9, fontSize: "0.95rem" }}>
-              Dipendenti TMS con ruoli, telefoni e area operativa di default.
-            </Typography>
-          </Box>
-          <Button
-            variant="contained"
-            onClick={() => syncMutation.mutate()}
-            disabled={syncMutation.isPending}
-            sx={{
-              bgcolor: "rgba(255,255,255,0.18)",
-              color: "#fff",
-              border: "1px solid rgba(255,255,255,0.3)",
-              "&:hover": { bgcolor: "rgba(255,255,255,0.28)" },
-              flexShrink: 0,
-            }}
-          >
+      <PageHeader
+        section="Impresa"
+        title="Dipendenti"
+        actions={
+          <HeaderButton onClick={() => syncMutation.mutate()} disabled={syncMutation.isPending}>
             {syncMutation.isPending ? "Sincronizzazione…" : "Sincronizza da TMS"}
-          </Button>
-        </Stack>
-      </Paper>
+          </HeaderButton>
+        }
+      />
 
-      <Paper sx={{ p: 3 }}>
-        <Stack spacing={2}>
-          {/* Search */}
-          <TextField
-            label="Cerca per nome, matricola o datore di lavoro"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            fullWidth
-          />
+      {/* ── Filtri: pannello separato dalla tabella ── */}
+      <FilterBar
+        onReset={() => {
+          setSearch("");
+          setSelectedRole(null);
+          setSelectedPortalRole(null);
+          setSelectedStatus("active");
+          setSelectedBadgeFilter(null);
+        }}
+        resetDisabled={!filtersActive}
+      >
+        <TextField
+          size="small"
+          label="Cerca per nome, matricola o datore di lavoro"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
 
-          {/* Filters row */}
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={1.5}
-            alignItems={{ xs: "stretch", sm: "center" }}
-            flexWrap="wrap"
-            useFlexGap
+        <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+          <Typography
+            variant="body2"
+            sx={{ minWidth: 95, flexShrink: 0, color: filterCategoryStyles.role.labelColor, fontWeight: 700 }}
           >
-            <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
-              <Typography
-                variant="body2"
-                sx={{ minWidth: 95, flexShrink: 0, color: filterCategoryStyles.role.labelColor, fontWeight: 700 }}
+            Filtra per ruolo
+          </Typography>
+          <ToggleButtonGroup
+            value={selectedRole}
+            onChange={(_e, value) => setSelectedRole(value)}
+            exclusive
+            size="small"
+          >
+            {roleOptions.map((role) => (
+              <Tooltip key={role.value} title={role.label}>
+                <ToggleButton
+                  value={role.value}
+                  sx={{
+                    gap: 0.75,
+                    px: 1.5,
+                    color: "#4b5563",
+                    borderColor: filterCategoryStyles.role.borderColor,
+                    "&:hover": {
+                      bgcolor: filterCategoryStyles.role.hoverBg,
+                      borderColor: filterCategoryStyles.role.activeBg,
+                    },
+                    "&.Mui-selected": {
+                      bgcolor: filterCategoryStyles.role.activeBg,
+                      color: "#ffffff",
+                      borderColor: filterCategoryStyles.role.activeBg,
+                    },
+                    "&.Mui-selected:hover": {
+                      bgcolor: filterCategoryStyles.role.activeHover,
+                      borderColor: filterCategoryStyles.role.activeHover,
+                    },
+                  }}
+                >
+                  <Box component="span" sx={{ fontSize: 18, lineHeight: 1 }}>{role.icon}</Box>
+                  <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
+                    {role.label}
+                  </Box>
+                </ToggleButton>
+              </Tooltip>
+            ))}
+          </ToggleButtonGroup>
+        </Stack>
+
+        <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+          <Typography
+            variant="body2"
+            sx={{ minWidth: 110, flexShrink: 0, color: filterCategoryStyles.role.labelColor, fontWeight: 700 }}
+          >
+            Ruolo portale
+          </Typography>
+          <ToggleButtonGroup
+            value={selectedPortalRole}
+            onChange={(_e, value) => setSelectedPortalRole(value)}
+            exclusive
+            size="small"
+          >
+            {portalRoleFilterOptions.map((role) => (
+              <Tooltip key={role.value} title={role.label}>
+                <ToggleButton
+                  value={role.value}
+                  sx={{
+                    gap: 0.75,
+                    px: 1.5,
+                    color: "#4b5563",
+                    borderColor: filterCategoryStyles.role.borderColor,
+                    "&:hover": {
+                      bgcolor: filterCategoryStyles.role.hoverBg,
+                      borderColor: filterCategoryStyles.role.activeBg,
+                    },
+                    "&.Mui-selected": {
+                      bgcolor: filterCategoryStyles.role.activeBg,
+                      color: "#ffffff",
+                      borderColor: filterCategoryStyles.role.activeBg,
+                    },
+                    "&.Mui-selected:hover": {
+                      bgcolor: filterCategoryStyles.role.activeHover,
+                      borderColor: filterCategoryStyles.role.activeHover,
+                    },
+                  }}
+                >
+                  <PortalRoleIcon role={role.value} size={16} />
+                  <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
+                    {role.label}
+                  </Box>
+                </ToggleButton>
+              </Tooltip>
+            ))}
+          </ToggleButtonGroup>
+        </Stack>
+
+        <Divider orientation="vertical" flexItem sx={{ display: { xs: "none", sm: "block" } }} />
+
+        <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+          <Typography
+            variant="body2"
+            sx={{ minWidth: 70, flexShrink: 0, color: filterCategoryStyles.status.labelColor, fontWeight: 700 }}
+          >
+            Stato
+          </Typography>
+          <ToggleButtonGroup
+            value={selectedStatus}
+            onChange={(_e, value) => value && setSelectedStatus(value)}
+            exclusive
+            size="small"
+          >
+            {employeeStatusOptions.map((status) => (
+              <ToggleButton
+                key={status.value}
+                value={status.value}
+                sx={{
+                  gap: 0.75,
+                  px: 1.5,
+                  color: "#4b5563",
+                  borderColor: filterCategoryStyles.status.borderColor,
+                  "&:hover": {
+                    bgcolor: filterCategoryStyles.status.hoverBg,
+                    borderColor: filterCategoryStyles.status.activeBg,
+                  },
+                  "&.Mui-selected": {
+                    bgcolor: filterCategoryStyles.status.activeBg,
+                    color: "#ffffff",
+                    borderColor: filterCategoryStyles.status.activeBg,
+                  },
+                  "&.Mui-selected:hover": {
+                    bgcolor: filterCategoryStyles.status.activeHover,
+                    borderColor: filterCategoryStyles.status.activeHover,
+                  },
+                }}
               >
-                Filtra per ruolo
-              </Typography>
-              <ToggleButtonGroup
-                value={selectedRole}
-                onChange={(_e, value) => setSelectedRole(value)}
-                exclusive
-                size="small"
-              >
-                {roleOptions.map((role) => (
-                  <Tooltip key={role.value} title={role.label}>
-                    <ToggleButton
-                      value={role.value}
-                      sx={{
-                        gap: 0.75,
-                        px: 1.5,
-                        color: "#4b5563",
-                        borderColor: filterCategoryStyles.role.borderColor,
-                        "&:hover": {
-                          bgcolor: filterCategoryStyles.role.hoverBg,
-                          borderColor: filterCategoryStyles.role.activeBg,
-                        },
-                        "&.Mui-selected": {
-                          bgcolor: filterCategoryStyles.role.activeBg,
-                          color: "#ffffff",
-                          borderColor: filterCategoryStyles.role.activeBg,
-                        },
-                        "&.Mui-selected:hover": {
-                          bgcolor: filterCategoryStyles.role.activeHover,
-                          borderColor: filterCategoryStyles.role.activeHover,
-                        },
-                      }}
-                    >
-                      <Box component="span" sx={{ fontSize: 18, lineHeight: 1 }}>{role.icon}</Box>
-                      <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
-                        {role.label}
-                      </Box>
-                    </ToggleButton>
-                  </Tooltip>
+                <Box component="span" sx={{ fontSize: 16, lineHeight: 1 }}>{status.icon}</Box>
+                <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
+                  {status.label}
+                </Box>
+              </ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+        </Stack>
+
+        <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+          <Typography
+            variant="body2"
+            sx={{ minWidth: 95, flexShrink: 0, color: filterCategoryStyles.badge.labelColor, fontWeight: 700 }}
+          >
+            Filtra per badge
+          </Typography>
+          <ToggleButtonGroup
+            value={selectedBadgeFilter}
+            onChange={(_e, value) => setSelectedBadgeFilter(value)}
+            exclusive
+            size="small"
+          >
+            {badgeFilterOptions.map((badge) => (
+              <Tooltip key={badge.value} title={badge.label}>
+                <ToggleButton
+                  value={badge.value}
+                  sx={{
+                    gap: 0.75,
+                    px: 1.5,
+                    color: "#4b5563",
+                    borderColor: filterCategoryStyles.badge.borderColor,
+                    "&:hover": {
+                      bgcolor: filterCategoryStyles.badge.hoverBg,
+                      borderColor: filterCategoryStyles.badge.activeBg,
+                    },
+                    "&.Mui-selected": {
+                      bgcolor: filterCategoryStyles.badge.activeBg,
+                      color: "#ffffff",
+                      borderColor: filterCategoryStyles.badge.activeBg,
+                    },
+                    "&.Mui-selected:hover": {
+                      bgcolor: filterCategoryStyles.badge.activeHover,
+                      borderColor: filterCategoryStyles.badge.activeHover,
+                    },
+                  }}
+                >
+                  <Box component="span" sx={{ fontSize: 18, lineHeight: 1 }}>{badge.icon}</Box>
+                  <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
+                    {badge.label}
+                  </Box>
+                </ToggleButton>
+              </Tooltip>
+            ))}
+          </ToggleButtonGroup>
+        </Stack>
+      </FilterBar>
+
+      {/* Sync feedback */}
+      {syncMutation.error && (
+        <Alert severity="error">{syncMutation.error.message}</Alert>
+      )}
+      {syncMutation.data && (
+        <Alert severity="success">
+          Sync completato: letti {syncMutation.data.fetched}, creati {syncMutation.data.created},
+          aggiornati {syncMutation.data.updated}, disattivati {syncMutation.data.deactivated}.
+        </Alert>
+      )}
+      {employeesQuery.error && (
+        <Alert severity="error">{employeesQuery.error.message}</Alert>
+      )}
+      {employeeCourseBadgesQuery.error && (
+        <Alert severity="error">{employeeCourseBadgesQuery.error.message}</Alert>
+      )}
+
+      {/* ── Tabella dei dipendenti filtrati ── */}
+      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+        <Box sx={{ overflowX: "auto" }}>
+          <Table size="small" sx={tableSx({ minWidth: 760, dense: true })}>
+            <TableHead>
+              <TableRow sx={headRowSx}>
+                {columns.map((column) => (
+                  <TableCell key={column.key} align={column.align} sx={{ width: `${column.width}%` }}>
+                    {column.label}
+                  </TableCell>
                 ))}
-              </ToggleButtonGroup>
-            </Stack>
-
-            <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
-              <Typography
-                variant="body2"
-                sx={{ minWidth: 110, flexShrink: 0, color: filterCategoryStyles.role.labelColor, fontWeight: 700 }}
-              >
-                Ruolo portale
-              </Typography>
-              <ToggleButtonGroup
-                value={selectedPortalRole}
-                onChange={(_e, value) => setSelectedPortalRole(value)}
-                exclusive
-                size="small"
-              >
-                {portalRoleFilterOptions.map((role) => (
-                  <Tooltip key={role.value} title={role.label}>
-                    <ToggleButton
-                      value={role.value}
-                      sx={{
-                        gap: 0.75,
-                        px: 1.5,
-                        color: "#4b5563",
-                        borderColor: filterCategoryStyles.role.borderColor,
-                        "&:hover": {
-                          bgcolor: filterCategoryStyles.role.hoverBg,
-                          borderColor: filterCategoryStyles.role.activeBg,
-                        },
-                        "&.Mui-selected": {
-                          bgcolor: filterCategoryStyles.role.activeBg,
-                          color: "#ffffff",
-                          borderColor: filterCategoryStyles.role.activeBg,
-                        },
-                        "&.Mui-selected:hover": {
-                          bgcolor: filterCategoryStyles.role.activeHover,
-                          borderColor: filterCategoryStyles.role.activeHover,
-                        },
-                      }}
-                    >
-                      <PortalRoleIcon role={role.value} size={16} />
-                      <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
-                        {role.label}
-                      </Box>
-                    </ToggleButton>
-                  </Tooltip>
-                ))}
-              </ToggleButtonGroup>
-            </Stack>
-
-            <Divider orientation="vertical" flexItem sx={{ display: { xs: "none", sm: "block" } }} />
-
-            <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
-              <Typography
-                variant="body2"
-                sx={{ minWidth: 70, flexShrink: 0, color: filterCategoryStyles.status.labelColor, fontWeight: 700 }}
-              >
-                Stato
-              </Typography>
-              <ToggleButtonGroup
-                value={selectedStatus}
-                onChange={(_e, value) => value && setSelectedStatus(value)}
-                exclusive
-                size="small"
-              >
-                {employeeStatusOptions.map((status) => (
-                  <ToggleButton
-                    key={status.value}
-                    value={status.value}
-                    sx={{
-                      gap: 0.75,
-                      px: 1.5,
-                      color: "#4b5563",
-                      borderColor: filterCategoryStyles.status.borderColor,
-                      "&:hover": {
-                        bgcolor: filterCategoryStyles.status.hoverBg,
-                        borderColor: filterCategoryStyles.status.activeBg,
-                      },
-                      "&.Mui-selected": {
-                        bgcolor: filterCategoryStyles.status.activeBg,
-                        color: "#ffffff",
-                        borderColor: filterCategoryStyles.status.activeBg,
-                      },
-                      "&.Mui-selected:hover": {
-                        bgcolor: filterCategoryStyles.status.activeHover,
-                        borderColor: filterCategoryStyles.status.activeHover,
-                      },
-                    }}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {filteredEmployees.map((employee) => {
+                const meta = roleMeta(employee.tms_role_description);
+                const effectivePortalRole = resolveEffectivePortalRole(employee.app_role, employee.has_direct_reports);
+                const portalRoleLabel = portalRoleMeta(effectivePortalRole).label;
+                const area = areas.find((a) => a.id === employee.default_operational_area_id);
+                return (
+                  <TableRow
+                    key={employee.id}
+                    hover
+                    onClick={() => setSelectedEmployeeId(employee.id)}
+                    sx={{ cursor: "pointer" }}
                   >
-                    <Box component="span" sx={{ fontSize: 16, lineHeight: 1 }}>{status.icon}</Box>
-                    <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
-                      {status.label}
-                    </Box>
-                  </ToggleButton>
-                ))}
-              </ToggleButtonGroup>
-            </Stack>
-
-            <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
-              <Typography
-                variant="body2"
-                sx={{ minWidth: 95, flexShrink: 0, color: filterCategoryStyles.badge.labelColor, fontWeight: 700 }}
-              >
-                Filtra per badge
-              </Typography>
-              <ToggleButtonGroup
-                value={selectedBadgeFilter}
-                onChange={(_e, value) => setSelectedBadgeFilter(value)}
-                exclusive
-                size="small"
-              >
-                {badgeFilterOptions.map((badge) => (
-                  <Tooltip key={badge.value} title={badge.label}>
-                    <ToggleButton
-                      value={badge.value}
-                      sx={{
-                        gap: 0.75,
-                        px: 1.5,
-                        color: "#4b5563",
-                        borderColor: filterCategoryStyles.badge.borderColor,
-                        "&:hover": {
-                          bgcolor: filterCategoryStyles.badge.hoverBg,
-                          borderColor: filterCategoryStyles.badge.activeBg,
-                        },
-                        "&.Mui-selected": {
-                          bgcolor: filterCategoryStyles.badge.activeBg,
-                          color: "#ffffff",
-                          borderColor: filterCategoryStyles.badge.activeBg,
-                        },
-                        "&.Mui-selected:hover": {
-                          bgcolor: filterCategoryStyles.badge.activeHover,
-                          borderColor: filterCategoryStyles.badge.activeHover,
-                        },
-                      }}
-                    >
-                      <Box component="span" sx={{ fontSize: 18, lineHeight: 1 }}>{badge.icon}</Box>
-                      <Box component="span" sx={{ display: { xs: "none", lg: "inline" } }}>
-                        {badge.label}
-                      </Box>
-                    </ToggleButton>
-                  </Tooltip>
-                ))}
-              </ToggleButtonGroup>
-            </Stack>
-          </Stack>
-
-          {/* Sync feedback */}
-          {syncMutation.error && (
-            <Alert severity="error">{syncMutation.error.message}</Alert>
-          )}
-          {syncMutation.data && (
-            <Alert severity="success">
-              Sync completato: letti {syncMutation.data.fetched}, creati {syncMutation.data.created},
-              aggiornati {syncMutation.data.updated}, disattivati {syncMutation.data.deactivated}.
-            </Alert>
-          )}
-          {employeesQuery.error && (
-            <Alert severity="error">{employeesQuery.error.message}</Alert>
-          )}
-          {employeeCourseBadgesQuery.error && (
-            <Alert severity="error">{employeeCourseBadgesQuery.error.message}</Alert>
-          )}
-
-          {/* ── Table ── */}
-          <Box sx={{ overflowX: "auto" }}>
-            <Table size="small" sx={{ minWidth: 700 }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Dipendente</TableCell>
-                  <TableCell>Ruolo</TableCell>
-                  <TableCell>Ruolo portale</TableCell>
-                  <TableCell sx={{ width: 80 }}>Area</TableCell>
-                  <TableCell>Datore di lavoro</TableCell>
-                  <TableCell>Responsabile</TableCell>
-                  <TableCell sx={{ width: 90 }}>Stato</TableCell>
-                  {onImpersonate && <TableCell sx={{ width: 48 }} />}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {filteredEmployees.map((employee) => {
-                  const meta = roleMeta(employee.tms_role_description);
-                  const effectivePortalRole = resolveEffectivePortalRole(employee.app_role, employee.has_direct_reports);
-                  const portalMeta = portalRoleMeta(effectivePortalRole);
-                  const portalRoleLabel = getPortalRoleDisplayLabel(employee.app_role, employee.has_direct_reports);
-                  const area = areas.find((a) => a.id === employee.default_operational_area_id);
-                  return (
-                    <TableRow
-                      key={employee.id}
-                      hover
-                      onClick={() => setSelectedEmployeeId(employee.id)}
-                      sx={{ cursor: "pointer" }}
-                    >
-                      {/* Dipendente: avatar + nome + matricola */}
-                      <TableCell>
-                        <Stack direction="row" spacing={1.5} alignItems="center">
-                          <EmployeeAvatar employee={employee} size={36} />
-                          <Box>
-                            <Typography variant="body2" fontWeight={700} noWrap>
-                              {employee.full_name}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              Matr.&nbsp;{employee.tms_id}
-                            </Typography>
-                          </Box>
-                        </Stack>
-                      </TableCell>
-
-                      {/* Ruolo */}
-                      <TableCell sx={{ whiteSpace: "nowrap" }}>
-                        <Stack direction="row" spacing={0.75} alignItems="center">
-                          <Typography component="span" sx={{ fontSize: 18, lineHeight: 1 }}>
-                            {meta.icon}
+                    {/* Dipendente: avatar + nome + matricola */}
+                    <TableCell>
+                      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
+                        <EmployeeAvatar employee={employee} size={36} />
+                        {/* minWidth: 0 sul figlio flex, altrimenti l'ellissi non scatta
+                            e il nome lungo esce dalla cella (regola 6) */}
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="body2" fontWeight={700} noWrap title={employee.full_name}>
+                            {employee.full_name}
                           </Typography>
-                          <Typography variant="body2">
-                            {employee.tms_role_description || "Altro"}
+                          <Typography variant="caption" color="text.secondary">
+                            Matr.&nbsp;{employee.tms_id}
                           </Typography>
-                        </Stack>
-                      </TableCell>
+                        </Box>
+                      </Stack>
+                    </TableCell>
 
-                      <TableCell sx={{ whiteSpace: "nowrap" }}>
-                        <Chip
-                          size="small"
-                          icon={<PortalRoleIcon role={effectivePortalRole} size={14} />}
-                          label={portalRoleLabel}
+                    {/* Ruolo: sola icona, la descrizione è nel tooltip per lasciare
+                        larghezza alla colonna del nome */}
+                    <TableCell align="center">
+                      <Tooltip title={employee.tms_role_description || "Altro"}>
+                        <Typography component="span" sx={{ fontSize: 18, lineHeight: 1 }}>
+                          {meta.icon}
+                        </Typography>
+                      </Tooltip>
+                    </TableCell>
+
+                    {/* Ruolo portale: resta il colore che lo identifica, l'etichetta
+                        passa nel tooltip */}
+                    <TableCell align="center">
+                      <Tooltip title={`Ruolo portale: ${portalRoleLabel}`}>
+                        <Box
                           sx={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: 26,
+                            height: 26,
+                            borderRadius: "50%",
                             bgcolor: portalRoleVisualStyles[effectivePortalRole]?.bg ?? "rgba(21,101,192,0.10)",
                             color: portalRoleVisualStyles[effectivePortalRole]?.color ?? "#1565c0",
-                            fontWeight: 600,
-                            "& .MuiChip-icon": {
-                              color: "inherit",
-                              ml: 0.75,
-                            },
                           }}
-                        />
-                      </TableCell>
-
-                      {/* Area */}
-                      <TableCell>
-                        {area ? (
-                          <Box
-                            sx={{
-                              display: "inline-block",
-                              px: 0.75,
-                              py: 0.2,
-                              borderRadius: 1,
-                              bgcolor: "rgba(0,112,64,0.1)",
-                              color: "primary.main",
-                              fontFamily: "monospace",
-                              fontWeight: 700,
-                              fontSize: "0.72rem",
-                              letterSpacing: "0.04em",
-                            }}
-                          >
-                            {area.area_code}
-                          </Box>
-                        ) : (
-                          <Typography variant="caption" color="text.disabled">—</Typography>
-                        )}
-                      </TableCell>
-
-                      <TableCell>{employee.datore_lavoro || "—"}</TableCell>
-                      <TableCell>{employee.manager_employee_name || "—"}</TableCell>
-
-                      {/* Stato */}
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          label={employee.is_active ? "Attivo" : "Inattivo"}
-                          sx={{
-                            bgcolor: employee.is_active ? "rgba(34,197,94,0.1)" : "rgba(150,150,150,0.1)",
-                            color: employee.is_active ? "#16a34a" : "text.disabled",
-                            fontWeight: 600,
-                          }}
-                        />
-                      </TableCell>
-
-                      {onImpersonate && (
-                        <TableCell onClick={(e) => e.stopPropagation()}>
-                          <Tooltip title={`Visualizza come ${employee.full_name} · Scadenze: ${
-                            employee.config_expirations_scope === "reports"
-                              ? "solo riporti"
-                              : employee.config_expirations_scope === "none"
-                                ? "nessuna"
-                                : "tutte"
-                          }`}>
-                            <IconButton
-                              size="small"
-                              onClick={() => onImpersonate(employee.id)}
-                              sx={{ color: "text.secondary", "&:hover": { color: "warning.main" } }}
-                            >
-                              <svg
-                                width={18}
-                                height={18}
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth={1.9}
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              >
-                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                                <circle cx="12" cy="12" r="3" />
-                              </svg>
-                            </IconButton>
-                          </Tooltip>
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  );
-                })}
-                {!employeesQuery.isLoading && filteredEmployees.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={onImpersonate ? 7 : 6} sx={{ textAlign: "center", py: 4, color: "text.disabled" }}>
-                      Nessun dipendente trovato.
+                        >
+                          <PortalRoleIcon role={effectivePortalRole} size={14} />
+                        </Box>
+                      </Tooltip>
                     </TableCell>
+
+                    {/* Area */}
+                    <TableCell>
+                      {area ? (
+                        <Box
+                          sx={{
+                            display: "inline-block",
+                            px: 0.75,
+                            py: 0.2,
+                            borderRadius: 1,
+                            bgcolor: "rgba(0,112,64,0.1)",
+                            color: "primary.main",
+                            fontFamily: "monospace",
+                            fontWeight: 700,
+                            fontSize: "0.72rem",
+                            letterSpacing: "0.04em",
+                          }}
+                        >
+                          {area.area_code}
+                        </Box>
+                      ) : (
+                        <Typography variant="caption" color="text.disabled">—</Typography>
+                      )}
+                    </TableCell>
+
+                    <TableCell sx={ellipsisCellSx} title={employee.datore_lavoro || ""}>
+                      {employee.datore_lavoro || "—"}
+                    </TableCell>
+                    <TableCell sx={ellipsisCellSx} title={employee.manager_employee_name || ""}>
+                      {employee.manager_employee_name || "—"}
+                    </TableCell>
+
+                    {/* Stato */}
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={employee.is_active ? "Attivo" : "Inattivo"}
+                        sx={{
+                          bgcolor: employee.is_active ? "rgba(34,197,94,0.1)" : "rgba(150,150,150,0.1)",
+                          color: employee.is_active ? "#16a34a" : "text.disabled",
+                          fontWeight: 600,
+                        }}
+                      />
+                    </TableCell>
+
+                    {onImpersonate && (
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Tooltip title={`Visualizza come ${employee.full_name} · Scadenze: ${
+                          employee.config_expirations_scope === "reports"
+                            ? "solo riporti"
+                            : employee.config_expirations_scope === "none"
+                              ? "nessuna"
+                              : "tutte"
+                        }`}>
+                          <IconButton
+                            size="small"
+                            onClick={() => onImpersonate(employee.id)}
+                            sx={{ color: "text.secondary", "&:hover": { color: "warning.main" } }}
+                          >
+                            <svg
+                              width={18}
+                              height={18}
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth={1.9}
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </svg>
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
+                    )}
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </Box>
-        </Stack>
+                );
+              })}
+              {!employeesQuery.isLoading && filteredEmployees.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={columns.length} sx={{ textAlign: "center", py: 4, color: "text.disabled" }}>
+                    Nessun dipendente trovato.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </Box>
       </Paper>
 
       {/* ── Detail dialog ── */}

@@ -1,5 +1,8 @@
 import dayjs from "dayjs";
-import { useEffect, useMemo, useState } from "react";
+
+import PageHeader from "../components/PageHeader";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -55,7 +58,11 @@ import "./CalendarPage.css";
 
 const weekdayLabels = ["LUN", "MAR", "MER", "GIO", "VEN"];
 const defaultDayStartTime = "08:00";
-const defaultDayEndTime = "17:00";
+const defaultDayEndTime = "18:00";
+// Le giornate intere salvate prima del passaggio a 08:00-18:00 — e quelle che
+// arrivano dai client esterni — usano ancora 08:00-17:00 come marcatore:
+// va riconosciuto in lettura, altrimenti risulterebbero assenze a ore.
+const legacyDayEndTime = "17:00";
 const absenceModes = { halfDay: "half_day", days: "days" };
 const shortMonthLabels = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
 const fullMonthLabels = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"];
@@ -108,7 +115,7 @@ function inferAbsenceMode(item) {
   const startTime = normalizeTimeValue(item.start_time);
   const endTime = normalizeTimeValue(item.end_time);
   if (item.start_date !== item.end_date) return absenceModes.days;
-  if (startTime === defaultDayStartTime && endTime === defaultDayEndTime) return absenceModes.days;
+  if (startTime === defaultDayStartTime && (endTime === defaultDayEndTime || endTime === legacyDayEndTime)) return absenceModes.days;
   return absenceModes.halfDay;
 }
 
@@ -1940,12 +1947,27 @@ function RiepilogoTab({
   );
 }
 
+// Schede della pagina; l'elenco serve anche a validare ?tab= nella URL.
+const CALENDAR_TABS = ["calendario", "riepilogo", "richieste", "residui"];
+
 /* ─── Richieste Tab ─────────────────────────────────────────────────────── */
-function RichiesteTab({ allJustifications, overlapIds, onOpenDetail, onApprove, isMutating, onBulkAction, isBulkPending }) {
+function RichiesteTab({ allJustifications, overlapIds, onOpenDetail, onApprove, isMutating, onBulkAction, isBulkPending, focusJustificationId, onFocusHandled }) {
   const [statusFilter, setStatusFilter] = useState("pending");
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [detailItem, setDetailItem] = useState(null);
   const [empSearch, setEmpSearch] = useState("");
+
+  // Arrivo dalla home con ?richiesta=<id>: apre il dettaglio di quella richiesta.
+  // Il filtro segue lo stato reale, perché nel frattempo può essere stata decisa.
+  useEffect(() => {
+    if (!focusJustificationId) return;
+    const target = allJustifications.find((item) => item.id === focusJustificationId);
+    if (!target) return;
+    setStatusFilter(target.approval_status);
+    setSelectedIds(new Set());
+    setDetailItem(target);
+    onFocusHandled?.();
+  }, [focusJustificationId, allJustifications, onFocusHandled]);
 
   const counts = useMemo(() => ({
     pending: allJustifications.filter((j) => j.approval_status === "pending").length,
@@ -2050,7 +2072,7 @@ function RichiesteTab({ allJustifications, overlapIds, onOpenDetail, onApprove, 
               </Box>
               <span className="richieste-col-name">Dipendente</span>
               <span className="richieste-col-period">Periodo</span>
-              <span className="richieste-col-days">Giorni</span>
+              <span className="richieste-col-days">Dettaglio</span>
               <span className="richieste-col-type">Tipo</span>
               <span className="richieste-col-actions" />
             </Box>
@@ -2112,7 +2134,11 @@ function RichiesteTab({ allJustifications, overlapIds, onOpenDetail, onApprove, 
                   <Box className="richieste-col-period">
                     {formatDateRangeLabel(j.start_date, j.end_date)}
                   </Box>
-                  <Box className="richieste-col-days">{days}gg</Box>
+                  <Box className="richieste-col-days">
+                    {isPartialDayAbsence(j)
+                      ? `${partialDurationLabel(j)} · ${partialTimeRangeLabel(j)}`
+                      : `${days}gg`}
+                  </Box>
                   <Box className="richieste-col-type">
                     <span className={`richieste-type-badge ${eventToneClass(j.justification_type)}`}>
                       {eventBadgeIcon(j.justification_type)} ASSENZA
@@ -2175,7 +2201,11 @@ function RichiesteTab({ allJustifications, overlapIds, onOpenDetail, onApprove, 
             </Box>
             <Box className="richieste-detail-row">
               <span className="richieste-detail-label">Durata</span>
-              <span className="richieste-detail-val">{countAbsentDays(detailItem)} giorn{countAbsentDays(detailItem) === 1 ? "o" : "i"}</span>
+              <span className="richieste-detail-val">
+                {isPartialDayAbsence(detailItem)
+                  ? `${partialDurationLabel(detailItem)} · ${partialTimeRangeLabel(detailItem)}`
+                  : `${countAbsentDays(detailItem)} giorn${countAbsentDays(detailItem) === 1 ? "o" : "i"}`}
+              </span>
             </Box>
             <Box className="richieste-detail-row">
               <span className="richieste-detail-label">Tipo</span>
@@ -2339,7 +2369,26 @@ export default function CalendarPage() {
   const canAccessBalances = user?.effective_role === "admin" || user?.effective_role === "hr";
   const today = dayjs();
   const summaryTodayStr = today.format("YYYY-MM-DD");
-  const [activeTab, setActiveTab] = useState("calendario");
+  // Deep link dalla home: /calendario?tab=richieste&richiesta=<id>
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const focusJustificationId = searchParams.get("richiesta");
+  const [activeTab, setActiveTab] = useState(
+    () => (CALENDAR_TABS.includes(requestedTab) ? requestedTab : "calendario"),
+  );
+
+  // Una volta aperta la richiesta il parametro si toglie dalla URL, così un
+  // refresh o un cambio di scheda non la riapre a sorpresa.
+  const clearFocusedJustification = useCallback(() => {
+    setSearchParams(
+      (params) => {
+        const next = new URLSearchParams(params);
+        next.delete("richiesta");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
   const [view, setView] = useState("month");
   const [currentDate, setCurrentDate] = useState(today);
   const [selectedDate, setSelectedDate] = useState(today.format("YYYY-MM-DD"));
@@ -2736,20 +2785,10 @@ export default function CalendarPage() {
 
   return (
     <Stack spacing={3} className="calendar-page">
+      <PageHeader section="Impresa" title="Assenze" />
+
+      {/* Il topbar resta come seconda barra: il titolo è nella banda (regole 1-2) */}
       <Paper className="calendar-topbar">
-        <Box className="calendar-title-row">
-          <Box className="calendar-logo-badge">
-            <svg viewBox="0 0 200 200" style={{ width: "100%", height: "100%", display: "block" }}>
-              <defs><clipPath id="thub-clip"><rect width="200" height="200" rx="44"/></clipPath></defs>
-              <g clipPath="url(#thub-clip)">
-                <rect width="200" height="200" fill="#007040"/>
-                <rect x="0" y="58" width="200" height="44" fill="#fff"/>
-                <rect x="78" y="58" width="44" height="142" fill="#fff"/>
-              </g>
-            </svg>
-          </Box>
-          <Typography variant="h4" className="calendar-title-text">Assenze</Typography>
-        </Box>
         <Stack direction="row" spacing={0} className="calendar-section-tabs">
           <Button
             className={`calendar-section-tab${activeTab === "calendario" ? " active" : ""}`}
@@ -3038,6 +3077,8 @@ export default function CalendarPage() {
         wideJustificationsQuery.isLoading
           ? <Box sx={{ p: 4, textAlign: "center", color: "text.secondary" }}>Caricamento dati…</Box>
           : <RichiesteTab
+              focusJustificationId={focusJustificationId}
+              onFocusHandled={clearFocusedJustification}
               allJustifications={wideJustifications}
               overlapIds={wideOverlapIds}
               onOpenDetail={openEditModal}

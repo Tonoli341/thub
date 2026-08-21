@@ -7,7 +7,6 @@ import {
   CircularProgress,
   Collapse,
   IconButton,
-  MenuItem,
   Paper,
   Stack,
   Table,
@@ -21,6 +20,11 @@ import {
 } from "@mui/material";
 
 import { getAuditLogFilters, getAuditLogs } from "../api";
+import FilterBar from "../components/FilterBar";
+import FilterSelect from "../components/FilterSelect";
+import PageHeader from "../components/PageHeader";
+import { bodyRowSx, headRowSx, tableSx } from "../components/tableStyles";
+import { AUDIT_COLUMNS } from "./auditColumns";
 
 const ACTION_COLORS = {
   create: "success",
@@ -45,13 +49,17 @@ function AuditRow({ item }) {
 
   return (
     <>
-      <TableRow hover sx={{ "& td": { borderBottom: open ? "none" : undefined } }}>
-        <TableCell sx={{ whiteSpace: "nowrap", fontSize: 13 }}>{formatTimestamp(item.created_at)}</TableCell>
-        <TableCell sx={{ fontSize: 13, fontWeight: 600 }}>{item.actor_name || "—"}</TableCell>
+      <TableRow hover sx={{ ...bodyRowSx(), "& td": { borderBottom: open ? "none" : undefined } }}>
+        <TableCell sx={{ fontSize: 12.5 }}>{formatTimestamp(item.created_at)}</TableCell>
+        <TableCell sx={{ fontSize: 13, fontWeight: 600 }} title={item.actor_name || ""}>
+          <Box sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.actor_name || "—"}</Box>
+        </TableCell>
         <TableCell>
           <Chip size="small" label={item.action} color={color} variant="outlined" />
         </TableCell>
-        <TableCell sx={{ fontSize: 13 }}>{item.entity}</TableCell>
+        <TableCell sx={{ fontSize: 13 }} title={item.entity}>
+          <Box sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.entity}</Box>
+        </TableCell>
         <TableCell align="right">
           {hasDetail && (
             <IconButton size="small" onClick={() => setOpen((v) => !v)} aria-label="Dettaglio">
@@ -64,7 +72,7 @@ function AuditRow({ item }) {
       </TableRow>
       {hasDetail && (
         <TableRow>
-          <TableCell colSpan={5} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
+          <TableCell colSpan={AUDIT_COLUMNS.length} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
             <Collapse in={open} unmountOnExit>
               <Box
                 component="pre"
@@ -129,63 +137,53 @@ export default function AuditLogPage() {
 
   const items = logsQuery.data?.items ?? [];
   const total = logsQuery.data?.total ?? 0;
+  const hasFilters = Boolean(entity || action || actor || search || start || end);
+
+  function resetFilters() {
+    setEntity("");
+    setAction("");
+    setActor("");
+    setSearch("");
+    setStart("");
+    setEnd("");
+    setPage(0);
+  }
 
   return (
     <Box>
-      <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h5" fontWeight={700}>
-          Audit
-        </Typography>
-        <Typography fontSize={13} color="text.secondary">
-          Registro di chi ha fatto cosa (creazioni, modifiche, cancellazioni, accessi)
-        </Typography>
-      </Stack>
+      <PageHeader
+        section="Sistema"
+        title="Audit"
+        meta={total ? `${total.toLocaleString("it-IT")} voci` : undefined}
+      />
 
-      <Paper sx={{ p: 2, mb: 2, borderRadius: 3 }}>
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} useFlexGap flexWrap="wrap">
-          <TextField
-            select
-            size="small"
+      <Box sx={{ mt: 2, mb: 2 }}>
+        <FilterBar onReset={resetFilters} resetDisabled={!hasFilters}>
+          <FilterSelect
             label="Entità"
             value={entity}
-            onChange={(e) => resetPage(setEntity)(e.target.value)}
-            sx={{ minWidth: 200 }}
-          >
-            <MenuItem value="">Tutte</MenuItem>
-            {(filtersQuery.data?.entities ?? []).map((value) => (
-              <MenuItem key={value} value={value}>
-                {value}
-              </MenuItem>
-            ))}
-          </TextField>
-          <TextField
-            select
-            size="small"
+            onChange={resetPage(setEntity)}
+            options={filtersQuery.data?.entities ?? []}
+            placeholder="Tutte"
+          />
+          <FilterSelect
             label="Azione"
             value={action}
-            onChange={(e) => resetPage(setAction)(e.target.value)}
-            sx={{ minWidth: 170 }}
-          >
-            <MenuItem value="">Tutte</MenuItem>
-            {(filtersQuery.data?.actions ?? []).map((value) => (
-              <MenuItem key={value} value={value}>
-                {value}
-              </MenuItem>
-            ))}
-          </TextField>
+            onChange={resetPage(setAction)}
+            options={filtersQuery.data?.actions ?? []}
+            placeholder="Tutte"
+          />
           <TextField
             size="small"
             label="Utente"
             value={actor}
             onChange={(e) => resetPage(setActor)(e.target.value)}
-            sx={{ minWidth: 170 }}
           />
           <TextField
             size="small"
             label="Cerca nel dettaglio"
             value={search}
             onChange={(e) => resetPage(setSearch)(e.target.value)}
-            sx={{ minWidth: 200 }}
           />
           <TextField
             size="small"
@@ -203,8 +201,8 @@ export default function AuditLogPage() {
             onChange={(e) => resetPage(setEnd)(e.target.value)}
             InputLabelProps={{ shrink: true }}
           />
-        </Stack>
-      </Paper>
+        </FilterBar>
+      </Box>
 
       {logsQuery.isError && <Alert severity="error">{String(logsQuery.error?.message || "Errore di caricamento")}</Alert>}
 
@@ -216,22 +214,20 @@ export default function AuditLogPage() {
         ) : (
           <>
             <Box sx={{ overflowX: "auto" }}>
-              <Table size="small">
+              <Table size="small" sx={tableSx({ minWidth: 680 })}>
                 <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: 700 }}>Data e ora</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Utente</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Azione</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Entità</TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 700 }}>
-                      Dettaglio
-                    </TableCell>
+                  <TableRow sx={headRowSx}>
+                    {AUDIT_COLUMNS.map((column) => (
+                      <TableCell key={column.key} align={column.align} sx={{ width: `${column.width}%` }}>
+                        {column.label}
+                      </TableCell>
+                    ))}
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {items.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                      <TableCell colSpan={AUDIT_COLUMNS.length} align="center" sx={{ py: 4, color: "text.secondary" }}>
                         Nessuna voce di audit per i filtri selezionati
                       </TableCell>
                     </TableRow>

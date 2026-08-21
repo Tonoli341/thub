@@ -20,6 +20,7 @@ import { useNavigate } from "react-router-dom";
 
 import { getActivityRecordStats } from "../api";
 import ReportingPeriodFilter from "../components/ReportingPeriodFilter";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
 
 function fmtHoursHm(hours) {
   const totalMinutes = Math.round((Number(hours) || 0) * 60);
@@ -265,13 +266,11 @@ export default function ActivityDashboardPage() {
   return (
     <Stack spacing={3}>
       {/* Header */}
-      <Paper sx={{ p: 3.5, borderRadius: 4, background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))", color: "#fff" }}>
-        <Typography variant="overline" sx={{ opacity: 0.8 }}>Rendicontazioni</Typography>
-        <Typography variant="h4">Dashboard attività</Typography>
-        <Typography sx={{ mt: 0.5, maxWidth: 680, opacity: 0.9, fontSize: "0.95rem" }}>
-          Riepilogo ore rendicontate per incrocio e per dipendente nel periodo selezionato.
-        </Typography>
-      </Paper>
+      <PageHeader
+        section="Rendicontazioni"
+        title="Dashboard attività"
+        meta={data ? `${fmtHoursHm(data.total_hours)} nel periodo` : undefined}
+      />
 
       {/* Filters */}
       <ReportingPeriodFilter start={range.start} end={range.end} onChange={setRange} />

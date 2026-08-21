@@ -23,10 +23,15 @@ from app.operational_reporting_models import (
     OperationalReportBlock,
     OperationalReportDay,
 )
-from app.operational_reporting_schemas import ReportingBlockInput, ReportingDaySave
+from app.operational_reporting_schemas import (
+    ReportingAllocationInput,
+    ReportingBlockInput,
+    ReportingDaySave,
+)
 from app.services.audit import record_audit_log
 from app.services.normalization import building_codes
 from app.services.portal_auth import is_portal_user
+from app.services.timeutils import now_local
 
 
 @dataclass(frozen=True)
@@ -36,12 +41,8 @@ class ReportingAccess:
     owner_employee_id: str | None
 
 
-def require_reporting_access(db: Session, current_user: User) -> ReportingAccess:
-    # L'utenza tecnica del vecchio portale Jupiter non è un amministratore del
-    # nuovo processo. LDAP e dipendente vengono risolti in una sola query,
-    # invece del percorso AuthUserRead che
-    # ricalcola anche tutti i permessi non pertinenti a questo modulo.
-    employee = db.scalar(
+def _linked_active_employee(db: Session, current_user: User) -> Employee | None:
+    return db.scalar(
         select(Employee)
         .join(LdapEmployee, LdapEmployee.tms_employee_id == Employee.id)
         .where(
@@ -50,6 +51,14 @@ def require_reporting_access(db: Session, current_user: User) -> ReportingAccess
             Employee.is_active.is_(True),
         )
     )
+
+
+def require_reporting_access(db: Session, current_user: User) -> ReportingAccess:
+    # L'utenza tecnica del vecchio portale Jupiter non è un amministratore del
+    # nuovo processo. LDAP e dipendente vengono risolti in una sola query,
+    # invece del percorso AuthUserRead che
+    # ricalcola anche tutti i permessi non pertinenti a questo modulo.
+    employee = _linked_active_employee(db, current_user)
     if employee is not None and (employee.app_role or "").upper() == AppRole.admin.value:
         return ReportingAccess(is_admin=True, employee_id=employee.id, owner_employee_id=None)
 
@@ -74,6 +83,155 @@ def require_reporting_access(db: Session, current_user: User) -> ReportingAccess
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Accesso alla rendicontazione operativa non consentito.",
     )
+
+
+def list_reporting_notifications(
+    db: Session,
+    current_user: User,
+    current_time: datetime | None = None,
+    target_employee: Employee | None = None,
+) -> list[dict]:
+    employee = target_employee or _linked_active_employee(db, current_user)
+    if employee is None:
+        return []
+
+    local_now = current_time or now_local()
+    if local_now.time() < time(10, 0):
+        return []
+    work_date = local_now.date() - timedelta(days=1)
+
+    teams = list(
+        db.scalars(
+            select(Team)
+            .where(
+                Team.operational_reporting_owner_employee_id == employee.id,
+                Team.operational_reporting_notifications_enabled.is_(True),
+            )
+            .options(selectinload(Team.members).joinedload(TeamMember.employee))
+            .order_by(Team.name.asc())
+        ).unique().all()
+    )
+    if not teams:
+        return []
+
+    return build_reporting_gap_notifications(db, teams, work_date)
+
+
+def build_reporting_gap_notifications(
+    db: Session,
+    teams: list[Team],
+    work_date: date,
+) -> list[dict]:
+    """Costruisce gli avvisi mancanti condivisi da campanella ed email."""
+
+    active_members_by_team = {
+        team.id: {
+            membership.employee_id: membership.employee.full_name
+            for membership in team.members
+            if membership.employee.is_active
+        }
+        for team in teams
+    }
+    active_employee_ids = {
+        employee_id
+        for members in active_members_by_team.values()
+        for employee_id in members
+    }
+    planned_employee_ids = set(
+        db.scalars(
+            select(Assignment.employee_id).where(
+                Assignment.work_date == work_date,
+                Assignment.employee_id.in_(active_employee_ids or {""}),
+            )
+        ).all()
+    )
+    # Una giornata confermata vale come completata solo se copre tutto il tempo
+    # pianificato: confermarne metà la faceva sparire da campanella ed email
+    # senza che nulla segnalasse le ore rimaste da attribuire.
+    completed_by_team: dict[str, set[str]] = {}
+    uncovered_by_team: dict[str, dict[str, int]] = {}
+    for report in db.scalars(
+        select(OperationalReportDay)
+        .where(
+            OperationalReportDay.work_date == work_date,
+            OperationalReportDay.team_id.in_({team.id for team in teams}),
+            OperationalReportDay.status == "CONFIRMED",
+        )
+        .options(
+            selectinload(OperationalReportDay.blocks).selectinload(OperationalReportBlock.allocations)
+        )
+    ).all():
+        metrics = _dashboard_report_metrics(report)
+        uncovered = max(0, metrics["planned"] - metrics["allocated"])
+        if uncovered:
+            uncovered_by_team.setdefault(report.team_id, {})[report.employee_id] = uncovered
+        else:
+            completed_by_team.setdefault(report.team_id, set()).add(report.employee_id)
+
+    notifications = []
+    for team in teams:
+        members = active_members_by_team[team.id]
+        expected_ids = set(members) & planned_employee_ids
+        missing_ids = expected_ids - completed_by_team.get(team.id, set())
+        if not missing_ids:
+            continue
+        uncovered_minutes = uncovered_by_team.get(team.id, {})
+        missing = sorted(
+            ((employee_id, members[employee_id]) for employee_id in missing_ids),
+            key=lambda item: item[1].casefold(),
+        )
+        partial_ids = [employee_id for employee_id, _ in missing if employee_id in uncovered_minutes]
+        count = len(missing)
+        notifications.append({
+            "id": f"operational-reporting:{work_date.isoformat()}:{team.id}",
+            "title": f"Rendicontazione da completare · {team.name}",
+            "message": _reporting_gap_message(work_date, count, len(partial_ids)),
+            "work_date": work_date,
+            "team_id": team.id,
+            "team_name": team.name,
+            "missing_count": count,
+            "missing_employee_ids": [item[0] for item in missing],
+            "missing_employee_names": [item[1] for item in missing],
+            # L'email elenca le persone: sulle parziali dice anche quanto manca,
+            # altrimenti l'owner non sa distinguerle da chi non ha aperto nulla.
+            "missing_employee_labels": [
+                f"{name} ({_minutes_label(uncovered_minutes[employee_id])} da attribuire)"
+                if employee_id in uncovered_minutes
+                else name
+                for employee_id, name in missing
+            ],
+            "partial_count": len(partial_ids),
+            "partial_employee_ids": partial_ids,
+        })
+    return notifications
+
+
+def _minutes_label(minutes: int) -> str:
+    hours, rest = divmod(max(0, minutes), 60)
+    if hours and rest:
+        return f"{hours}h {rest:02d}m"
+    return f"{hours}h" if hours else f"{rest}m"
+
+
+def _reporting_gap_message(work_date: date, missing_count: int, partial_count: int) -> str:
+    to_confirm = missing_count - partial_count
+    parts = []
+    if to_confirm:
+        parts.append(
+            f"manca la conferma di {to_confirm} "
+            f"{'persona pianificata' if to_confirm == 1 else 'persone pianificate'}"
+        )
+    if partial_count:
+        parts.append(
+            f"{partial_count} "
+            + (
+                "rendicontazione confermata non copre"
+                if partial_count == 1
+                else "rendicontazioni confermate non coprono"
+            )
+            + " tutto il tempo pianificato"
+        )
+    return f"Per il {work_date.strftime('%d/%m/%Y')} " + " e ".join(parts) + "."
 
 
 def _accessible_teams(db: Session, access: ReportingAccess, work_date: date | None = None) -> list[Team]:
@@ -301,6 +459,25 @@ def _validate_location(db: Session, area_id: str, building: str | None) -> tuple
     return area, normalized_building
 
 
+def _allocation_location(
+    block: OperationalReportBlock, allocation: OperationalReportAllocation
+) -> tuple[str | None, str | None, str | None]:
+    """Posizione effettiva di una singola attività.
+
+    Le rendicontazioni salvate prima dell'Area per attività hanno i campi a
+    ``NULL`` e continuano a valere per l'intero blocco: il fallback è quindi
+    tutto-o-niente, altrimenti un box senza immobile erediterebbe quello del
+    blocco pur essendo in un'altra area.
+    """
+    if allocation.actual_area_id:
+        return (
+            allocation.actual_area_id,
+            allocation.actual_area_name_snapshot,
+            allocation.actual_building,
+        )
+    return (block.actual_area_id, block.actual_area_name_snapshot, block.actual_building)
+
+
 def _mapping_buildings(mapping: InfinityBillingCustomerSupplierMap) -> list[str]:
     return building_codes(mapping.buildings)
 
@@ -401,20 +578,27 @@ def _serialize_block(
         block.planned_end,
         _block_capacity(block.planned_start, block.planned_end, block.planned_break_minutes),
     )
-    allocations = [
-        {
+    allocations = []
+    for allocation in sorted(block.allocations, key=lambda item: item.sequence):
+        area_id, area_name, building = _allocation_location(block, allocation)
+        allocations.append({
             "id": allocation.id,
             "customer_code": allocation.customer_code,
             "customer_description": allocation.customer_description_snapshot,
             "jupiter_description": allocation.jupiter_description_snapshot,
+            "actual_area_id": area_id,
+            "actual_area_name": area_name,
+            "actual_building": building,
             "sequence": allocation.sequence,
             "start_offset_minutes": allocation.start_offset_minutes,
             "minutes": allocation.minutes,
             "notes": allocation.notes,
             "eligible_mapping_ids": allocation.eligible_mapping_ids or [],
-        }
-        for allocation in sorted(block.allocations, key=lambda item: item.sequence)
-    ]
+            "created_by_name": allocation.created_by_name,
+            "created_at": allocation.created_at,
+            "last_modified_by_name": allocation.last_modified_by_name,
+            "last_modified_at": allocation.last_modified_at,
+        })
     return {
         "id": block.id,
         "source_assignment_id": block.source_assignment_id,
@@ -710,9 +894,12 @@ def build_dashboard(
             return False
         if jupiter_description and allocation.jupiter_description_snapshot != jupiter_description:
             return False
-        if area_id and block.actual_area_id != area_id:
+        # I filtri di luogo seguono il box, non più il blocco: una giornata
+        # con uno spostamento deve comparire sotto entrambe le aree.
+        allocation_area_id, _, allocation_building = _allocation_location(block, allocation)
+        if area_id and allocation_area_id != area_id:
             return False
-        if normalized_building and (block.actual_building or "").strip().upper() != normalized_building:
+        if normalized_building and (allocation_building or "").strip().upper() != normalized_building:
             return False
         return True
 
@@ -771,10 +958,11 @@ def build_dashboard(
         trend["allocated_minutes"] += metrics["allocated"]
         trend["uncovered_minutes"] += metrics["uncovered"]
         for block, allocation in matched_allocations[report.id]:
+            allocation_area_id, allocation_area_name, allocation_building = _allocation_location(block, allocation)
             location_key = (
-                block.actual_area_id,
-                block.actual_area_name_snapshot or block.planned_area or "Area non specificata",
-                block.actual_building or None,
+                allocation_area_id,
+                allocation_area_name or block.planned_area or "Area non specificata",
+                allocation_building or None,
             )
             location = location_groups.setdefault(location_key, {
                 "area_id": location_key[0],
@@ -1048,10 +1236,32 @@ def _apply_block_input(
     block: OperationalReportBlock,
     payload: ReportingBlockInput,
     capacity: int,
+    actor_name: str,
+    now: datetime,
 ) -> None:
     area, building = _validate_location(db, payload.actual_area_id, payload.actual_building)
-    eligible = _eligible_customers(db, area.id, building)
-    location_unchanged = block.actual_area_id == area.id and block.actual_building == building
+    # La posizione del blocco resta lo snapshot della destinazione pianificata e
+    # fa da default; ogni attività può però indicarne una propria, perché la
+    # stessa fascia può essere lavorata in aree diverse da chi si sposta.
+    previous_block_location = (block.actual_area_id, block.actual_building)
+    location_cache: dict[tuple[str, str | None], tuple[OperationalArea, str | None, dict[str, dict]]] = {}
+
+    def location_for(allocation_input: ReportingAllocationInput) -> tuple[OperationalArea, str | None, dict[str, dict]]:
+        if allocation_input.actual_area_id:
+            key = (allocation_input.actual_area_id, (allocation_input.actual_building or "").strip().upper() or None)
+        else:
+            key = (area.id, building)
+        cached = location_cache.get(key)
+        if cached is None:
+            allocation_area, allocation_building = _validate_location(db, key[0], key[1])
+            cached = (
+                allocation_area,
+                allocation_building,
+                _eligible_customers(db, allocation_area.id, allocation_building),
+            )
+            location_cache[key] = cached
+        return cached
+
     existing_by_id = {item.id: item for item in block.allocations}
     unmatched_by_key: dict[tuple[str, str | None], list[OperationalReportAllocation]] = {}
     for item in block.allocations:
@@ -1072,6 +1282,7 @@ def _apply_block_input(
         end_offset = start_offset + allocation_input.minutes
         legacy_cursor = max(legacy_cursor, end_offset)
         occupied_ranges.append((start_offset, end_offset))
+        allocation_area, allocation_building, eligible = location_for(allocation_input)
         customer = eligible.get(code)
         old = existing_by_id.get(allocation_input.id) if allocation_input.id else None
         if allocation_input.id and old is None:
@@ -1081,8 +1292,16 @@ def _apply_block_input(
             old = candidates[0] if candidates else None
         if old is not None:
             matched_ids.add(old.id)
+        old_location = None if old is None else (
+            (old.actual_area_id, old.actual_building) if old.actual_area_id else previous_block_location
+        )
+        location_unchanged = old_location == (allocation_area.id, allocation_building)
         if customer is None and (old is None or not location_unchanged):
-            raise HTTPException(status_code=422, detail=f"Il cliente {code} non è valido per Area e Immobile selezionati.")
+            location_label = f"{allocation_area.name}{f' / {allocation_building}' if allocation_building else ''}"
+            raise HTTPException(
+                status_code=422,
+                detail=f"Il cliente {code} non è valido per {location_label}.",
+            )
         jupiter_options = {
             item["description"]: item
             for item in (customer or {}).get("jupiter_descriptions", [])
@@ -1102,22 +1321,43 @@ def _apply_block_input(
                 customer_code=code,
                 customer_description_snapshot=customer["description"],
                 jupiter_description_snapshot=jupiter_description,
+                actual_area_id=allocation_area.id,
+                actual_area_name_snapshot=allocation_area.name,
+                actual_building=allocation_building,
                 minutes=allocation_input.minutes,
                 start_offset_minutes=start_offset,
                 notes=allocation_input.notes,
                 eligible_mapping_ids=jupiter_option["mapping_ids"],
                 sequence=sequence,
+                created_by_name=actor_name,
+                created_at=now,
+                last_modified_by_name=actor_name,
+                last_modified_at=now,
             )
         else:
             allocation = old
-            allocation.customer_description_snapshot = (customer or {"description": old.customer_description_snapshot})["description"]
-            allocation.minutes = allocation_input.minutes
-            allocation.start_offset_minutes = start_offset
-            allocation.notes = allocation_input.notes
-            allocation.eligible_mapping_ids = (
-                jupiter_option["mapping_ids"] if jupiter_option is not None else old.eligible_mapping_ids
-            )
-            allocation.sequence = sequence
+            # Il salvataggio riscrive l'intera giornata: senza confronto ogni
+            # casella risulterebbe "modificata" a ogni autosalvataggio e la
+            # data perderebbe significato.
+            updated = {
+                "customer_description_snapshot": (customer or {"description": old.customer_description_snapshot})["description"],
+                "actual_area_id": allocation_area.id,
+                "actual_area_name_snapshot": allocation_area.name,
+                "actual_building": allocation_building,
+                "minutes": allocation_input.minutes,
+                "start_offset_minutes": start_offset,
+                "notes": allocation_input.notes,
+                "eligible_mapping_ids": (
+                    jupiter_option["mapping_ids"] if jupiter_option is not None else old.eligible_mapping_ids
+                ),
+                "sequence": sequence,
+            }
+            changed = [key for key, value in updated.items() if getattr(allocation, key) != value]
+            for key in changed:
+                setattr(allocation, key, updated[key])
+            if changed:
+                allocation.last_modified_by_name = actor_name
+                allocation.last_modified_at = now
         desired_allocations.append(allocation)
     if total > capacity:
         raise HTTPException(status_code=422, detail="I minuti attribuiti superano la capienza del blocco.")
@@ -1157,6 +1397,8 @@ def _audit_snapshot(report: OperationalReportDay) -> dict:
                     {
                         "customer_code": item.customer_code,
                         "jupiter_description": item.jupiter_description_snapshot,
+                        "actual_area_id": item.actual_area_id,
+                        "actual_building": item.actual_building,
                         "sequence": item.sequence,
                         "start_offset_minutes": item.start_offset_minutes,
                         "minutes": item.minutes,
@@ -1192,6 +1434,8 @@ def save_day(db: Session, current_user: User, payload: ReportingDaySave) -> dict
     if work_minutes <= 0:
         raise HTTPException(status_code=422, detail="La giornata deve contenere tempo lavorato.")
 
+    actor_name = current_user.display_name or current_user.username
+    now = datetime.now(timezone.utc)
     blocks_by_id = {block.id: block for block in report.blocks}
     blocks_by_source = {block.source_assignment_id: block for block in report.blocks if block.source_assignment_id}
     if len(payload.blocks) != len(report.blocks):
@@ -1209,6 +1453,8 @@ def save_day(db: Session, current_user: User, payload: ReportingDaySave) -> dict
             block,
             block_input,
             capacity,
+            actor_name,
+            now,
         )
 
     allocated = sum(allocation.minutes for block in report.blocks for allocation in block.allocations)

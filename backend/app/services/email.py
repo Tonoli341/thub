@@ -4,6 +4,7 @@ import threading
 from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -142,7 +143,10 @@ def _fmt(d: date) -> str:
 
 
 _FULL_DAY_START = "08:00"
-_FULL_DAY_END = "17:00"
+_FULL_DAY_END = "18:00"
+# 08:00-17:00 e' il marcatore storico della giornata intera: resta riconosciuto
+# perche' e' quello salvato sulle assenze gia' a DB e sui client esterni.
+_FULL_DAY_RANGES = {(_FULL_DAY_START, _FULL_DAY_END), (_FULL_DAY_START, "17:00")}
 
 
 def _format_period(justification: Justification) -> str:
@@ -153,7 +157,7 @@ def _format_period(justification: Justification) -> str:
     if justification.start_date == justification.end_date:
         s = str(justification.start_time)[:5]
         e = str(justification.end_time)[:5]
-        if s != _FULL_DAY_START or e != _FULL_DAY_END:
+        if (s, e) not in _FULL_DAY_RANGES:
             sh, sm = (int(x) for x in s.split(":"))
             eh, em = (int(x) for x in e.split(":"))
             hours = (eh * 60 + em - (sh * 60 + sm)) / 60
@@ -188,7 +192,7 @@ def _send(to: list[str], subject: str, text: str, html: str) -> None:
     threading.Thread(target=_send_sync, args=(to, subject, text, html), daemon=True).start()
 
 
-def _send_sync(to: list[str], subject: str, text: str, html: str) -> None:
+def _send_sync(to: list[str], subject: str, text: str, html: str) -> bool:
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
@@ -204,8 +208,10 @@ def _send_sync(to: list[str], subject: str, text: str, html: str) -> None:
                 server.login(settings.smtp_user, settings.smtp_password)
             server.sendmail(msg["From"], to, msg.as_string())
         logger.info("Email inviata a %s: %s", to, subject)
+        return True
     except Exception:
         logger.exception("Errore invio email a %s", to)
+        return False
 
 
 def notify_approvers_new_request(db: Session, justification: Justification) -> None:
@@ -431,3 +437,73 @@ def notify_device_delivery_signature_request(db: Session, delivery: DeviceDelive
     </p>
     """
     _send([employee_email], subject, text, _wrap_html(subject, body_html, f"Firma richiesta per {delivery.device_label}"))
+
+
+def send_operational_reporting_reminder(
+    email: str,
+    owner_name: str,
+    notifications: list[dict],
+) -> bool:
+    """Invia in modo sincrono il riepilogo delle rendicontazioni mancanti.
+
+    Il chiamante gira già fuori dall'event loop e registra la data solo dopo
+    una consegna SMTP riuscita, così un errore non viene scambiato per invio.
+    """
+    if not settings.smtp_enabled or not settings.smtp_host or not email or not notifications:
+        return False
+
+    work_date = notifications[0]["work_date"]
+    reporting_url = f"{_web_base_url()}/rendicontazioni/operativa?day={work_date.isoformat()}"
+    total_missing = sum(item["missing_count"] for item in notifications)
+    subject = f"Rendicontazioni da completare — {work_date.strftime('%d/%m/%Y')}"
+    text_lines = [
+        f"Ciao {owner_name},",
+        "",
+        f"alle ore 10:00 risultano {total_missing} rendicontazioni da completare per il "
+        f"{work_date.strftime('%d/%m/%Y')}:",
+        "",
+    ]
+    rows = []
+    for item in notifications:
+        # Le etichette distinguono chi non ha confermato da chi ha confermato
+        # una giornata parziale; sulle rendicontazioni storiche mancano.
+        names = ", ".join(item.get("missing_employee_labels") or item["missing_employee_names"])
+        text_lines.append(f"- {item['team_name']}: {names}")
+        rows.append(
+            "<tr>"
+            f"<td style=\"padding:10px 12px;border-bottom:1px solid #e8e8e4;font-weight:700;\">{escape(item['team_name'])}</td>"
+            f"<td style=\"padding:10px 12px;border-bottom:1px solid #e8e8e4;\">{escape(names)}</td>"
+            "</tr>"
+        )
+    text_lines.extend(["", f"Apri T-Hub: {reporting_url}", "", "— T-Hub Workforce Planner · Tonoli S.p.A."])
+
+    body_html = f"""
+    <p style="font-family:'Lexend',Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#2B2B2B;margin:0 0 6px;">
+      Rendicontazioni da completare
+    </p>
+    <p style="font-family:'Lexend',Arial,Helvetica,sans-serif;font-size:14px;color:#555;margin:0 0 20px;line-height:1.5;">
+      Ciao {escape(owner_name)}, alle ore 10:00 risultano da completare
+      <strong>{total_missing}</strong> {'rendicontazione' if total_missing == 1 else 'rendicontazioni'}
+      del {work_date.strftime('%d/%m/%Y')}: non confermate, oppure confermate senza coprire
+      tutto il tempo pianificato.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0"
+           style="background:#f8f8f6;border-radius:8px;border-left:4px solid #d97706;font-size:13px;">
+      <tr>
+        <th align="left" style="padding:10px 12px;border-bottom:1px solid #deded8;">Squadra</th>
+        <th align="left" style="padding:10px 12px;border-bottom:1px solid #deded8;">Persone da completare</th>
+      </tr>
+      {''.join(rows)}
+    </table>
+    <table cellpadding="0" cellspacing="0" border="0" style="margin:22px 0 4px;">
+      <tr><td>
+        <a href="{reporting_url}" style="display:inline-block;background:#007040;color:#ffffff;font-family:'Lexend',Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;padding:12px 18px;border-radius:8px;text-decoration:none;">Apri la rendicontazione</a>
+      </td></tr>
+    </table>
+    """
+    return _send_sync(
+        [email],
+        subject,
+        "\n".join(text_lines),
+        _wrap_html(subject, body_html, f"{total_missing} rendicontazioni da completare"),
+    )

@@ -1,4 +1,5 @@
-from datetime import date, time
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, event, inspect, text
 
@@ -8,13 +9,20 @@ from app.models import (
     AuditLog,
     InfinityBillingCustomerSupplierMap,
     InfinityBillingItem,
+    LdapEmployee,
     OperationalArea,
     Team,
     TeamMember,
 )
-from app.operational_reporting_models import OperationalReportDay
+from app.operational_reporting_models import (
+    OperationalReportAllocation,
+    OperationalReportBlock,
+    OperationalReportDay,
+)
 from tests.conftest import auth_headers, engine, make_admin_token, make_employee, make_linked_user_token
 from app.services.operational_reporting_schema import ensure_operational_reporting_schema
+from app.services.operational_reporting import build_reporting_gap_notifications
+from app.services.operational_reporting_reminders import send_due_operational_reporting_emails
 
 
 DAY = date(2026, 8, 13)
@@ -37,6 +45,13 @@ def test_startup_schema_compatibility_adds_reporting_columns():
     assert "sequence" in columns
     assert "start_offset_minutes" in columns
     assert "notes" in columns
+    assert "actual_area_id" in columns
+    assert "actual_area_name_snapshot" in columns
+    assert "actual_building" in columns
+    assert "created_by_name" in columns
+    assert "created_at" in columns
+    assert "last_modified_by_name" in columns
+    assert "last_modified_at" in columns
 
 
 def seed_reporting_day(db):
@@ -101,13 +116,252 @@ def test_operational_reporting_owner_can_match_team_leader(client, db_session):
 
     response = client.put(
         f"/api/teams/{team.id}",
-        json={"operational_reporting_owner_employee_id": leader.id},
+        json={
+            "operational_reporting_owner_employee_id": leader.id,
+            "operational_reporting_email_enabled": True,
+        },
         headers=auth_headers(make_admin_token(db_session)),
     )
 
     assert response.status_code == 200, response.text
     assert response.json()["operational_reporting_owner_employee_id"] == leader.id
     assert response.json()["operational_reporting_owner_employee_name"] == leader.full_name
+    assert response.json()["operational_reporting_email_enabled"] is True
+    assert response.json()["operational_reporting_notifications_enabled"] is False
+
+
+def test_owner_notification_appears_after_ten_and_disappears_when_confirmed(
+    client, db_session, monkeypatch
+):
+    manager, worker, _, team, _, _ = seed_reporting_day(db_session)
+    team.operational_reporting_notifications_enabled = True
+    db_session.commit()
+    token = make_linked_user_token(db_session, manager, username="manager.notifications")
+    headers = auth_headers(token)
+    timezone = ZoneInfo("Europe/Rome")
+
+    monkeypatch.setattr(
+        "app.services.operational_reporting.now_local",
+        lambda: datetime(2026, 8, 14, 9, 59, tzinfo=timezone),
+    )
+    before_deadline = client.get("/api/operational-reporting/notifications", headers=headers)
+    assert before_deadline.status_code == 200
+    assert before_deadline.json() == []
+
+    monkeypatch.setattr(
+        "app.services.operational_reporting.now_local",
+        lambda: datetime(2026, 8, 14, 10, 0, tzinfo=timezone),
+    )
+    after_deadline = client.get("/api/operational-reporting/notifications", headers=headers)
+    assert after_deadline.status_code == 200, after_deadline.text
+    assert after_deadline.json() == [{
+        "id": f"operational-reporting:{DAY.isoformat()}:{team.id}",
+        "title": "Rendicontazione da completare · Squadra A",
+        "message": "Per il 13/08/2026 manca la conferma di 1 persona pianificata.",
+        "work_date": DAY.isoformat(),
+        "team_id": team.id,
+        "team_name": team.name,
+        "missing_count": 1,
+        "missing_employee_ids": [worker.id],
+        "missing_employee_names": [worker.full_name],
+    }]
+
+    db_session.add(OperationalReportDay(
+        employee_id=worker.id,
+        work_date=DAY,
+        team_id=team.id,
+        employee_name_snapshot=worker.full_name,
+        team_name_snapshot=team.name,
+        planned_start=time(8, 0),
+        planned_end=time(17, 0),
+        actual_start=time(8, 0),
+        actual_end=time(17, 0),
+        status="CONFIRMED",
+    ))
+    db_session.commit()
+
+    completed = client.get("/api/operational-reporting/notifications", headers=headers)
+    assert completed.status_code == 200
+    assert completed.json() == []
+
+
+def test_owner_notification_flags_confirmed_day_with_unallocated_time(
+    client, db_session, monkeypatch
+):
+    manager, worker, area, team, _, mapping = seed_reporting_day(db_session)
+    team.operational_reporting_notifications_enabled = True
+    report = OperationalReportDay(
+        employee_id=worker.id,
+        work_date=DAY,
+        team_id=team.id,
+        employee_name_snapshot=worker.full_name,
+        team_name_snapshot=team.name,
+        planned_start=time(8, 0),
+        planned_end=time(17, 0),
+        actual_start=time(8, 0),
+        actual_end=time(17, 0),
+        pauses=[{"start": "12:00", "end": "13:00"}],
+        status="CONFIRMED",
+    )
+    block = OperationalReportBlock(
+        sequence=0,
+        planned_start=time(8, 0),
+        planned_end=time(17, 0),
+        planned_break_minutes=60,
+        actual_area_id=area.id,
+        actual_area_name_snapshot=area.name,
+        actual_building="A1",
+    )
+    # Giornata confermata con metà del tempo pianificato attribuito: 240 su 480.
+    block.allocations.append(OperationalReportAllocation(
+        customer_code=mapping.customer_supplier_code,
+        customer_description_snapshot=mapping.customer_supplier_description,
+        jupiter_description_snapshot=mapping.jupiter_description,
+        sequence=0,
+        minutes=240,
+    ))
+    report.blocks.append(block)
+    db_session.add(report)
+    db_session.commit()
+
+    token = make_linked_user_token(db_session, manager, username="manager.partial")
+    headers = auth_headers(token)
+    monkeypatch.setattr(
+        "app.services.operational_reporting.now_local",
+        lambda: datetime(2026, 8, 14, 10, 0, tzinfo=ZoneInfo("Europe/Rome")),
+    )
+
+    partial = client.get("/api/operational-reporting/notifications", headers=headers)
+    assert partial.status_code == 200, partial.text
+    assert partial.json() == [{
+        "id": f"operational-reporting:{DAY.isoformat()}:{team.id}",
+        "title": "Rendicontazione da completare · Squadra A",
+        "message": (
+            "Per il 13/08/2026 1 rendicontazione confermata non copre "
+            "tutto il tempo pianificato."
+        ),
+        "work_date": DAY.isoformat(),
+        "team_id": team.id,
+        "team_name": team.name,
+        "missing_count": 1,
+        "missing_employee_ids": [worker.id],
+        "missing_employee_names": [worker.full_name],
+    }]
+    # L'email distingue la parziale indicando quanto resta da attribuire.
+    assert build_reporting_gap_notifications(db_session, [team], DAY)[0][
+        "missing_employee_labels"
+    ] == [f"{worker.full_name} (4h da attribuire)"]
+
+    block.allocations[0].minutes = 480
+    db_session.commit()
+    fully_allocated = client.get("/api/operational-reporting/notifications", headers=headers)
+    assert fully_allocated.status_code == 200
+    assert fully_allocated.json() == []
+
+
+def test_owner_notification_requires_team_toggle_and_yesterday_planning(
+    client, db_session, monkeypatch
+):
+    manager, _, _, team, assignment, _ = seed_reporting_day(db_session)
+    token = make_linked_user_token(db_session, manager, username="manager.notifications.disabled")
+    headers = auth_headers(token)
+    monkeypatch.setattr(
+        "app.services.operational_reporting.now_local",
+        lambda: datetime(2026, 8, 14, 10, 0, tzinfo=ZoneInfo("Europe/Rome")),
+    )
+
+    disabled = client.get("/api/operational-reporting/notifications", headers=headers)
+    assert disabled.status_code == 200
+    assert disabled.json() == []
+
+    team.operational_reporting_notifications_enabled = True
+    assignment.work_date = date(2026, 8, 12)
+    db_session.commit()
+    no_planning_yesterday = client.get("/api/operational-reporting/notifications", headers=headers)
+    assert no_planning_yesterday.status_code == 200
+    assert no_planning_yesterday.json() == []
+
+
+def test_owner_email_reminder_is_independent_and_sent_once_after_ten(
+    db_session, monkeypatch
+):
+    manager, worker, _, team, _, _ = seed_reporting_day(db_session)
+    team.operational_reporting_notifications_enabled = False
+    team.operational_reporting_email_enabled = True
+    db_session.add(
+        LdapEmployee(
+            username="manager.email.reminder",
+            display_name=manager.full_name,
+            email="manager@example.com",
+            tms_employee_id=manager.id,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    timezone = ZoneInfo("Europe/Rome")
+    sent_payloads = []
+
+    def capture_email(email, owner_name, notifications):
+        sent_payloads.append((email, owner_name, notifications))
+        return True
+
+    monkeypatch.setattr(
+        "app.services.operational_reporting_reminders.send_operational_reporting_reminder",
+        capture_email,
+    )
+
+    before_ten = send_due_operational_reporting_emails(
+        db_session,
+        datetime(2026, 8, 14, 9, 59, tzinfo=timezone),
+    )
+    first_run = send_due_operational_reporting_emails(
+        db_session,
+        datetime(2026, 8, 14, 10, 0, tzinfo=timezone),
+    )
+    repeated_run = send_due_operational_reporting_emails(
+        db_session,
+        datetime(2026, 8, 14, 10, 30, tzinfo=timezone),
+    )
+
+    assert before_ten == 0
+    assert first_run == 1
+    assert repeated_run == 0
+    assert len(sent_payloads) == 1
+    email, owner_name, notifications = sent_payloads[0]
+    assert email == "manager@example.com"
+    assert owner_name == manager.full_name
+    assert notifications[0]["missing_employee_ids"] == [worker.id]
+    assert db_session.get(Team, team.id).operational_reporting_last_email_date == DAY
+    assert db_session.query(AuditLog).filter_by(
+        entity="operational_reporting",
+        action="email_reminder_sent",
+    ).count() == 1
+
+
+def test_failed_owner_email_reminder_is_not_marked_as_sent(db_session, monkeypatch):
+    manager, _, _, team, _, _ = seed_reporting_day(db_session)
+    team.operational_reporting_email_enabled = True
+    db_session.add(
+        LdapEmployee(
+            username="manager.email.failure",
+            email="manager-failure@example.com",
+            tms_employee_id=manager.id,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.operational_reporting_reminders.send_operational_reporting_reminder",
+        lambda *_args: False,
+    )
+
+    sent = send_due_operational_reporting_emails(
+        db_session,
+        datetime(2026, 8, 14, 10, 0, tzinfo=ZoneInfo("Europe/Rome")),
+    )
+
+    assert sent == 0
+    assert db_session.get(Team, team.id).operational_reporting_last_email_date is None
 
 
 def test_manager_can_autosave_and_confirm_own_team(client, db_session):
@@ -182,6 +436,204 @@ def test_manager_can_autosave_and_confirm_own_team(client, db_session):
     assert unchanged_assignment.end_time == time(17, 0)
     assert unchanged_assignment.area == "AREA-A"
     assert unchanged_assignment.immobile == "A1"
+
+
+def test_allocation_tracks_author_and_only_stamps_real_changes(client, db_session):
+    """Firma della casella con il metodo del Planner: nome dell'autore + istante."""
+
+    manager, worker, area, _, assignment, _ = seed_reporting_day(db_session)
+    token = make_linked_user_token(db_session, manager, username="manager.one")
+    payload = {
+        "employee_id": worker.id,
+        "work_date": DAY.isoformat(),
+        "actual_start": "08:00",
+        "actual_end": "17:00",
+        "pauses": [{"start": "12:00", "end": "13:00"}],
+        "blocks": [
+            {
+                "source_assignment_id": assignment.id,
+                "actual_area_id": area.id,
+                "actual_building": "A1",
+                "allocations": [
+                    {
+                        "customer_code": "CLI-1",
+                        "jupiter_description": "Attività Jupiter Uno",
+                        "minutes": 240,
+                    }
+                ],
+            }
+        ],
+    }
+
+    created = client.put("/api/operational-reporting/day", json=payload, headers=auth_headers(token))
+    assert created.status_code == 200, created.text
+    first = created.json()["blocks"][0]["allocations"][0]
+    assert first["created_by_name"] == "manager.one"
+    assert first["last_modified_by_name"] == "manager.one"
+    assert first["created_at"] is not None
+    assert first["last_modified_at"] == first["created_at"]
+
+    # L'autosave rimanda la stessa casella: senza modifiche reali la data non
+    # deve muoversi, altrimenti smette di dire qualcosa.
+    unchanged = client.put("/api/operational-reporting/day", json=payload, headers=auth_headers(token))
+    assert unchanged.status_code == 200, unchanged.text
+    same = unchanged.json()["blocks"][0]["allocations"][0]
+    assert same["last_modified_at"] == first["last_modified_at"]
+
+    payload["blocks"][0]["allocations"][0]["minutes"] = 230
+    edited = client.put("/api/operational-reporting/day", json=payload, headers=auth_headers(token))
+    assert edited.status_code == 200, edited.text
+    changed = edited.json()["blocks"][0]["allocations"][0]
+    assert changed["created_at"] == first["created_at"]
+    assert changed["created_by_name"] == "manager.one"
+    assert changed["last_modified_at"] > first["last_modified_at"]
+
+
+def seed_second_area(db):
+    """Seconda area raggiungibile a piedi dalla prima, con un cliente proprio."""
+    area = OperationalArea(
+        area_code="AREA-B",
+        name="Area B",
+        is_active=True,
+        is_operational=True,
+        buildings=[
+            {"code": "B2", "visible_in_planner": True, "visible_in_reporting": True},
+            {"code": "B9", "visible_in_planner": True, "visible_in_reporting": False},
+        ],
+    )
+    billing = InfinityBillingItem(name="Voce Infinity B", is_active=True)
+    db.add_all([area, billing])
+    db.flush()
+    mapping = InfinityBillingCustomerSupplierMap(
+        infinity_billing_item_id=billing.id,
+        customer_supplier_code="CLI-2",
+        customer_supplier_description="Cliente Due",
+        jupiter_description="Attività Jupiter Due",
+        operational_area_id=area.id,
+        buildings=["B2"],
+        is_active=True,
+    )
+    db.add(mapping)
+    db.commit()
+    return area, mapping
+
+
+def moving_payload(worker, assignment, area, second_area):
+    """Mezza giornata in Area A, mezza in Area B, dentro lo stesso blocco."""
+    return {
+        "employee_id": worker.id,
+        "work_date": DAY.isoformat(),
+        "actual_start": "08:00",
+        "actual_end": "17:00",
+        "pauses": [{"start": "12:00", "end": "13:00"}],
+        "blocks": [{
+            "source_assignment_id": assignment.id,
+            "actual_area_id": area.id,
+            "actual_building": "A1",
+            "allocations": [
+                {
+                    "customer_code": "CLI-1",
+                    "jupiter_description": "Attività Jupiter Uno",
+                    "start_offset_minutes": 0,
+                    "minutes": 180,
+                },
+                {
+                    "customer_code": "CLI-2",
+                    "jupiter_description": "Attività Jupiter Due",
+                    "actual_area_id": second_area.id,
+                    "actual_building": "B2",
+                    "start_offset_minutes": 240,
+                    "minutes": 120,
+                },
+            ],
+        }],
+    }
+
+
+def test_same_block_can_hold_different_actual_areas(client, db_session):
+    manager, worker, area, _, assignment, _ = seed_reporting_day(db_session)
+    second_area, second_mapping = seed_second_area(db_session)
+    token = make_linked_user_token(db_session, manager, username="manager.spostamento")
+
+    saved = client.put(
+        "/api/operational-reporting/day",
+        json=moving_payload(worker, assignment, area, second_area),
+        headers=auth_headers(token),
+    )
+    assert saved.status_code == 200, saved.text
+    allocations = saved.json()["blocks"][0]["allocations"]
+    assert saved.json()["allocated_minutes"] == 300
+    # Il box senza indicazione resta dove sta il blocco.
+    assert allocations[0]["actual_area_id"] == area.id
+    assert allocations[0]["actual_area_name"] == "Area A"
+    assert allocations[0]["actual_building"] == "A1"
+    assert allocations[1]["actual_area_id"] == second_area.id
+    assert allocations[1]["actual_area_name"] == "Area B"
+    assert allocations[1]["actual_building"] == "B2"
+    assert allocations[1]["eligible_mapping_ids"] == [second_mapping.id]
+    # Il blocco conserva la destinazione pianificata anche se un box si sposta.
+    assert saved.json()["blocks"][0]["actual_area_id"] == area.id
+    assert saved.json()["blocks"][0]["actual_building"] == "A1"
+
+    reread = client.get(
+        f"/api/operational-reporting/day?day={DAY.isoformat()}", headers=auth_headers(token)
+    )
+    assert reread.status_code == 200
+    reread_allocations = reread.json()["teams"][0]["members"][0]["blocks"][0]["allocations"]
+    assert [item["actual_area_id"] for item in reread_allocations] == [area.id, second_area.id]
+    assert [item["actual_building"] for item in reread_allocations] == ["A1", "B2"]
+
+
+def test_allocation_customer_is_validated_against_its_own_area(client, db_session):
+    manager, worker, area, _, assignment, _ = seed_reporting_day(db_session)
+    second_area, _ = seed_second_area(db_session)
+    token = make_linked_user_token(db_session, manager, username="manager.area.box")
+
+    payload = moving_payload(worker, assignment, area, second_area)
+    # Cliente dell'Area A dichiarato su un box che si trova in Area B.
+    payload["blocks"][0]["allocations"][1]["customer_code"] = "CLI-1"
+    payload["blocks"][0]["allocations"][1]["jupiter_description"] = "Attività Jupiter Uno"
+    rejected = client.put("/api/operational-reporting/day", json=payload, headers=auth_headers(token))
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "Il cliente CLI-1 non è valido per Area B / B2."
+
+
+def test_allocation_building_must_be_visible_in_reporting(client, db_session):
+    manager, worker, area, _, assignment, _ = seed_reporting_day(db_session)
+    second_area, _ = seed_second_area(db_session)
+    token = make_linked_user_token(db_session, manager, username="manager.immobile.box")
+
+    payload = moving_payload(worker, assignment, area, second_area)
+    payload["blocks"][0]["allocations"][1]["actual_building"] = "B9"
+    rejected = client.put("/api/operational-reporting/day", json=payload, headers=auth_headers(token))
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "Immobile non valido per l'area Area B."
+
+
+def test_dashboard_groups_and_filters_locations_by_allocation(client, db_session):
+    manager, worker, area, _, assignment, _ = seed_reporting_day(db_session)
+    second_area, _ = seed_second_area(db_session)
+    token = make_linked_user_token(db_session, manager, username="manager.dashboard.aree")
+    headers = auth_headers(token)
+    saved = client.put(
+        "/api/operational-reporting/day",
+        json=moving_payload(worker, assignment, area, second_area),
+        headers=headers,
+    )
+    assert saved.status_code == 200, saved.text
+
+    period = f"start_date={DAY.isoformat()}&end_date={DAY.isoformat()}"
+    dashboard = client.get(f"/api/operational-reporting/dashboard?{period}", headers=headers)
+    assert dashboard.status_code == 200, dashboard.text
+    locations = {(item["area_name"], item["building"]): item["minutes"] for item in dashboard.json()["locations"]}
+    assert locations == {("Area A", "A1"): 180, ("Area B", "B2"): 120}
+
+    filtered = client.get(
+        f"/api/operational-reporting/dashboard?{period}&area_id={second_area.id}", headers=headers
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["summary"]["allocated_minutes"] == 120
+    assert [item["customer_code"] for item in filtered.json()["customers"]] == ["CLI-2"]
 
 
 def test_infinity_mapping_update_propagates_and_delete_keeps_last_snapshot(client, db_session):

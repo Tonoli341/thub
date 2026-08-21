@@ -1,11 +1,12 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { Alert, Box, Button, CircularProgress, Container, Divider, InputBase, Popover, Stack, Tooltip, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Container, InputBase, Stack, Tooltip, Typography } from "@mui/material";
 
 import { useAuth } from "./auth";
 import { useAppTheme } from "./ThemeContext";
 import ErrorBoundary from "./ErrorBoundary";
 import LoginPage from "./pages/LoginPage";
+import NotificationsBell from "./NotificationsBell";
 
 // Code-splitting per route: le pagine (alcune molto grandi, con dipendenze come
 // pdf-lib o @xyflow/react) vengono scaricate solo quando servono.
@@ -35,6 +36,7 @@ const SystemStatusPage = lazy(() => import("./pages/SystemStatusPage"));
 const IntegrationsPage = lazy(() => import("./pages/IntegrationsPage"));
 const ConsegnePage = lazy(() => import("./pages/ConsegnePage"));
 const DeliverySignaturePage = lazy(() => import("./pages/DeliverySignaturePage"));
+const MaintenancePage = lazy(() => import("./pages/MaintenancePage"));
 
 function PageLoader() {
   return (
@@ -54,6 +56,7 @@ const SIDEBAR_SECTIONS = [
       { to: "/carichi", label: "Carichi", icon: "document", requires: "workloads" },
       { to: "/calendario", label: "Assenze", icon: "sun", requires: "calendar" },
       { to: "/consegne", label: "Consegne", icon: "box", requires: "deliveries" },
+      { to: "/manutenzioni", label: "Manutenzioni", icon: "tools", requires: "maintenance" },
     ],
   },
   {
@@ -256,13 +259,6 @@ function Icon({ name, size = 20, stroke = 1.9 }) {
           <path d="M10 5v14" />
         </svg>
       );
-    case "bell":
-      return (
-        <svg {...common}>
-          <path d="M6.5 16.5h11l-1.4-2.2a4.2 4.2 0 0 1-.6-2.2V10a3.5 3.5 0 1 0-7 0v2.1a4.2 4.2 0 0 1-.6 2.2z" />
-          <path d="M10 18.5a2.2 2.2 0 0 0 4 0" />
-        </svg>
-      );
     case "chevron-down":
       return (
         <svg {...common}>
@@ -358,6 +354,13 @@ function Icon({ name, size = 20, stroke = 1.9 }) {
           <path d="M12 17v4" />
         </svg>
       );
+    case "tools":
+      return (
+        <svg {...common}>
+          <path d="M14.7 6.3a4 4 0 0 0-5-5L12 3.6 9.6 6 7.3 3.7a4 4 0 0 0 5 5L20 16.4a2.1 2.1 0 0 1-3 3z" />
+          <path d="m5 13-2.7 2.7a2.1 2.1 0 0 0 3 3L8 16" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -428,10 +431,11 @@ function SidebarNav({ user, collapsed, search }) {
         );
         if (item.requires === "workloads") return Boolean(user?.can_access_workloads);
         if (item.requires === "deliveries") return Boolean(user?.can_access_deliveries);
+        if (item.requires === "maintenance") return Boolean(user?.can_access_maintenance);
         return true;
       }),
     })).filter((section) => section.items.length > 0),
-    [user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets, user?.can_access_workloads, user?.can_access_deliveries],
+    [user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets, user?.can_access_workloads, user?.can_access_deliveries, user?.can_access_maintenance],
   );
 
   const displayedSections = useMemo(() => {
@@ -505,7 +509,6 @@ function ProtectedLayout() {
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
-  const [bellAnchorEl, setBellAnchorEl] = useState(null);
 
   const sidebarWidth = sidebarCollapsed ? 56 : 240;
 
@@ -670,6 +673,7 @@ function ProtectedLayout() {
                     }
                   </Button>
                 </Tooltip>
+                <NotificationsBell tooltipPlacement="right" />
               </Box>
             ) : (
               <>
@@ -708,30 +712,7 @@ function ProtectedLayout() {
                   </Button>
                 </Tooltip>
 
-                <Tooltip title="Notifiche" placement="top">
-                  <Button
-                    onClick={(e) => setBellAnchorEl(e.currentTarget)}
-                    sx={{ minWidth: 0, width: 32, height: 32, borderRadius: "10px", color: "var(--color-sidebar-text-muted)", "&:hover": { background: "var(--color-sidebar-hover-bg)" } }}
-                  >
-                    <Icon name="bell" size={18} stroke={1.95} />
-                  </Button>
-                </Tooltip>
-                <Popover
-                  open={Boolean(bellAnchorEl)}
-                  anchorEl={bellAnchorEl}
-                  onClose={() => setBellAnchorEl(null)}
-                  anchorOrigin={{ vertical: "top", horizontal: "right" }}
-                  transformOrigin={{ vertical: "bottom", horizontal: "right" }}
-                  slotProps={{ paper: { sx: { borderRadius: "14px", boxShadow: "0 4px 24px rgba(0,0,0,0.10)", width: 280 } } }}
-                >
-                  <Box sx={{ px: 2, pt: 2, pb: 1.5 }}>
-                    <Typography fontWeight={700} fontSize={15}>Notifiche</Typography>
-                  </Box>
-                  <Divider />
-                  <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
-                    <Typography fontSize={14} color="text.secondary">Nessuna notifica al momento</Typography>
-                  </Box>
-                </Popover>
+                <NotificationsBell />
               </>
             )}
           </Box>
@@ -746,6 +727,7 @@ function ProtectedLayout() {
               <Route path="/organigramma" element={effectiveUser?.can_access_organization ? <OrgChartPage /> : <Navigate to="/" replace />} />
               <Route path="/dipendenti" element={effectiveUser?.can_access_organization ? <EmployeesPage onImpersonate={effectiveUser?.effective_role === "admin" ? startImpersonation : undefined} /> : <Navigate to="/" replace />} />
               <Route path="/consegne" element={effectiveUser?.can_access_deliveries ? <ConsegnePage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni" element={effectiveUser?.can_access_maintenance ? <MaintenancePage /> : <Navigate to="/" replace />} />
               {/* Firma consegna dispositivo: accessibile a ogni utente autenticato,
                   il backend verifica che la consegna appartenga al dipendente collegato. */}
               <Route path="/le-mie-consegne/:deliveryId/firma" element={<DeliverySignaturePage />} />

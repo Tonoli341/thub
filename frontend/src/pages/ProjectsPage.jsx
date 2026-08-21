@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
+import { tableSx } from "../components/tableStyles";
 import {
   Alert,
   Autocomplete,
@@ -1427,7 +1429,7 @@ function InfinityMapSection({ items = [], isLoading, error, infinityItems, custo
 
         {!isLoading && items.length > 0 && (
           <Box sx={{ overflowX: "auto" }}>
-            <Table size="small" sx={{ minWidth: 900 }}>
+            <Table size="small" sx={tableSx({ minWidth: 900, dense: true })}>
               <TableHead>
                 <TableRow>
                   <TableCell>Area</TableCell>
@@ -1589,39 +1591,11 @@ export default function ProjectsPage() {
   return (
     <Stack spacing={3}>
       {/* ── Header ── */}
-      <Paper
-        sx={{
-          p: 3.5,
-          borderRadius: 4,
-          background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))",
-          color: "#fff",
-        }}
-      >
-        <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2}>
-          <Box>
-            <Typography variant="overline" sx={{ opacity: 0.8 }}>Configurazione</Typography>
-            <Typography variant="h4">Jupiter</Typography>
-            <Typography sx={{ mt: 1, maxWidth: 680, opacity: 0.9 }}>
-              Incroci tra voci di fatturazione Infinity e Cliente/Fornitore disponibili in piattaforma.
-            </Typography>
-          </Box>
-          <Button
-            variant="outlined"
-            onClick={() => setParamsOpen(true)}
-            startIcon={<GearIcon />}
-            sx={{
-              flexShrink: 0,
-              color: "#fff",
-              borderColor: "rgba(255,255,255,0.5)",
-              textTransform: "none",
-              fontWeight: 600,
-              "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.08)" },
-            }}
-          >
-            Parametri
-          </Button>
-        </Stack>
-      </Paper>
+      <PageHeader
+        section="Configurazione"
+        title="Jupiter"
+        actions={<HeaderButton onClick={() => setParamsOpen(true)} startIcon={<GearIcon />}>Parametri</HeaderButton>}
+      />
 
       {/* ── Tabella incroci: elemento centrale della pagina ── */}
       <InfinityMapSection

@@ -19,6 +19,10 @@ import {
 import { useState } from "react";
 
 import { getEmployeeOptions, getLdapEmployees, unlockLdapEmployeeLogin, updateLdapEmployeeTmsLink } from "../api";
+import FilterBar from "../components/FilterBar";
+import PageHeader from "../components/PageHeader";
+import { bodyRowSx, headRowSx, tableSx } from "../components/tableStyles";
+import { LDAP_COLUMNS } from "./ldapColumns";
 
 function formatDateTime(value) {
   if (!value) {
@@ -53,7 +57,7 @@ function LinkableRow({ employee, employeeOptions, onSave, isSaving, onUnlock, is
     employeeOptions.find((option) => option.id === selectedTmsEmployeeId) || null;
 
   return (
-    <TableRow>
+    <TableRow sx={bodyRowSx()}>
       <TableCell>
         <Stack direction="row" spacing={1} alignItems="center">
           <Typography>{employee.username}</Typography>
@@ -68,7 +72,7 @@ function LinkableRow({ employee, employeeOptions, onSave, isSaving, onUnlock, is
       <TableCell>{employee.email || "-"}</TableCell>
       <TableCell>{formatDateTime(employee.first_login_at)}</TableCell>
       <TableCell>{formatDateTime(employee.last_login_at)}</TableCell>
-      <TableCell sx={{ minWidth: 320, maxWidth: 420 }}>
+      <TableCell>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ xs: "stretch", md: "center" }}>
           <Autocomplete
             size="small"
@@ -172,22 +176,23 @@ export default function LdapEmployeesPage() {
 
   return (
     <Stack spacing={3}>
-      <Paper sx={{ p: 3.5, borderRadius: 4, background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))", color: "#fff" }}>
-        <Typography variant="overline" sx={{ opacity: 0.8 }}>Configurazione</Typography>
-        <Typography variant="h4">Mapping LDAP</Typography>
-        <Typography sx={{ mt: 1, maxWidth: 680, opacity: 0.9 }}>
-          Collega ogni utente LDAP al rispettivo dipendente TMS tramite matricola.
-        </Typography>
-      </Paper>
+      <PageHeader
+        section="Configurazione"
+        title="Mapping LDAP"
+        meta={`${(ldapEmployeesQuery.data ?? []).length} utenti LDAP`}
+      />
 
-      <Paper sx={{ p: 3 }}>
+      <FilterBar onReset={() => setSearch("")} resetDisabled={!search}>
+        <TextField
+          size="small"
+          label="Cerca per username, nome o email"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </FilterBar>
+
+      <Paper sx={{ p: 2, borderRadius: 2 }}>
         <Stack spacing={2}>
-          <TextField
-            label="Cerca per username, nome o email"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            fullWidth
-          />
 
           {ldapEmployeesQuery.error && <Alert severity="error">{ldapEmployeesQuery.error.message}</Alert>}
           {employeeOptionsQuery.error && <Alert severity="error">{employeeOptionsQuery.error.message}</Alert>}
@@ -201,17 +206,14 @@ export default function LdapEmployeesPage() {
           )}
 
           <TableContainer sx={{ overflowX: "auto" }}>
-            <Table size="small" sx={{ minWidth: 900 }}>
+            <Table size="small" sx={tableSx({ minWidth: 940, dense: true })}>
               <TableHead>
-                <TableRow>
-                  <TableCell>Username</TableCell>
-                  <TableCell>Nome visualizzato</TableCell>
-                  <TableCell>Email</TableCell>
-                  <TableCell>Primo login</TableCell>
-                  <TableCell>Ultimo login</TableCell>
-                  <TableCell>Dipendente TMS</TableCell>
-                  <TableCell align="center">Accesso</TableCell>
-                  <TableCell align="center">Stato</TableCell>
+                <TableRow sx={headRowSx}>
+                  {LDAP_COLUMNS.map((column) => (
+                    <TableCell key={column.key} align={column.align} sx={{ width: `${column.width}%` }}>
+                      {column.label}
+                    </TableCell>
+                  ))}
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -228,7 +230,7 @@ export default function LdapEmployeesPage() {
                 ))}
                 {!ldapEmployeesQuery.isLoading && !ldapEmployeesQuery.data?.length && (
                   <TableRow>
-                    <TableCell colSpan={8}>Nessun dipendente LDAP disponibile.</TableCell>
+                    <TableCell colSpan={LDAP_COLUMNS.length}>Nessun dipendente LDAP disponibile.</TableCell>
                   </TableRow>
                 )}
               </TableBody>

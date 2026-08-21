@@ -17,6 +17,9 @@ import {
 } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
+
+import FilterSelect from "../components/FilterSelect";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
 import "dayjs/locale/it";
 import { useNavigate } from "react-router-dom";
 
@@ -446,16 +449,11 @@ export default function OperationalReportingDashboardPage() {
   };
   return (
     <Box className="opr-dashboard-page">
-      <Paper className="opr-dashboard-topbar">
-        <Box className="opr-dashboard-title-row">
-          <Box className="opr-dashboard-title-badge">▥</Box>
-          <Box>
-            <Typography className="opr-dashboard-title">Dashboard rendicontazione operativa</Typography>
-            <Typography className="opr-dashboard-subtitle">Copertura, avanzamento e distribuzione delle ore consuntivate</Typography>
-          </Box>
-          <Button className="opr-dashboard-open-button" onClick={() => navigate("/rendicontazioni/operativa")}>Vai alla compilazione</Button>
-        </Box>
-      </Paper>
+      <PageHeader
+        section="Rendicontazioni"
+        title="Dashboard rendicontazione operativa"
+        actions={<HeaderButton onClick={() => navigate("/rendicontazioni/operativa")}>Vai alla compilazione</HeaderButton>}
+      />
 
       <Paper className="opr-dashboard-period-filter">
         <Box className="opr-dashboard-period-header">
@@ -476,20 +474,19 @@ export default function OperationalReportingDashboardPage() {
               <TextField type="date" label="Al" size="small" value={range.end} InputLabelProps={{ shrink: true }} inputProps={{ min: range.start }} onChange={(event) => setRange((current) => ({ ...current, end: event.target.value }))} />
             </>
           )}
-          <FormControl size="small" className="opr-dashboard-team-filter">
-            <InputLabel>Squadra</InputLabel>
-            <Select
-              value={teamId}
-              label="Squadra"
-              onChange={(event) => {
-                setTeamId(event.target.value);
-                clearCrossFilter("employee_id");
-              }}
-            >
-              <MenuItem value="">Tutte le squadre</MenuItem>
-              {(data?.available_teams ?? []).map((team) => <MenuItem key={team.team_id} value={team.team_id}>{team.team_icon} {team.team_name}</MenuItem>)}
-            </Select>
-          </FormControl>
+          <FilterSelect
+            label="Squadra"
+            value={teamId}
+            onChange={(value) => {
+              setTeamId(value);
+              clearCrossFilter("employee_id");
+            }}
+            options={(data?.available_teams ?? []).map((team) => ({
+              value: team.team_id,
+              label: `${team.team_icon} ${team.team_name}`,
+            }))}
+            placeholder="Tutte le squadre"
+          />
         </Box>
         {activeChips.length > 0 && (
           <Box className="opr-dashboard-active-filters">

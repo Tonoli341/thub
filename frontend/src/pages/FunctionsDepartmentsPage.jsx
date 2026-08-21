@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import PageHeader, { HeaderButton } from "../components/PageHeader";
 import {
   Alert,
   Autocomplete,
@@ -1015,20 +1016,7 @@ export default function FunctionsDepartmentsPage() {
   return (
     <Stack spacing={3}>
       {/* ── Header ── */}
-      <Paper
-        sx={{
-          p: 3.5,
-          borderRadius: 4,
-          background: "linear-gradient(135deg, rgba(0,112,64,0.96), rgba(0,80,46,0.92))",
-          color: "#fff",
-        }}
-      >
-        <Typography variant="overline" sx={{ opacity: 0.8 }}>Impresa</Typography>
-        <Typography variant="h4">Funzione / Dipartimento</Typography>
-        <Typography sx={{ mt: 0.5, maxWidth: 680, opacity: 0.9, fontSize: "0.95rem" }}>
-          Gestione delle funzioni aziendali e dei dipartimenti associabili ai dipendenti.
-        </Typography>
-      </Paper>
+      <PageHeader section="Impresa" title="Funzione / Dipartimento" />
 
       {/* ── Two-column grid ── */}
       <Box

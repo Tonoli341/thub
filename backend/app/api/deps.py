@@ -78,6 +78,13 @@ def require_timesheets_access(current_user: User = Depends(get_current_user), db
     return current_user
 
 
+def require_maintenance_access(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    auth = build_auth_user_read(db, current_user)
+    if not auth.can_access_maintenance:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accesso manutenzioni non consentito.")
+    return current_user
+
+
 def require_manager_or_above(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
     auth = build_auth_user_read(db, current_user)
     if auth.effective_role not in ("admin", "hr", "manager"):

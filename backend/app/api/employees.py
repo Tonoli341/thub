@@ -134,6 +134,7 @@ def serialize_employee(employee: Employee, *, is_team_leader: bool = False, has_
         config_can_access_expirations=employee.config_can_access_expirations,
         config_expirations_scope=employee.config_expirations_scope,
         config_can_access_deliveries=employee.config_can_access_deliveries,
+        config_can_access_maintenance=employee.config_can_access_maintenance,
         app_role=employee.app_role,
         planner_access_level=employee.planner_access_level,
         default_operational_area_id=employee.default_operational_area_id,
@@ -667,6 +668,7 @@ def update_employee_configuration_permissions(
     # Campo storico mantenuto sincronizzato per i client precedenti.
     employee.config_can_access_expirations = expirations_scope != "none"
     employee.config_can_access_deliveries = payload.config_can_access_deliveries
+    employee.config_can_access_maintenance = payload.config_can_access_maintenance
 
     record_audit_log(
         db,

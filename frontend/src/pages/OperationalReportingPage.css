@@ -213,6 +213,29 @@
 .op-report-member-row:hover { background: rgba(0,112,64,.025); }
 .op-report-member-wrap.is-active .op-report-member-row { background: rgba(0,112,64,.06); }
 
+/* Copia/incolla tra risorse: presenti ma in secondo piano, come il pulsante di
+   rimozione dei box, così la riga resta leggibile. */
+.op-report-row-actions { display: flex; flex-shrink: 0; gap: 2px; }
+
+.op-report-row-action {
+  width: 20px;
+  height: 20px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1;
+  opacity: .28;
+  cursor: pointer;
+  transition: opacity .12s, border-color .12s, background .12s;
+}
+
+.op-report-member-row:hover .op-report-row-action { opacity: .8; }
+.op-report-row-action:hover { border-color: var(--opr-border); background: rgba(0,112,64,.08); opacity: 1; }
+.op-report-row-action:disabled { opacity: .16; cursor: default; }
+.op-report-row-action.is-copied { border-color: #009e5a; color: #007040; opacity: 1; }
+
 .op-report-name-cell {
   position: sticky;
   left: 0;
@@ -274,6 +297,24 @@
   font-weight: 700;
   white-space: nowrap;
 }
+
+/* Cliente e firma su due righe: la riga di riepilogo è alta abbastanza solo
+   per i box lunghi, dove la firma viene mostrata. */
+.op-report-overview-allocation.has-signature {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  line-height: 1.15;
+}
+
+.op-report-overview-allocation-name,
+.op-report-overview-allocation-signature {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.op-report-overview-allocation-signature { font-size: 7px; font-weight: 600; font-style: italic; opacity: .6; }
 
 .op-report-overview-pause {
   position: absolute;
@@ -489,9 +530,11 @@
 .op-report-allocation-box.is-dragging { opacity: .58; }
 .op-report-box-grip { flex: 0 0 13px; opacity: .35; font-size: 9px; text-align: center; }
 .op-report-box-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-.op-report-box-customer, .op-report-box-jupiter { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.op-report-box-customer, .op-report-box-jupiter, .op-report-box-signature { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .op-report-box-customer { font-size: 9.5px; font-weight: 800; }
 .op-report-box-jupiter { font-size: 8px; opacity: .72; }
+/* Firma dell'ultima modifica: terza riga, volutamente in secondo piano. */
+.op-report-box-signature { font-size: 7.5px; opacity: .58; font-style: italic; }
 
 .op-report-box-delete {
   width: 18px;
@@ -536,6 +579,20 @@
 .op-report-create-time { margin-bottom: 9px !important; color: var(--opr-faded); font-size: 10px !important; font-weight: 800 !important; text-transform: uppercase; }
 
 .op-report-drag-hint { color: var(--opr-faded); font-size: 8.5px !important; line-height: 1 !important; }
+
+.op-report-allocation-panel {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--opr-border);
+  border-radius: 8px;
+  background: var(--opr-soft);
+}
+.op-report-allocation-panel-title { color: var(--opr-faded); font-size: 9px !important; font-weight: 800 !important; text-transform: uppercase; }
+.op-report-allocation-panel .MuiInputBase-root { height: 34px; background: var(--opr-surface); }
+.op-report-allocation-panel-hint { color: #b3541e; font-size: 9.5px !important; font-weight: 700 !important; }
+/* Nel pannello la spaziatura la dà il grid: il margine del campo note è di troppo. */
+.op-report-allocation-panel .op-report-block-notes { margin-top: 0 !important; }
 
 .op-report-block-notes { width: 100%; margin-top: 7px !important; }
 .op-report-block-notes .MuiInputBase-root { height: 32px; }

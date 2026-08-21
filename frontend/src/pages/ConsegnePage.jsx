@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import FilterBar from "../components/FilterBar";
+import PageHeader from "../components/PageHeader";
 import {
   Alert,
   Autocomplete,
@@ -118,9 +120,9 @@ function AreaIcon({ name, size = 20 }) {
 
 function StatTile({ value, label }) {
   return (
-    <Box sx={{ px: 2.25, py: 1.25, borderRadius: 3, bgcolor: "rgba(255,255,255,0.14)", minWidth: 110 }}>
-      <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.2 }}>{value ?? "—"}</Typography>
-      <Typography variant="caption" sx={{ opacity: 0.82 }}>{label}</Typography>
+    <Box sx={{ px: 1.5, py: 0.5, borderRadius: 2, bgcolor: "action.hover", minWidth: 96 }}>
+      <Typography sx={{ fontSize: 17, fontWeight: 700, lineHeight: 1.2 }}>{value ?? "—"}</Typography>
+      <Typography variant="caption" color="text.secondary">{label}</Typography>
     </Box>
   );
 }
@@ -868,72 +870,41 @@ export default function ConsegnePage() {
   return (
     <>
       <Stack spacing={3}>
-        <Paper
-          sx={{
-            p: 3.5,
-            borderRadius: 4,
-            background: activeArea.gradient,
-            color: "#fff",
-            transition: "background 0.35s",
-          }}
-        >
-          <Stack spacing={2}>
-            <Stack
-              direction={{ xs: "column", md: "row" }}
-              spacing={2}
-              alignItems={{ xs: "flex-start", md: "center" }}
-              justifyContent="space-between"
-            >
-              <Typography variant="overline" sx={{ opacity: 0.75 }}>Consegne</Typography>
-              <Stack direction="row" sx={{ p: 0.5, borderRadius: 999, bgcolor: "rgba(255,255,255,0.16)" }}>
-                {AREAS.map((entry) => {
-                  const selected = entry.key === area;
-                  return (
-                    <Button
-                      key={entry.key}
-                      onClick={() => setArea(entry.key)}
-                      startIcon={<AreaIcon name={entry.icon} size={18} />}
-                      sx={{
-                        borderRadius: 999,
-                        px: 2,
-                        py: 0.6,
-                        textTransform: "none",
-                        fontWeight: 700,
-                        fontSize: 13,
-                        whiteSpace: "nowrap",
-                        color: selected ? entry.accent : "rgba(255,255,255,0.88)",
-                        bgcolor: selected ? "#fff" : "transparent",
-                        boxShadow: selected ? "0 2px 8px rgba(0,0,0,0.18)" : "none",
-                        "&:hover": { bgcolor: selected ? "#fff" : "rgba(255,255,255,0.12)" },
-                      }}
-                    >
-                      {entry.label}
-                    </Button>
-                  );
-                })}
-              </Stack>
-            </Stack>
-            <Stack spacing={1}>
-              <Typography variant="h4">{activeArea.title}</Typography>
-              <Typography sx={{ maxWidth: 760, opacity: 0.88 }}>{activeArea.description}</Typography>
-            </Stack>
-            <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
-              {area === "dpi" ? (
-                <>
-                  <StatTile value={dpiOpenCountQuery.data?.total} label="Consegne aperte" />
-                  <StatTile value={dpiReturnedCountQuery.data?.total} label="Restituite" />
-                  <StatTile value={activeMaterialsCount} label="Articoli a catalogo" />
-                </>
-              ) : (
-                <>
-                  <StatTile value={itOpenCountQuery.data?.total} label="Assegnazioni aperte" />
-                  <StatTile value={itPendingCountQuery.data?.total} label="In attesa firma" />
-                  <StatTile value={activeDevicesCount} label="Dispositivi attivi" />
-                </>
-              )}
-            </Stack>
+        <PageHeader section="Consegne" title={activeArea.title} />
+
+        {/* Area e contatori: seconda barra, non nella banda del titolo (regole 2-3) */}
+        <FilterBar dense>
+          <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0 }}>
+            {AREAS.map((entry) => (
+              <Button
+                key={entry.key}
+                size="small"
+                variant={entry.key === area ? "contained" : "outlined"}
+                onClick={() => setArea(entry.key)}
+                startIcon={<AreaIcon name={entry.icon} size={16} />}
+                sx={{ whiteSpace: "nowrap", fontWeight: 700 }}
+              >
+                {entry.label}
+              </Button>
+            ))}
           </Stack>
-        </Paper>
+          <Box sx={{ flexGrow: 1 }} />
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
+            {area === "dpi" ? (
+              <>
+                <StatTile value={dpiOpenCountQuery.data?.total} label="Consegne aperte" />
+                <StatTile value={dpiReturnedCountQuery.data?.total} label="Restituite" />
+                <StatTile value={activeMaterialsCount} label="Articoli a catalogo" />
+              </>
+            ) : (
+              <>
+                <StatTile value={itOpenCountQuery.data?.total} label="Assegnazioni aperte" />
+                <StatTile value={itPendingCountQuery.data?.total} label="In attesa firma" />
+                <StatTile value={activeDevicesCount} label="Dispositivi attivi" />
+              </>
+            )}
+          </Stack>
+        </FilterBar>
 
         <Paper sx={{ borderRadius: 4, overflow: "hidden" }}>
           {area === "dpi" ? (

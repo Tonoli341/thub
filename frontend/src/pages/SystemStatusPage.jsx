@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 
 import { getSystemStatus } from "../api";
+import PageHeader from "../components/PageHeader";
 
 const REFRESH_MS = 30000;
 
@@ -96,14 +97,13 @@ export default function SystemStatusPage() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h5" fontWeight={700}>
-          Stato sistema
-        </Typography>
-        <Typography fontSize={13} color="text.secondary">
-          Monitoraggio attivo solo mentre questa pagina è aperta — aggiornamento ogni {REFRESH_MS / 1000}s
-        </Typography>
-      </Stack>
+      <Box sx={{ mb: 2 }}>
+        <PageHeader
+          section="Configurazione"
+          title="Stato sistema"
+          meta={`Aggiornamento ogni ${REFRESH_MS / 1000}s mentre la pagina è aperta`}
+        />
+      </Box>
 
       {statusQuery.isError && (
         <Alert severity="error" sx={{ mb: 2 }}>

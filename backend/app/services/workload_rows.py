@@ -9,6 +9,13 @@ AUDITED_ROW_FIELDS = (
     "pallet_count",
     "notes",
     "warehouse",
+    "customer_code",
+    "customer_name",
+    "supplier_code",
+    "supplier_name",
+    "gesap_booking_id",
+    "gesap_booking_date",
+    "gesap_status",
 )
 
 

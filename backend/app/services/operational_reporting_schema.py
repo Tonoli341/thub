@@ -55,6 +55,48 @@ def ensure_operational_reporting_schema(bind=engine) -> None:
                 "ALTER TABLE operational_report_allocations "
                 "ADD COLUMN notes TEXT"
             ))
+        # Posizione della singola attività: restano NULL sulle righe già
+        # scritte, dove vale ancora la posizione del blocco.
+        if "actual_area_id" not in columns:
+            connection.execute(text(
+                "ALTER TABLE operational_report_allocations "
+                "ADD COLUMN actual_area_id VARCHAR(36)"
+            ))
+        if "actual_area_name_snapshot" not in columns:
+            connection.execute(text(
+                "ALTER TABLE operational_report_allocations "
+                "ADD COLUMN actual_area_name_snapshot VARCHAR(120)"
+            ))
+        if "actual_building" not in columns:
+            connection.execute(text(
+                "ALTER TABLE operational_report_allocations "
+                "ADD COLUMN actual_building VARCHAR(50)"
+            ))
+        # Autore e istante di creazione/modifica della singola casella: restano
+        # NULL sulle righe scritte prima del tracciamento, perché inventare una
+        # data sarebbe peggio che non mostrarne nessuna.
+        if "created_by_name" not in columns:
+            connection.execute(text(
+                "ALTER TABLE operational_report_allocations "
+                "ADD COLUMN created_by_name VARCHAR(120)"
+            ))
+        # SQLite (solo test) non conosce TIMESTAMPTZ.
+        timestamp_type = "TIMESTAMPTZ" if connection.dialect.name == "postgresql" else "TIMESTAMP"
+        if "created_at" not in columns:
+            connection.execute(text(
+                "ALTER TABLE operational_report_allocations "
+                f"ADD COLUMN created_at {timestamp_type}"
+            ))
+        if "last_modified_by_name" not in columns:
+            connection.execute(text(
+                "ALTER TABLE operational_report_allocations "
+                "ADD COLUMN last_modified_by_name VARCHAR(120)"
+            ))
+        if "last_modified_at" not in columns:
+            connection.execute(text(
+                "ALTER TABLE operational_report_allocations "
+                f"ADD COLUMN last_modified_at {timestamp_type}"
+            ))
 
         # SQLite è usato soltanto dai test e non supporta DROP CONSTRAINT.
         # Le tabelle nuove create dalla metadata hanno già il vincolo corretto.

@@ -120,6 +120,10 @@ export function getDashboard(date) {
   return request(`/dashboard?date=${date}`);
 }
 
+export function getDashboardBirthdays(days = 7) {
+  return request(`/dashboard/birthdays?days=${days}`);
+}
+
 export function getDashboardMe(employeeId, date) {
   return request(`/dashboard/me?employee_id=${employeeId}&date=${date}`);
 }
@@ -564,6 +568,10 @@ export function getAssignments(start, end) {
   return request(`/assignments?start=${start}&end=${end}`);
 }
 
+export function getPlannerDayAudit(workDate) {
+  return request(`/assignments/day-audit?work_date=${workDate}`);
+}
+
 export function createAssignment(payload) {
   return request("/assignments", {
     method: "POST",
@@ -744,6 +752,17 @@ export function upsertStructuredWorkload(teamId, workDate, payload) {
 
 export function getWorkloadCustomerSuppliers() {
   return request("/workloads/customer-suppliers");
+}
+
+export function importGesapBookingToWorkload(payload) {
+  return request("/workloads/gesap/import", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function syncGesapWorkloads(workDate) {
+  return request(`/workloads/gesap/sync?work_date=${workDate}`, { method: "POST" });
 }
 
 export function getAuditLogs({ entity = "", action = "", actor = "", search = "", start = "", end = "", limit = 100, offset = 0 } = {}) {

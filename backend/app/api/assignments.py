@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func as sqlfunc, select
@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import get_impersonation_employee
 from app.db import get_db
 from app.enums import AssignmentCause
-from app.models import Assignment, Employee, OperationalArea, TrainingCourse, User
-from app.schemas import AssignmentCreate, AssignmentRead, AssignmentUpdate
+from app.models import Assignment, Employee, OperationalArea, PlannerDayAudit, TrainingCourse, User
+from app.schemas import AssignmentCreate, AssignmentRead, AssignmentUpdate, PlannerDayAuditRead
 from app.services.audit import record_audit_log
 from app.services.hierarchy import collect_report_ids
 from app.services.portal_auth import build_auth_user_read, build_impersonation_view, planner_level_can_write, planner_level_scope
@@ -44,6 +44,12 @@ def _planner_allowed_employee_ids(
 def _effective_role(db: Session, current_user: User, impersonate_employee: Employee | None) -> str | None:
     auth = build_impersonation_view(db, impersonate_employee) if impersonate_employee is not None else build_auth_user_read(db, current_user)
     return auth.effective_role
+
+
+# Causali che non descrivono lavoro su un immobile: nessun building, e un
+# perimetro di ruoli piu' stretto di quello del Planner ordinario.
+TRAINING_ROLES = ("admin", "hr")
+MEDICAL_CHECK_ROLES = ("admin", "hr", "manager")
 
 
 def _resolve_training_course(db: Session, cause, training_course_id: str | None) -> str | None:
@@ -126,9 +132,36 @@ def serialize_assignment(assignment: Assignment) -> AssignmentRead:
         workload=assignment.workload,
         training_course_id=assignment.training_course_id,
         training_course_title=assignment.training_course.title if assignment.training_course else None,
+        last_modified_by_name=assignment.last_modified_by_name,
         created_at=assignment.created_at,
         updated_at=assignment.updated_at,
     )
+
+
+def _actor_name(current_user: User) -> str:
+    return current_user.display_name or current_user.username
+
+
+def _touch_planner_day(
+    db: Session,
+    *,
+    work_date: date,
+    actor_name: str,
+    first_copy_source_date: date | None = None,
+    destination_was_empty: bool = False,
+) -> PlannerDayAudit:
+    audit = db.scalar(select(PlannerDayAudit).where(PlannerDayAudit.work_date == work_date))
+    now = datetime.now(timezone.utc)
+    if audit is None:
+        audit = PlannerDayAudit(work_date=work_date)
+        db.add(audit)
+    if first_copy_source_date is not None and destination_was_empty and audit.first_copied_at is None:
+        audit.first_copied_from_date = first_copy_source_date
+        audit.first_copied_by_name = actor_name
+        audit.first_copied_at = now
+    audit.last_modified_by_name = actor_name
+    audit.last_modified_at = now
+    return audit
 
 
 def normalize_assignment_break(start_time, end_time, break_start, break_end):
@@ -188,6 +221,20 @@ def list_assignments(
     return [serialize_assignment(item) for item in assignments]
 
 
+@router.get("/day-audit", response_model=PlannerDayAuditRead | None)
+def get_planner_day_audit(
+    work_date: date = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    impersonate_employee: Employee | None = Depends(get_impersonation_employee),
+) -> PlannerDayAuditRead | None:
+    _planner_allowed_employee_ids(db, current_user, write=False, impersonate_employee=impersonate_employee)
+    audit = db.scalar(select(PlannerDayAudit).where(PlannerDayAudit.work_date == work_date))
+    if audit is None:
+        return None
+    return PlannerDayAuditRead.model_validate(audit, from_attributes=True)
+
+
 @router.post("", response_model=AssignmentRead, status_code=status.HTTP_201_CREATED)
 def create_assignment(
     payload: AssignmentCreate,
@@ -203,15 +250,27 @@ def create_assignment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found.")
 
     is_training = payload.cause == AssignmentCause.formazione
-    if is_training and _effective_role(db, current_user, impersonate_employee) not in ("admin", "hr"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo gli utenti HR possono inserire ore di formazione.")
+    is_medical_check = payload.cause == AssignmentCause.visita_idoneita
+    if is_training or is_medical_check:
+        effective_role = _effective_role(db, current_user, impersonate_employee)
+        if is_training and effective_role not in TRAINING_ROLES:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo gli utenti HR possono inserire ore di formazione.")
+        if is_medical_check and effective_role not in MEDICAL_CHECK_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo HR, responsabili e amministratori possono inserire una visita di idoneità.",
+            )
 
     check_no_overlap(db, payload.employee_id, payload.work_date, payload.start_time, payload.end_time)
+    destination_was_empty = db.scalar(
+        select(Assignment.id).where(Assignment.work_date == payload.work_date).limit(1)
+    ) is None
 
-    values = payload.model_dump()
+    values = payload.model_dump(exclude={"copy_source_date"})
     values["training_course_id"] = _resolve_training_course(db, payload.cause, values.get("training_course_id"))
-    if is_training:
-        # La formazione registra solo corso + fascia oraria: nessun building/immobile.
+    if is_training or is_medical_check:
+        # Formazione e visita registrano solo la fascia oraria (piu' il corso, per la
+        # formazione): non sono lavoro su un immobile, quindi niente building.
         values["area"] = None
         values["immobile"] = None
     else:
@@ -225,9 +284,17 @@ def create_assignment(
         values.get("break_end"),
     )
 
-    assignment = Assignment(**values)
+    actor_name = _actor_name(current_user)
+    assignment = Assignment(**values, last_modified_by_name=actor_name)
     db.add(assignment)
-    record_audit_log(db, action="create", entity="assignment", actor_name=current_user.username, detail=payload.model_dump(mode="json"))
+    _touch_planner_day(
+        db,
+        work_date=payload.work_date,
+        actor_name=actor_name,
+        first_copy_source_date=payload.copy_source_date,
+        destination_was_empty=destination_was_empty,
+    )
+    record_audit_log(db, action="create", entity="assignment", actor_name=actor_name, detail=payload.model_dump(mode="json"))
     db.commit()
     db.refresh(assignment)
     return serialize_assignment(assignment)
@@ -251,8 +318,20 @@ def update_assignment(
     changes = payload.model_dump(exclude_unset=True)
     effective_cause = changes.get("cause", assignment.cause)
     is_training = effective_cause == AssignmentCause.formazione
-    if (is_training or assignment.cause == AssignmentCause.formazione) and _effective_role(db, current_user, impersonate_employee) not in ("admin", "hr"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo gli utenti HR possono modificare ore di formazione.")
+    is_medical_check = effective_cause == AssignmentCause.visita_idoneita
+    # Il gate vale anche sulla causale di partenza: senza, si aggirerebbe il controllo
+    # del create trasformando un blocco gia' salvato.
+    touches_training = is_training or assignment.cause == AssignmentCause.formazione
+    touches_medical_check = is_medical_check or assignment.cause == AssignmentCause.visita_idoneita
+    if touches_training or touches_medical_check:
+        effective_role = _effective_role(db, current_user, impersonate_employee)
+        if touches_training and effective_role not in TRAINING_ROLES:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo gli utenti HR possono modificare ore di formazione.")
+        if touches_medical_check and effective_role not in MEDICAL_CHECK_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo HR, responsabili e amministratori possono modificare una visita di idoneità.",
+            )
 
     new_start = changes.get("start_time", assignment.start_time)
     new_end = changes.get("end_time", assignment.end_time)
@@ -266,10 +345,10 @@ def update_assignment(
             changes.get("break_end", assignment.break_end),
         )
 
-    if is_training:
+    if is_training or is_medical_check:
         effective_course = changes.get("training_course_id", assignment.training_course_id)
         changes["training_course_id"] = _resolve_training_course(db, effective_cause, effective_course)
-        # La formazione non ha building/immobile associati.
+        # Ne' la formazione ne' la visita hanno building/immobile associati.
         changes["area"] = None
         changes["immobile"] = None
     else:
@@ -283,12 +362,15 @@ def update_assignment(
     previous_state = serialize_assignment(assignment).model_dump(mode="json")
     for field, value in changes.items():
         setattr(assignment, field, value)
+    actor_name = _actor_name(current_user)
+    assignment.last_modified_by_name = actor_name
+    _touch_planner_day(db, work_date=assignment.work_date, actor_name=actor_name)
 
     record_audit_log(
         db,
         action="update",
         entity="assignment",
-        actor_name=current_user.username,
+        actor_name=actor_name,
         detail={"before": previous_state, "after": serialize_assignment(assignment).model_dump(mode="json")},
     )
     db.commit()
@@ -310,7 +392,9 @@ def delete_assignment(
     if allowed_employee_ids is not None and assignment.employee_id not in allowed_employee_ids:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Non puoi eliminare allocazioni per questo dipendente.")
 
-    record_audit_log(db, action="delete", entity="assignment", actor_name=current_user.username, detail={"id": assignment_id})
+    actor_name = _actor_name(current_user)
+    _touch_planner_day(db, work_date=assignment.work_date, actor_name=actor_name)
+    record_audit_log(db, action="delete", entity="assignment", actor_name=actor_name, detail={"id": assignment_id})
     db.delete(assignment)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

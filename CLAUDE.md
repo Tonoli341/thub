@@ -16,7 +16,7 @@ Promemoria dei punti che sbagliano più spesso gli agenti su T-Hub:
 - **Convalida obbligatoria dopo ogni modifica** — vedi §5 di AGENTS.md:
   ```bash
   cd backend  && ./.venv/bin/python -m pytest -q && ./.venv/bin/ruff check app tests
-  cd frontend && node --test src/pages/ && npm run build
+  cd frontend && node --test src/ && npm run build
   ./scripts/smoke.sh          # tutte le sezioni rispondono (evita il Connection Refused)
   ```
 - **Smoke obbligatorio** dopo ogni modifica a route, import, router o pagine: i test
