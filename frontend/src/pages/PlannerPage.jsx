@@ -1,4 +1,7 @@
 import dayjs from "dayjs";
+
+import FilterSelect from "../components/FilterSelect";
+import PageHeader from "../components/PageHeader";
 import "dayjs/locale/it";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -42,15 +45,26 @@ import {
   getPlannerEmployees,
   getJustifications,
   getOperationalAreas,
+  getPlannerDayAudit,
   getTeamDailyNotes,
   getTeams,
   getTrainingCourses,
+  importGesapBookingToWorkload,
+  syncGesapWorkloads,
   updateAssignment,
   upsertTeamDailyNote,
 } from "../api";
 import { plannerBuildingCodes } from "../buildings";
 import lexendFontUrl from "../assets/fonts/Lexend-VariableFont_wght.ttf";
 import logoTonoli from "../upload/logoTonoli.png";
+import { buildCopySourceTeams, notesForCopiedAssignment } from "./plannerCopy";
+import {
+  WORKLOAD_NO_WAREHOUSE_KEY,
+  groupWorkloadRowsByArea,
+  isCancelledGesapBooking,
+  workloadCustomerLabel,
+  workloadSupplierLabel,
+} from "./workloadRows";
 import "./PlannerPage.css";
 
 dayjs.locale("it");
@@ -118,6 +132,10 @@ const AREA_PALETTE_DARK = [
 
 const NO_TEAM_KEY = "__no_team__";
 
+// Etichetta della sezione che raccoglie, dentro un'area divisa per immobili,
+// le allocazioni rimaste senza immobile.
+const NO_BUILDING_KEY = "SENZA IMMOBILE";
+
 // Perimetro di default del riepilogo: tutti i dipendenti, nessun filtro attivo.
 const DEFAULT_REPORT_SCOPE = {
   allEmployees: true,
@@ -125,6 +143,8 @@ const DEFAULT_REPORT_SCOPE = {
   teamIds: [],
   byRole: false,
   roles: [],
+  byArea: false,
+  areaNames: [],
   byImmobile: false,
   immobili: [],
 };
@@ -179,6 +199,11 @@ function renderAssignmentTooltip(a, startH, endH, breakSegment = null) {
       {a.workload && (
         <Typography sx={{ fontSize: 10.5, mt: 0.5, maxWidth: 260, whiteSpace: "pre-wrap", fontWeight: 600 }}>
           Carico di lavoro: {a.workload}
+        </Typography>
+      )}
+      {a.last_modified_by_name && a.updated_at && (
+        <Typography sx={{ fontSize: 10, mt: 0.75, pt: 0.6, borderTop: "1px solid rgba(255,255,255,0.25)", opacity: 0.82 }}>
+          Ultima modifica di {a.last_modified_by_name} il {dayjs(a.updated_at).format("DD/MM/YYYY [alle] HH:mm")}
         </Typography>
       )}
     </Box>
@@ -362,6 +387,10 @@ export default function PlannerPage() {
   const [plannerView, setPlannerView] = useState("employees"); // "employees" | "areas"
   const [collapsedTeams, setCollapsedTeams] = useState({});
   const [prenotazioniCollapsed, setPrenotazioniCollapsed] = useState(false);
+  const [prenotazioniClientFilter, setPrenotazioniClientFilter] = useState("");
+  const [prenotazioniImportFilter, setPrenotazioniImportFilter] = useState("all"); // "all" | "imported" | "pending"
+  const [gesapImportItem, setGesapImportItem] = useState(null);
+  const [gesapImportTeamId, setGesapImportTeamId] = useState("");
   const [areaPickerState, setAreaPickerState] = useState(null);
   const [editingBlock, setEditingBlock] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -370,6 +399,8 @@ export default function PlannerPage() {
   const [copyFromOpen, setCopyFromOpen] = useState(false);
   const [copyFromDate, setCopyFromDate] = useState("");
   const [copyFromTeamIds, setCopyFromTeamIds] = useState(null); // null = tutte le squadre
+  const [copyFromNoteIds, setCopyFromNoteIds] = useState(new Set());
+  const [expandedCopyTeams, setExpandedCopyTeams] = useState(new Set());
   const [generateSnackbar, setGenerateSnackbar] = useState(null);
   const [clearDayOpen, setClearDayOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
@@ -431,6 +462,11 @@ export default function PlannerPage() {
     queryFn: () => getAssignments(selectedDate, selectedDate),
   });
 
+  const plannerDayAuditQuery = useQuery({
+    queryKey: ["planner-day-audit", selectedDate],
+    queryFn: () => getPlannerDayAudit(selectedDate),
+  });
+
   const justificationsQuery = useQuery({
     queryKey: ["justifications", "planner", selectedDate],
     queryFn: () => getJustifications(selectedDate, selectedDate),
@@ -471,11 +507,43 @@ export default function PlannerPage() {
   });
 
   const prenotazioniQuery = useQuery({
-    queryKey: ["prenotazioni-gesap", selectedDate],
-    queryFn: () => getGesapPrenotazioni(selectedDate),
-    staleTime: 60000,
+    queryKey: ["prenotazioni-gesap", selectedDate, effectiveUser?.can_access_workloads ? "sync" : "read"],
+    queryFn: () => effectiveUser?.can_access_workloads
+      ? syncGesapWorkloads(selectedDate)
+      : getGesapPrenotazioni(selectedDate),
+    staleTime: effectiveUser?.can_access_workloads ? 0 : 60000,
+    refetchOnMount: effectiveUser?.can_access_workloads ? "always" : true,
     retry: 1,
   });
+
+  const prenotazioniItems = useMemo(() => prenotazioniQuery.data?.items ?? [], [prenotazioniQuery.data]);
+
+  const prenotazioniClientOptions = useMemo(() => {
+    const names = new Set(
+      prenotazioniItems.map((item) => (item.cliente?.nome ?? "").trim()).filter(Boolean),
+    );
+    return [...names].sort((a, b) => a.localeCompare(b, "it"));
+  }, [prenotazioniItems]);
+
+  // `workload_imported` arriva solo dalla sincronizzazione dei carichi: senza quel
+  // permesso il dato non c'è e il filtro importate/non importate non ha senso.
+  const canFilterPrenotazioniImport = !!effectiveUser?.can_access_workloads;
+
+  const prenotazioniFiltered = useMemo(() => prenotazioniItems.filter((item) => {
+    if (prenotazioniClientFilter && (item.cliente?.nome ?? "").trim() !== prenotazioniClientFilter) return false;
+    if (!canFilterPrenotazioniImport) return true;
+    if (prenotazioniImportFilter === "imported" && !item.workload_imported) return false;
+    if (prenotazioniImportFilter === "pending" && item.workload_imported) return false;
+    return true;
+  }), [prenotazioniItems, prenotazioniClientFilter, prenotazioniImportFilter, canFilterPrenotazioniImport]);
+
+  // Cambiando giorno il cliente selezionato può non essere più in elenco:
+  // senza questo reset il pannello resterebbe vuoto senza motivo apparente.
+  useEffect(() => {
+    if (prenotazioniClientFilter && !prenotazioniClientOptions.includes(prenotazioniClientFilter)) {
+      setPrenotazioniClientFilter("");
+    }
+  }, [prenotazioniClientOptions, prenotazioniClientFilter]);
 
   // keep ref in sync so mutations can access latest justification list
   justificationsRef.current = justificationsQuery.data ?? [];
@@ -489,6 +557,7 @@ export default function PlannerPage() {
     mutationFn: createAssignment,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["planner-day-audit"] });
       setAreaPickerState(null);
     },
     onError: () => setAreaPickerState(null),
@@ -499,6 +568,7 @@ export default function PlannerPage() {
     onSuccess: (_, { id }) => {
       setLocalOverrides((o) => { const n = { ...o }; delete n[id]; return n; });
       queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["planner-day-audit"] });
     },
     onError: (_, { id }) => {
       setLocalOverrides((o) => { const n = { ...o }; delete n[id]; return n; });
@@ -518,7 +588,23 @@ export default function PlannerPage() {
     mutationFn: deleteAssignment,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["planner-day-audit"] });
       setEditingBlock(null);
+    },
+  });
+
+  const importGesapMutation = useMutation({
+    mutationFn: () => importGesapBookingToWorkload({
+      team_id: gesapImportTeamId,
+      work_date: selectedDate,
+      booking_id: String(gesapImportItem?.id ?? ""),
+    }),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["prenotazioni-gesap"] });
+      queryClient.invalidateQueries({ queryKey: ["workload-teams"] });
+      setGesapImportItem(null);
+      setGesapImportTeamId("");
+      navigate(`/carichi?date=${result.work_date}&teamId=${result.team_id}`);
     },
   });
 
@@ -532,6 +618,7 @@ export default function PlannerPage() {
     },
     onSuccess: (count) => {
       queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["planner-day-audit"] });
       setClearDayOpen(false);
       setEditingBlock(null);
       setGenerateSnackbar(
@@ -543,7 +630,7 @@ export default function PlannerPage() {
   });
 
   const copyFromMutation = useMutation({
-    mutationFn: async ({ sourceDate, teamIds }) => {
+    mutationFn: async ({ sourceDate, teamIds, noteIds }) => {
       const sourceAssignments = await getAssignments(sourceDate, sourceDate);
       // employees absent on the TARGET day — use current ref value
       const absentIds = new Set((justificationsRef.current).map((j) => j.employee_id));
@@ -566,7 +653,8 @@ export default function PlannerPage() {
             area: a.area,
             immobile: a.immobile,
             cause: a.cause,
-            notes: null,
+            notes: notesForCopiedAssignment(a, noteIds),
+            copy_source_date: sourceDate,
           });
           results.push(created);
         } catch {
@@ -577,9 +665,12 @@ export default function PlannerPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["planner-day-audit"] });
       setCopyFromOpen(false);
       setCopyFromDate("");
       setCopyFromTeamIds(null);
+      setCopyFromNoteIds(new Set());
+      setExpandedCopyTeams(new Set());
     },
   });
 
@@ -839,28 +930,19 @@ export default function PlannerPage() {
     return map;
   }, [teamsQuery.data]);
 
-  // ── Copia da: squadre presenti nel giorno di origine ─────────────────────
-  const copySourceTeams = useMemo(() => {
-    const byTeam = new Map();
-    for (const a of copySourceQuery.data ?? []) {
-      const team = employeeTeamMap[a.employee_id];
-      const key = team?.id ?? NO_TEAM_KEY;
-      if (!byTeam.has(key)) {
-        byTeam.set(key, {
-          id: key,
-          name: team?.name ?? "Senza squadra",
-          icon: team?.icon ?? null,
-          count: 0,
-        });
-      }
-      byTeam.get(key).count += 1;
+  const copyEmployeeNameMap = useMemo(() => {
+    const map = {};
+    for (const employee of allEmployeesQuery.data ?? []) {
+      map[employee.id] = employee.full_name;
     }
-    return [...byTeam.values()].sort((a, b) => {
-      if (a.id === NO_TEAM_KEY) return 1;
-      if (b.id === NO_TEAM_KEY) return -1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [copySourceQuery.data, employeeTeamMap]);
+    return map;
+  }, [allEmployeesQuery.data]);
+
+  // ── Copia da: squadre presenti nel giorno di origine ─────────────────────
+  const copySourceTeams = useMemo(
+    () => buildCopySourceTeams(copySourceQuery.data, employeeTeamMap, copyEmployeeNameMap),
+    [copySourceQuery.data, employeeTeamMap, copyEmployeeNameMap],
+  );
 
   const allCopyTeamIds = copySourceTeams.map((t) => t.id);
   const copyTeamSelection = copyFromTeamIds ?? new Set(allCopyTeamIds);
@@ -869,12 +951,54 @@ export default function PlannerPage() {
 
   function toggleCopyTeam(id) {
     const next = new Set(copyTeamSelection);
-    if (next.has(id)) next.delete(id); else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+      const team = copySourceTeams.find((item) => item.id === id);
+      const teamNoteIds = new Set((team?.notedAssignments ?? []).map((assignment) => assignment.id));
+      setCopyFromNoteIds((current) => new Set([...current].filter((noteId) => !teamNoteIds.has(noteId))));
+      setExpandedCopyTeams((current) => new Set([...current].filter((teamId) => teamId !== id)));
+    } else {
+      next.add(id);
+    }
     setCopyFromTeamIds(next);
   }
 
   function toggleCopyAllTeams() {
-    setCopyFromTeamIds(allCopyTeamsSelected ? new Set() : null);
+    if (allCopyTeamsSelected) {
+      setCopyFromTeamIds(new Set());
+      setCopyFromNoteIds(new Set());
+      setExpandedCopyTeams(new Set());
+    } else {
+      setCopyFromTeamIds(null);
+    }
+  }
+
+  function toggleCopyTeamDetails(id) {
+    setExpandedCopyTeams((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleCopyNote(id) {
+    setCopyFromNoteIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllCopyNotes(team) {
+    const ids = team.notedAssignments.map((assignment) => assignment.id);
+    const allSelected = ids.every((id) => copyFromNoteIds.has(id));
+    setCopyFromNoteIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) {
+        if (allSelected) next.delete(id); else next.add(id);
+      }
+      return next;
+    });
   }
 
   const teamFilterOptions = useMemo(() => {
@@ -961,6 +1085,21 @@ export default function PlannerPage() {
     }
     return [...roles].sort((a, b) => a.localeCompare(b));
   }, [employeeById]);
+
+  const reportAreaOptions = useMemo(() => {
+    const names = new Set();
+    for (const area of areasQuery.data ?? []) {
+      const name = String(area.name ?? "").trim();
+      if (name) names.add(name);
+    }
+    // Le allocazioni possono puntare ad aree non piu' in anagrafica: restano
+    // filtrabili, altrimenti sparirebbero dal perimetro senza spiegazione.
+    for (const assignment of assignmentsQuery.data ?? []) {
+      const name = String(assignment.area ?? "").trim();
+      if (name) names.add(name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [areasQuery.data, assignmentsQuery.data]);
 
   const reportImmobileOptions = useMemo(() => {
     const buildings = new Set();
@@ -1149,7 +1288,9 @@ export default function PlannerPage() {
     const scope = reportScope;
     const teamFilterActive = !scope.allEmployees && scope.byTeam && scope.teamIds.length > 0;
     const roleFilterActive = !scope.allEmployees && scope.byRole && scope.roles.length > 0;
+    const areaFilterActive = !scope.allEmployees && scope.byArea && scope.areaNames.length > 0;
     const immobileFilterActive = !scope.allEmployees && scope.byImmobile && scope.immobili.length > 0;
+    const scopeAreaKeys = areaFilterActive ? scope.areaNames.map(normalizeAreaKey) : [];
 
     const employeeInScope = (employeeId) => {
       if (teamFilterActive) {
@@ -1165,6 +1306,7 @@ export default function PlannerPage() {
 
     const assignmentInScope = (assignment) => {
       if (!employeeInScope(assignment.employee_id)) return false;
+      if (areaFilterActive && !scopeAreaKeys.includes(normalizeAreaKey(assignment.area))) return false;
       if (immobileFilterActive) {
         const immobile = String(assignment.immobile ?? "").trim().toUpperCase();
         if (!scope.immobili.includes(immobile)) return false;
@@ -1178,6 +1320,7 @@ export default function PlannerPage() {
       scopeParts.push(`Squadre: ${scope.teamIds.map((id) => (id === NO_TEAM_KEY ? "Senza squadra" : teamNameById[id] ?? id)).join(", ")}`);
     }
     if (roleFilterActive) scopeParts.push(`Ruoli: ${scope.roles.join(", ")}`);
+    if (areaFilterActive) scopeParts.push(`Aree: ${scope.areaNames.join(", ")}`);
     if (immobileFilterActive) scopeParts.push(`Immobili: ${scope.immobili.join(", ")}`);
     const scopeLabel = scopeParts.length > 0 ? `${scopeParts.join(" · ")} (assenti: elenco completo)` : null;
 
@@ -1248,16 +1391,25 @@ export default function PlannerPage() {
       if (sorted.length === 0) continue;
 
       const areaBuildings = getImmobileOptions(areaName, areas);
+      // Nel raggruppamento per Area/Immobile ogni immobile e' una sezione a se':
+      // ha senso solo se almeno un'allocazione dell'area ha l'immobile compilato,
+      // altrimenti l'area resta una sezione unica come prima.
+      const areaSplitByBuilding = reportGrouping === "building"
+        && sorted.some((a) => String(a.immobile ?? "").trim() !== "");
       for (const assignment of sorted) {
         allocationCount += 1;
         const rawImmobile = String(assignment.immobile ?? "").trim().toUpperCase();
         let section;
         if (reportGrouping === "building") {
           const areaKey = areaName || "SENZA AREA";
-          if (!areaSectionsMap[areaKey]) {
-            areaSectionsMap[areaKey] = {
-              id: `area:${areaKey}`,
-              name: areaKey,
+          const buildingKey = areaSplitByBuilding ? (rawImmobile || NO_BUILDING_KEY) : null;
+          const sectionKey = buildingKey ? `${areaKey}::${buildingKey}` : areaKey;
+          if (!areaSectionsMap[sectionKey]) {
+            areaSectionsMap[sectionKey] = {
+              id: buildingKey ? `area:${areaKey}:${buildingKey}` : `area:${areaKey}`,
+              name: buildingKey ? `${areaKey} · ${buildingKey}` : areaKey,
+              areaName: areaKey,
+              immobile: buildingKey,
               icon: "🏢",
               color: areaColorMap[areaName]?.border ?? "#006f3d",
               absences: [],
@@ -1267,7 +1419,7 @@ export default function PlannerPage() {
               ownerName: null,
             };
           }
-          section = areaSectionsMap[areaKey];
+          section = areaSectionsMap[sectionKey];
         } else {
           section = getSectionForEmployee(assignment.employee_id);
         }
@@ -1291,16 +1443,9 @@ export default function PlannerPage() {
           timeRange: formatTimeRange(assignment.start_time, assignment.end_time),
         };
 
-        if (reportGrouping === "building" && rawImmobile) {
-          let buildingEntry = areaEntry.buildings.find((building) => building.name === rawImmobile);
-          if (!buildingEntry) {
-            buildingEntry = { name: rawImmobile, allocations: [] };
-            areaEntry.buildings.push(buildingEntry);
-          }
-          buildingEntry.allocations.push(item);
-        } else if (reportGrouping === "team" && areaEntry.buildings.length > 0) {
+        if (reportGrouping === "team" && areaEntry.buildings.length > 0) {
           // Gli immobili non visibili nel Planner confluiscono in "SENZA IMMOBILE".
-          const teamImmobileKey = areaBuildings.includes(rawImmobile) ? rawImmobile : "SENZA IMMOBILE";
+          const teamImmobileKey = areaBuildings.includes(rawImmobile) ? rawImmobile : NO_BUILDING_KEY;
           let buildingEntry = areaEntry.buildings.find((building) => building.name === teamImmobileKey);
           if (!buildingEntry) {
             buildingEntry = { name: teamImmobileKey, allocations: [] };
@@ -1308,6 +1453,8 @@ export default function PlannerPage() {
           }
           buildingEntry.allocations.push(item);
         } else {
+          // Nel raggruppamento per Area/Immobile l'immobile e' gia' l'intestazione
+          // della sezione: qui l'elenco delle persone e' piatto.
           areaEntry.allocations.push(item);
         }
       }
@@ -1343,16 +1490,68 @@ export default function PlannerPage() {
           if (!scope.teamIds.includes(sectionKey)) return false;
         }
         const hasAllocations = section.areas.some((area) => area.allocations.length > 0 || area.buildings.some((building) => building.allocations.length > 0));
-        // Con filtri su ruolo/immobile le sezioni con solo carico di lavoro
+        // Con filtri su ruolo/area/immobile le sezioni con solo carico di lavoro
         // (dato di squadra, non di persona) vengono escluse se vuote.
-        if (roleFilterActive || immobileFilterActive) {
+        if (roleFilterActive || areaFilterActive || immobileFilterActive) {
           return hasAllocations;
         }
         return section.workloadRows?.length > 0 || Boolean(section.workload) || hasAllocations;
       });
 
+    // Il carico di lavoro è un dato di squadra: nel raggruppamento per
+    // Area/Immobile le righe si redistribuiscono sulle aree indicate nella
+    // colonna "Mag". Con i filtri per ruolo/area/immobile attivi restano solo le
+    // aree che hanno anche allocazioni, come già avviene per le squadre.
+    if (reportGrouping === "building") {
+      const workloadRowsByArea = groupWorkloadRowsByArea(teamDailyNotesQuery.data, {
+        teamIds: teamFilterActive ? scope.teamIds : null,
+      });
+      const allowWorkloadOnlySections = !roleFilterActive && !areaFilterActive && !immobileFilterActive;
+      const sectionsByAreaKey = {};
+      for (const section of Object.values(areaSectionsMap)) {
+        const key = normalizeAreaKey(section.areaName ?? section.name);
+        if (!sectionsByAreaKey[key]) sectionsByAreaKey[key] = [];
+        sectionsByAreaKey[key].push(section);
+      }
+      for (const [areaKey, rows] of Object.entries(workloadRowsByArea)) {
+        const areaSectionsForKey = sectionsByAreaKey[areaKey] ?? [];
+        // Il carico e' un dato di area, non di immobile: finisce dentro la sezione
+        // solo quando l'area non e' divisa, altrimenti comparirebbe ripetuto sotto
+        // ogni immobile. Nelle aree divise prende una sezione propria, intestata
+        // all'area e ordinata prima dei suoi immobili.
+        if (areaSectionsForKey.length === 1) {
+          areaSectionsForKey[0].workloadRows = rows;
+          continue;
+        }
+        if (areaSectionsForKey.length === 0 && !allowWorkloadOnlySections) continue;
+        const isNoWarehouse = areaKey === WORKLOAD_NO_WAREHOUSE_KEY;
+        const areaName = areas.find((area) => normalizeAreaKey(area.name) === areaKey)?.name ?? areaKey;
+        areaSectionsMap[isNoWarehouse ? `workload:${areaKey}` : areaName] = {
+          id: isNoWarehouse ? "workload:no-warehouse" : `area:${areaName}`,
+          name: isNoWarehouse ? WORKLOAD_NO_WAREHOUSE_KEY : areaName,
+          areaName: isNoWarehouse ? WORKLOAD_NO_WAREHOUSE_KEY : areaName,
+          immobile: null,
+          icon: isNoWarehouse ? "📦" : "🏢",
+          color: areaColorMap[areaName]?.border ?? "#006f3d",
+          absences: [],
+          areas: [],
+          workload: null,
+          workloadRows: rows,
+          ownerName: null,
+          // Le righe senza magazzino non appartengono a nessuna area: in coda.
+          sortLast: isNoWarehouse,
+        };
+      }
+    }
+
     const areaSections = Object.values(areaSectionsMap)
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) =>
+        Number(a.sortLast ?? false) - Number(b.sortLast ?? false)
+        || normalizeAreaKey(a.areaName ?? a.name).localeCompare(normalizeAreaKey(b.areaName ?? b.name))
+        // Dentro l'area: prima il carico di lavoro (sezione senza immobile),
+        // poi gli immobili in ordine, e in fondo chi l'immobile non ce l'ha.
+        || Number(a.immobile === NO_BUILDING_KEY) - Number(b.immobile === NO_BUILDING_KEY)
+        || String(a.immobile ?? "").localeCompare(String(b.immobile ?? "")))
       .map((section) => ({
         ...section,
         areas: section.areas
@@ -1411,10 +1610,10 @@ export default function PlannerPage() {
           plt: acc.plt + Number(row.pallet_count || 0),
         }), { inb: 0, out: 0, plt: 0 });
         lines.push("  Carico di lavoro:");
-        lines.push("    Cliente/Fornitore | IN | MEZZI OUT | PLT | Note/Info | Mag");
+        lines.push("    Cliente | Fornitore | IN | MEZZI OUT | PLT | Note/Info | Mag");
         for (const row of team.workloadRows) {
           lines.push(
-            `    ${row.client_supplier || row.client_supplier_code || "-"} | ${row.inbound_count ?? 0} | ${row.outbound_count ?? 0} | ${row.pallet_count ?? 0} | ${row.notes || "-"} | ${row.warehouse || "-"}`
+            `    ${workloadCustomerLabel(row) || "-"} | ${workloadSupplierLabel(row) || "-"} | ${row.inbound_count ?? 0} | ${row.outbound_count ?? 0} | ${row.pallet_count ?? 0} | ${row.notes || "-"} | ${row.warehouse || "-"}`
           );
         }
         lines.push(`    TOT | ${totals.inb} | ${totals.out} | ${totals.plt} | - | -`);
@@ -1672,8 +1871,8 @@ export default function PlannerPage() {
       const headerH = 26;
       const rowPadY = 5;
       const lineGap = 11;
-      const colWidths = [148, 34, 38, 42, 122, 43, 88];
-      const headers = ["CLIENTE/FORNITORE", "IN", "OUT", "N° PLT", "NOTE/INFO", "MAG", "COMPILATO DA"];
+      const colWidths = [82, 82, 30, 34, 38, 100, 43, 106];
+      const headers = ["CLIENTE", "FORNITORE", "IN", "OUT", "N° PLT", "NOTE/INFO", "MAG", "COMPILATO DA"];
       const formatRowEditor = (row) => {
         if (!row.last_modified_by) return "";
         if (!row.last_modified_at) return row.last_modified_by;
@@ -1692,7 +1891,8 @@ export default function PlannerPage() {
 
       const dataRows = rows.map((row) => ({
         values: [
-          row.client_supplier || row.client_supplier_code || "",
+          workloadCustomerLabel(row),
+          workloadSupplierLabel(row),
           String(row.inbound_count ?? 0),
           String(row.outbound_count ?? 0),
           String(row.pallet_count ?? 0),
@@ -1703,7 +1903,7 @@ export default function PlannerPage() {
         total: false,
       }));
       dataRows.push({
-        values: ["TOT", String(total.inb), String(total.out), String(total.plt), "", "", ""],
+        values: ["TOT", "", String(total.inb), String(total.out), String(total.plt), "", "", ""],
         total: true,
       });
 
@@ -1862,7 +2062,7 @@ export default function PlannerPage() {
     setReportScope((current) => {
       if (key === "allEmployees") return { ...DEFAULT_REPORT_SCOPE };
       const next = { ...current, [key]: !current[key] };
-      next.allEmployees = !next.byTeam && !next.byRole && !next.byImmobile;
+      next.allEmployees = !next.byTeam && !next.byRole && !next.byArea && !next.byImmobile;
       return next;
     });
   }
@@ -1876,12 +2076,10 @@ export default function PlannerPage() {
     <Stack spacing={2} className="planner-page">
 
       {/* ── Topbar ──────────────────────────────────────────────────── */}
-      <Paper className="planner-topbar">
-        <Box className="planner-topbar-left">
-          <Box className="planner-title-badge">📋</Box>
-          <Typography variant="h5" className="planner-title-text">Planner</Typography>
-        </Box>
+      <PageHeader section="Pianificazione" title="Planner" />
 
+      {/* Il topbar resta, ma senza il titolo: è la seconda barra dei filtri (regole 1-3) */}
+      <Paper className="planner-topbar">
         <Box className="planner-date-nav">
           <button className="planner-nav-btn" onClick={() => setSelectedDate((d) => dayjs(d).subtract(1, "day").format("YYYY-MM-DD"))}>‹</button>
           <TextField
@@ -1939,46 +2137,26 @@ export default function PlannerPage() {
                   ) : null,
                 }}
               />
-              <TextField
-                select
-                size="small"
+              <FilterSelect
                 label="Ruolo"
                 value={roleFilter}
-                onChange={(e) => setRoleFilter(e.target.value)}
-                className="planner-role-filter"
+                onChange={setRoleFilter}
+                options={ROLE_OPTIONS.map((role) => ({ value: role.value, label: role.label }))}
                 disabled={searchActive}
-              >
-                {ROLE_OPTIONS.map((role) => <MenuItem key={role.value} value={role.value}>{role.label}</MenuItem>)}
-              </TextField>
-              <TextField
-                select
-                size="small"
+                sx={{ minWidth: 150 }}
+              />
+              <FilterSelect
                 label="Squadra"
+                multiple
                 value={teamFilter}
-                onChange={(e) => {
-                  setTeamFilter(e.target.value);
+                onChange={(values) => {
+                  setTeamFilter(values);
                   setRoleFilter("");
                 }}
-                className="planner-role-filter"
+                options={teamFilterOptions}
+                placeholder={teamFilter.length === 0 ? "Tutte le squadre" : undefined}
                 disabled={searchActive}
-                InputLabelProps={{ shrink: true }}
-                SelectProps={{
-                  multiple: true,
-                  displayEmpty: true,
-                  renderValue: (selected) => selected.length === 0
-                    ? "Tutte le squadre"
-                    : selected
-                      .map((value) => teamFilterOptions.find((option) => option.value === value)?.label ?? value)
-                      .join(", "),
-                }}
-              >
-                {teamFilterOptions.map((team) => (
-                  <MenuItem key={team.value} value={team.value} dense>
-                    <Checkbox size="small" checked={teamFilter.includes(team.value)} sx={{ p: 0.25, mr: 1 }} />
-                    <ListItemText primary={team.label} />
-                  </MenuItem>
-                ))}
-              </TextField>
+              />
               <ToggleButtonGroup
                 value={sortMode}
                 exclusive
@@ -1998,7 +2176,13 @@ export default function PlannerPage() {
             variant="outlined"
             size="small"
             className="planner-copy-btn"
-            onClick={() => { setCopyFromDate(""); setCopyFromOpen(true); }}
+            onClick={() => {
+              setCopyFromDate("");
+              setCopyFromTeamIds(null);
+              setCopyFromNoteIds(new Set());
+              setExpandedCopyTeams(new Set());
+              setCopyFromOpen(true);
+            }}
             disabled={!canWritePlanning}
           >
             Copia da…
@@ -2023,6 +2207,23 @@ export default function PlannerPage() {
           </Button>
         </Box>
       </Paper>
+
+      {plannerDayAuditQuery.data && (
+        <Paper elevation={0} sx={{ px: 1.5, py: 1, border: "1px solid var(--pl-border, #e2e2e5)", bgcolor: "rgba(248,246,241,0.72)" }}>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={{ xs: 0.5, md: 2 }} alignItems={{ xs: "flex-start", md: "center" }}>
+            {plannerDayAuditQuery.data.first_copied_at && (
+              <Typography sx={{ fontSize: 11.5, color: "text.secondary" }}>
+                <strong>Prima copia:</strong> dal {dayjs(plannerDayAuditQuery.data.first_copied_from_date).format("DD/MM/YYYY")} da {plannerDayAuditQuery.data.first_copied_by_name} il {dayjs(plannerDayAuditQuery.data.first_copied_at).format("DD/MM/YYYY [alle] HH:mm")}
+              </Typography>
+            )}
+            {plannerDayAuditQuery.data.last_modified_at && (
+              <Typography sx={{ fontSize: 11.5, color: "text.secondary" }}>
+                <strong>Ultima modifica:</strong> {plannerDayAuditQuery.data.last_modified_by_name} il {dayjs(plannerDayAuditQuery.data.last_modified_at).format("DD/MM/YYYY [alle] HH:mm")}
+              </Typography>
+            )}
+          </Stack>
+        </Paper>
+      )}
 
       {/* ── errors / warnings ───────────────────────────────────────── */}
       {createMutation.error && <Alert severity="error">{createMutation.error.message}</Alert>}
@@ -2501,12 +2702,41 @@ export default function PlannerPage() {
           {prenotazioniQuery.isLoading && <CircularProgress size={14} />}
           {!prenotazioniQuery.isLoading && (
             <Chip
-              label={prenotazioniQuery.data?.count ?? 0}
+              label={prenotazioniFiltered.length === prenotazioniItems.length
+                ? prenotazioniItems.length
+                : `${prenotazioniFiltered.length}/${prenotazioniItems.length}`}
               size="small"
               sx={{ height: 20, fontSize: 11, fontWeight: 700, "& .MuiChip-label": { px: "6px" } }}
             />
           )}
         </Box>
+
+        {!prenotazioniCollapsed && prenotazioniItems.length > 0 && (
+          <Box sx={{ px: 2, py: 1.25, borderBottom: "1px solid var(--pl-border)", display: "flex", flexDirection: "column", gap: 1 }}>
+            <FilterSelect
+              label="Cliente"
+              value={prenotazioniClientFilter}
+              onChange={setPrenotazioniClientFilter}
+              options={prenotazioniClientOptions}
+              placeholder="Tutti i clienti"
+              sx={{ width: "100%" }}
+            />
+            {canFilterPrenotazioniImport && (
+            <ToggleButtonGroup
+              value={prenotazioniImportFilter}
+              exclusive
+              fullWidth
+              size="small"
+              onChange={(_, value) => value && setPrenotazioniImportFilter(value)}
+              sx={{ "& .MuiToggleButton-root": { textTransform: "none", fontSize: 10.5, fontWeight: 600, py: 0.4 } }}
+            >
+              <ToggleButton value="all">Tutte</ToggleButton>
+              <ToggleButton value="imported">Importate</ToggleButton>
+              <ToggleButton value="pending">Non importate</ToggleButton>
+            </ToggleButtonGroup>
+            )}
+          </Box>
+        )}
 
         {!prenotazioniCollapsed && (
         <Box sx={{ flex: 1, overflowY: "auto", maxHeight: 600 }}>
@@ -2518,13 +2748,15 @@ export default function PlannerPage() {
             </Box>
           )}
 
-          {!prenotazioniQuery.isLoading && !prenotazioniQuery.isError && (prenotazioniQuery.data?.items ?? []).length === 0 && (
+          {!prenotazioniQuery.isLoading && !prenotazioniQuery.isError && prenotazioniFiltered.length === 0 && (
             <Box sx={{ p: 2, textAlign: "center" }}>
-              <Typography sx={{ fontSize: 12, color: "var(--pl-faded)" }}>Nessuna prenotazione</Typography>
+              <Typography sx={{ fontSize: 12, color: "var(--pl-faded)" }}>
+                {prenotazioniItems.length === 0 ? "Nessuna prenotazione" : "Nessuna prenotazione con questi filtri"}
+              </Typography>
             </Box>
           )}
 
-          {(prenotazioniQuery.data?.items ?? []).map((item, idx) => (
+          {prenotazioniFiltered.map((item, idx) => (
             <Box key={item.id}>
               {idx > 0 && <Divider />}
               <Box sx={{ px: 2, py: 1.5 }}>
@@ -2611,6 +2843,30 @@ export default function PlannerPage() {
                     <Typography sx={{ fontSize: 10.5, color: "var(--pl-text)", whiteSpace: "pre-wrap" }}>{item.workload}</Typography>
                   </Box>
                 )}
+                {effectiveUser?.can_access_workloads && (
+                  <Button
+                    size="small"
+                    variant={item.workload_imported ? "outlined" : "contained"}
+                    fullWidth
+                    sx={{ mt: 1, textTransform: "none", fontWeight: 700 }}
+                    disabled={isCancelledGesapBooking(item)}
+                    onClick={() => {
+                      if (item.workload_imported) {
+                        navigate(`/carichi?date=${item.prenotazione?.data || selectedDate}&teamId=${item.workload_team_id}`);
+                        return;
+                      }
+                      setGesapImportItem(item);
+                      setGesapImportTeamId("");
+                      importGesapMutation.reset();
+                    }}
+                  >
+                    {isCancelledGesapBooking(item)
+                      ? "Prenotazione annullata"
+                      : item.workload_imported
+                        ? `Importata · ${item.workload_team_name || "Apri carico"}`
+                        : "Importa nei carichi"}
+                  </Button>
+                )}
               </Box>
             </Box>
           ))}
@@ -2619,6 +2875,53 @@ export default function PlannerPage() {
       </Paper>
 
       </Box>
+
+      <Dialog
+        open={!!gesapImportItem}
+        onClose={() => !importGesapMutation.isPending && setGesapImportItem(null)}
+        PaperProps={{ className: "planner-dialog" }}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle className="planner-dialog-title">Importa nei carichi</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Box sx={{ p: 1.5, border: "1px solid var(--pl-border)", borderRadius: 2 }}>
+              <Typography variant="body2"><strong>Cliente:</strong> {gesapImportItem?.cliente?.nome || "–"}</Typography>
+              <Typography variant="body2"><strong>Fornitore:</strong> {gesapImportItem?.fornitore?.nome || "–"}</Typography>
+              <Typography variant="body2"><strong>Sede:</strong> {gesapImportItem?.sede?.nome || "–"}</Typography>
+              <Typography variant="body2"><strong>Movimento:</strong> {gesapImportItem?.tipo_movimento || "–"}</Typography>
+            </Box>
+            <TextField
+              select
+              label="Squadra"
+              value={gesapImportTeamId}
+              onChange={(event) => setGesapImportTeamId(event.target.value)}
+              size="small"
+              fullWidth
+            >
+              <MenuItem value=""><em>Seleziona squadra</em></MenuItem>
+              {(teamsQuery.data ?? []).map((team) => (
+                <MenuItem key={team.id} value={team.id}>{team.icon} {team.name}</MenuItem>
+              ))}
+            </TextField>
+            <Alert severity="info">
+              Mezzi IN/OUT saranno impostati dal movimento ToolTo. Nei Carichi sarà modificabile soltanto il numero pallet.
+            </Alert>
+            {importGesapMutation.error && <Alert severity="error">{importGesapMutation.error.message}</Alert>}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setGesapImportItem(null)} disabled={importGesapMutation.isPending}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={() => importGesapMutation.mutate()}
+            disabled={!gesapImportTeamId || importGesapMutation.isPending}
+          >
+            {importGesapMutation.isPending ? "Importazione…" : "Importa"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* ── Area picker ─────────────────────────────────────────────── */}
       <Dialog open={!!areaPickerState} onClose={() => setAreaPickerState(null)} PaperProps={{ className: "planner-dialog" }}>
@@ -2848,7 +3151,12 @@ export default function PlannerPage() {
               type="date"
               label="Giorno di origine"
               value={copyFromDate}
-              onChange={(e) => { setCopyFromDate(e.target.value); setCopyFromTeamIds(null); }}
+              onChange={(e) => {
+                setCopyFromDate(e.target.value);
+                setCopyFromTeamIds(null);
+                setCopyFromNoteIds(new Set());
+                setExpandedCopyTeams(new Set());
+              }}
               inputProps={{ max: dayjs(selectedDate).subtract(1, "day").format("YYYY-MM-DD") }}
               InputLabelProps={{ shrink: true }}
               fullWidth
@@ -2884,23 +3192,75 @@ export default function PlannerPage() {
                     <Divider sx={{ my: 0.5 }} />
                     <Box sx={{ maxHeight: 240, overflowY: "auto" }}>
                       {copySourceTeams.map((team) => (
-                        <FormControlLabel
-                          key={team.id}
-                          control={
-                            <Checkbox
-                              size="small"
-                              checked={copyTeamSelection.has(team.id)}
-                              onChange={() => toggleCopyTeam(team.id)}
+                        <Box key={team.id}>
+                          <Stack direction="row" alignItems="center">
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  size="small"
+                                  checked={copyTeamSelection.has(team.id)}
+                                  onChange={() => toggleCopyTeam(team.id)}
+                                />
+                              }
+                              label={
+                                <ListItemText
+                                  primary={`${team.icon ? `${team.icon} ` : ""}${team.name}`}
+                                  secondary={`${team.count} ${team.count === 1 ? "allocazione" : "allocazioni"}`}
+                                />
+                              }
+                              sx={{ display: "flex", flex: 1, mr: 0 }}
                             />
-                          }
-                          label={
-                            <ListItemText
-                              primary={`${team.icon ? `${team.icon} ` : ""}${team.name}`}
-                              secondary={`${team.count} ${team.count === 1 ? "allocazione" : "allocazioni"}`}
-                            />
-                          }
-                          sx={{ display: "flex" }}
-                        />
+                            {team.notedAssignments.length > 0 && copyTeamSelection.has(team.id) && (
+                              <Button
+                                size="small"
+                                onClick={() => toggleCopyTeamDetails(team.id)}
+                                aria-expanded={expandedCopyTeams.has(team.id)}
+                                sx={{ minWidth: 0, whiteSpace: "nowrap" }}
+                              >
+                                {expandedCopyTeams.has(team.id) ? "Nascondi note" : `Note (${team.notedAssignments.length})`}
+                              </Button>
+                            )}
+                          </Stack>
+                          {expandedCopyTeams.has(team.id) && copyTeamSelection.has(team.id) && (
+                            <Box sx={{ ml: 4, mb: 1, pl: 1.5, borderLeft: "2px solid var(--pl-border, #e2e2e5)" }}>
+                              <FormControlLabel
+                                control={
+                                  <Checkbox
+                                    size="small"
+                                    checked={team.notedAssignments.every((assignment) => copyFromNoteIds.has(assignment.id))}
+                                    indeterminate={
+                                      team.notedAssignments.some((assignment) => copyFromNoteIds.has(assignment.id))
+                                      && !team.notedAssignments.every((assignment) => copyFromNoteIds.has(assignment.id))
+                                    }
+                                    onChange={() => toggleAllCopyNotes(team)}
+                                  />
+                                }
+                                label="Copia tutte le note della squadra"
+                                componentsProps={{ typography: { variant: "caption", fontWeight: 700 } }}
+                              />
+                              {team.notedAssignments.map((assignment) => (
+                                <FormControlLabel
+                                  key={assignment.id}
+                                  control={
+                                    <Checkbox
+                                      size="small"
+                                      checked={copyFromNoteIds.has(assignment.id)}
+                                      onChange={() => toggleCopyNote(assignment.id)}
+                                    />
+                                  }
+                                  label={
+                                    <ListItemText
+                                      primary={`${assignment.employeeName}${assignment.startTime && assignment.endTime ? ` · ${assignment.startTime}-${assignment.endTime}` : ""}`}
+                                      secondary={assignment.notes}
+                                      secondaryTypographyProps={{ sx: { whiteSpace: "pre-wrap" } }}
+                                    />
+                                  }
+                                  sx={{ display: "flex", alignItems: "flex-start" }}
+                                />
+                              ))}
+                            </Box>
+                          )}
+                        </Box>
                       ))}
                     </Box>
                   </>
@@ -2909,6 +3269,7 @@ export default function PlannerPage() {
             )}
             <Alert severity="info" sx={{ fontSize: 13 }}>
               Verranno copiati i blocchi delle squadre selezionate verso il <strong>{dayjs(selectedDate).format("D MMMM YYYY")}</strong>.
+              {copyFromNoteIds.size > 0 && <> Saranno copiate anche {copyFromNoteIds.size} {copyFromNoteIds.size === 1 ? "nota selezionata" : "note selezionate"}.</>}
               Le sovrapposizioni verranno ignorate automaticamente.
             </Alert>
             {copyFromMutation.error && <Alert severity="error">{String(copyFromMutation.error.message)}</Alert>}
@@ -2922,7 +3283,7 @@ export default function PlannerPage() {
           <Button
             variant="contained"
             disabled={!canWritePlanning || !copyFromDate || !anyCopyTeamSelected || copyFromMutation.isPending}
-            onClick={() => copyFromMutation.mutate({ sourceDate: copyFromDate, teamIds: copyFromTeamIds })}
+            onClick={() => copyFromMutation.mutate({ sourceDate: copyFromDate, teamIds: copyFromTeamIds, noteIds: copyFromNoteIds })}
           >
             {copyFromMutation.isPending ? "Copia in corso…" : "Copia"}
           </Button>
@@ -2991,7 +3352,7 @@ export default function PlannerPage() {
             </ToggleButtonGroup>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
               {reportGrouping === "building"
-                ? "Le persone sono raggruppate prima per Area e poi per Immobile. Nelle Aree senza immobili sono elencate direttamente sotto l’Area."
+                ? "Le persone sono raggruppate prima per Area e poi per Immobile. Nelle Aree senza immobili sono elencate direttamente sotto l’Area. Il carico di lavoro segue le aree indicate nella colonna «Mag» delle righe."
                 : "Le persone e il carico di lavoro sono organizzati in base alla squadra di appartenenza."}
             </Typography>
           </Box>
@@ -3020,29 +3381,14 @@ export default function PlannerPage() {
               sx={{ display: "flex" }}
             />
             {reportScope.byTeam && (
-              <TextField
-                select
-                size="small"
-                fullWidth
+              <FilterSelect
                 label="Squadre"
+                multiple
                 value={reportScope.teamIds}
-                onChange={(e) => setReportScopeValues("teamIds", e.target.value)}
-                helperText={reportScope.teamIds.length === 0 ? "Nessuna squadra selezionata: il filtro non è applicato" : undefined}
-                SelectProps={{
-                  multiple: true,
-                  renderValue: (selected) => selected
-                    .map((value) => reportTeamOptions.find((option) => option.value === value)?.label ?? value)
-                    .join(", "),
-                }}
-                sx={{ mt: 0.5, mb: 1 }}
-              >
-                {reportTeamOptions.map((option) => (
-                  <MenuItem key={option.value} value={option.value} dense>
-                    <Checkbox size="small" checked={reportScope.teamIds.includes(option.value)} sx={{ p: 0.25, mr: 1 }} />
-                    <ListItemText primary={option.label} />
-                  </MenuItem>
-                ))}
-              </TextField>
+                onChange={(values) => setReportScopeValues("teamIds", values)}
+                options={reportTeamOptions}
+                sx={{ mt: 0.5, mb: 1, width: "100%" }}
+              />
             )}
             <FormControlLabel
               control={
@@ -3056,27 +3402,35 @@ export default function PlannerPage() {
               sx={{ display: "flex" }}
             />
             {reportScope.byRole && (
-              <TextField
-                select
-                size="small"
-                fullWidth
+              <FilterSelect
                 label="Ruoli"
+                multiple
                 value={reportScope.roles}
-                onChange={(e) => setReportScopeValues("roles", e.target.value)}
-                helperText={reportScope.roles.length === 0 ? "Nessun ruolo selezionato: il filtro non è applicato" : undefined}
-                SelectProps={{
-                  multiple: true,
-                  renderValue: (selected) => selected.join(", "),
-                }}
-                sx={{ mt: 0.5, mb: 1 }}
-              >
-                {reportRoleOptions.map((role) => (
-                  <MenuItem key={role} value={role} dense>
-                    <Checkbox size="small" checked={reportScope.roles.includes(role)} sx={{ p: 0.25, mr: 1 }} />
-                    <ListItemText primary={role} />
-                  </MenuItem>
-                ))}
-              </TextField>
+                onChange={(values) => setReportScopeValues("roles", values)}
+                options={reportRoleOptions}
+                sx={{ mt: 0.5, mb: 1, width: "100%" }}
+              />
+            )}
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={reportScope.byArea}
+                  onChange={() => toggleReportScopeFilter("byArea")}
+                />
+              }
+              label="Filtra per area operativa"
+              sx={{ display: "flex" }}
+            />
+            {reportScope.byArea && (
+              <FilterSelect
+                label="Aree operative"
+                multiple
+                value={reportScope.areaNames}
+                onChange={(values) => setReportScopeValues("areaNames", values)}
+                options={reportAreaOptions}
+                sx={{ mt: 0.5, mb: 1, width: "100%" }}
+              />
             )}
             <FormControlLabel
               control={
@@ -3090,27 +3444,14 @@ export default function PlannerPage() {
               sx={{ display: "flex" }}
             />
             {reportScope.byImmobile && (
-              <TextField
-                select
-                size="small"
-                fullWidth
+              <FilterSelect
                 label="Immobili"
+                multiple
                 value={reportScope.immobili}
-                onChange={(e) => setReportScopeValues("immobili", e.target.value)}
-                helperText={reportScope.immobili.length === 0 ? "Nessun immobile selezionato: il filtro non è applicato" : undefined}
-                SelectProps={{
-                  multiple: true,
-                  renderValue: (selected) => selected.join(", "),
-                }}
-                sx={{ mt: 0.5, mb: 1 }}
-              >
-                {reportImmobileOptions.map((immobile) => (
-                  <MenuItem key={immobile} value={immobile} dense>
-                    <Checkbox size="small" checked={reportScope.immobili.includes(immobile)} sx={{ p: 0.25, mr: 1 }} />
-                    <ListItemText primary={immobile} />
-                  </MenuItem>
-                ))}
-              </TextField>
+                onChange={(values) => setReportScopeValues("immobili", values)}
+                options={reportImmobileOptions}
+                sx={{ mt: 0.5, mb: 1, width: "100%" }}
+              />
             )}
           </Box>
           <TextField
