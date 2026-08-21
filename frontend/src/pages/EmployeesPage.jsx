@@ -257,12 +257,18 @@ function createStoredScheduleDay(day) {
   const morningEnd = day.morning_end ?? null;
   const afternoonStart = day.afternoon_start ?? null;
   const afternoonEnd = day.afternoon_end ?? null;
+  const hasMorning = Boolean(morningStart && morningEnd);
+  const hasAfternoon = Boolean(afternoonStart && afternoonEnd);
 
-  if (!morningStart || !morningEnd) {
+  if (!hasMorning && !hasAfternoon) {
     return { enabled: true, start: null, end: null, break_minutes: 0, break_start: null, break_end: null };
   }
 
-  if (!afternoonStart || !afternoonEnd) {
+  // Part-time: solo mattina o solo pomeriggio, nessuna pausa da calcolare
+  if (!hasMorning) {
+    return { enabled: true, start: afternoonStart, end: afternoonEnd, break_minutes: 0, break_start: null, break_end: null };
+  }
+  if (!hasAfternoon) {
     return { enabled: true, start: morningStart, end: morningEnd, break_minutes: 0, break_start: null, break_end: null };
   }
 
@@ -300,16 +306,17 @@ function buildDraftSchedule(schedule = DEFAULT_SCHEDULE) {
       };
     }
 
-    const morningStart = day.start ?? null;
     const breakMinutes = Math.max(day.break_minutes ?? 0, 0);
     const storedBreakStart = day.break_start ?? null;
     const storedBreakEnd = day.break_end ?? null;
 
-    let morningEnd = day.end ?? null;
+    let morningStart = null;
+    let morningEnd = null;
     let afternoonStart = null;
     let afternoonEnd = null;
 
     if (day.start && day.end && storedBreakStart && storedBreakEnd) {
+      morningStart = day.start;
       morningEnd = storedBreakStart;
       afternoonStart = storedBreakEnd;
       afternoonEnd = day.end;
@@ -317,9 +324,25 @@ function buildDraftSchedule(schedule = DEFAULT_SCHEDULE) {
       const totalNetMinutes = calcNetMinutes(day.start, day.end, breakMinutes);
       const morningMinutes = totalNetMinutes && totalNetMinutes > 0 ? Math.floor(totalNetMinutes / 2) : null;
       if (morningMinutes !== null) {
+        morningStart = day.start;
         morningEnd = minutesToTime(timeToMinutes(day.start) + morningMinutes);
         afternoonStart = minutesToTime(timeToMinutes(morningEnd) + breakMinutes);
         afternoonEnd = day.end;
+      } else {
+        morningStart = day.start;
+        morningEnd = day.end;
+      }
+    } else if (day.start && day.end) {
+      // Fascia unica senza pausa: orario part-time (solo mattina o solo pomeriggio).
+      // Lo storage non distingue le due fasce, quindi si usa il mezzogiorno come
+      // spartiacque, coerente con l'uso comune di "mattino"/"pomeriggio".
+      const startMinutes = timeToMinutes(day.start);
+      if (startMinutes !== null && startMinutes >= 12 * 60) {
+        afternoonStart = day.start;
+        afternoonEnd = day.end;
+      } else {
+        morningStart = day.start;
+        morningEnd = day.end;
       }
     }
 
@@ -652,16 +675,46 @@ function EmployeeProfileDialog({
           return { enabled: false, start: null, end: null, break_minutes: 0, break_start: null, break_end: null };
         }
 
-        if (!day.morning_start || !day.morning_end) {
-          throw new Error(`${DAY_LABELS[idx]}: completa l'orario del mattino`);
-        }
-
-        const morningMinutes = diffMinutes(day.morning_start, day.morning_end);
-        if (morningMinutes === null || morningMinutes <= 0) {
-          throw new Error(`${DAY_LABELS[idx]}: l'orario del mattino non e valido`);
-        }
-
+        const hasMorning = Boolean(day.morning_start || day.morning_end);
         const hasAfternoon = Boolean(day.afternoon_start || day.afternoon_end);
+
+        if (!hasMorning && !hasAfternoon) {
+          throw new Error(`${DAY_LABELS[idx]}: inserisci almeno una fascia oraria (mattina o pomeriggio)`);
+        }
+
+        if (hasMorning) {
+          if (!day.morning_start || !day.morning_end) {
+            throw new Error(`${DAY_LABELS[idx]}: completa l'orario del mattino`);
+          }
+          const morningMinutes = diffMinutes(day.morning_start, day.morning_end);
+          if (morningMinutes === null || morningMinutes <= 0) {
+            throw new Error(`${DAY_LABELS[idx]}: l'orario del mattino non e valido`);
+          }
+        }
+
+        if (hasAfternoon) {
+          if (!day.afternoon_start || !day.afternoon_end) {
+            throw new Error(`${DAY_LABELS[idx]}: completa l'orario del pomeriggio`);
+          }
+          const afternoonMinutes = diffMinutes(day.afternoon_start, day.afternoon_end);
+          if (afternoonMinutes === null || afternoonMinutes <= 0) {
+            throw new Error(`${DAY_LABELS[idx]}: l'orario del pomeriggio non e valido`);
+          }
+        }
+
+        // Solo pomeriggio: nessuna pausa da validare, la mattina non e' lavorata
+        if (!hasMorning) {
+          return {
+            enabled: true,
+            start: day.afternoon_start,
+            end: day.afternoon_end,
+            break_minutes: 0,
+            break_start: null,
+            break_end: null,
+          };
+        }
+
+        // Solo mattina: nessuna pausa da validare, il pomeriggio non e' lavorato
         if (!hasAfternoon) {
           return {
             enabled: true,
@@ -673,18 +726,9 @@ function EmployeeProfileDialog({
           };
         }
 
-        if (!day.afternoon_start || !day.afternoon_end) {
-          throw new Error(`${DAY_LABELS[idx]}: completa l'orario del pomeriggio`);
-        }
-
         const breakMinutes = diffMinutes(day.morning_end, day.afternoon_start);
         if (breakMinutes === null || breakMinutes < 0) {
           throw new Error(`${DAY_LABELS[idx]}: la pausa deve essere tra mattino e pomeriggio`);
-        }
-
-        const afternoonMinutes = diffMinutes(day.afternoon_start, day.afternoon_end);
-        if (afternoonMinutes === null || afternoonMinutes <= 0) {
-          throw new Error(`${DAY_LABELS[idx]}: l'orario del pomeriggio non e valido`);
         }
 
         return {
@@ -721,6 +765,38 @@ function EmployeeProfileDialog({
       const next = { ...day, ...patch };
       return { ...next, ...createStoredScheduleDay(next) };
     }));
+  }
+
+  // Attiva/disattiva la fascia mattina o pomeriggio di un giorno, per orari part-time
+  // (solo mattina / solo pomeriggio). Se si disattiva l'ultima fascia rimasta, si
+  // disattiva l'intero giorno: non ha senso un giorno "lavorativo" senza orario.
+  function toggleBlock(idx, block, checked) {
+    const day = scheduleDraft[idx];
+    if (checked) {
+      updateDay(idx, block === "morning"
+        ? { morning_start: day.morning_start ?? "08:00", morning_end: day.morning_end ?? "12:00" }
+        : { afternoon_start: day.afternoon_start ?? "13:00", afternoon_end: day.afternoon_end ?? "18:00" });
+      return;
+    }
+
+    const otherBlockHasValue = block === "morning"
+      ? Boolean(day.afternoon_start || day.afternoon_end)
+      : Boolean(day.morning_start || day.morning_end);
+
+    if (!otherBlockHasValue) {
+      updateDay(idx, {
+        enabled: false,
+        morning_start: null,
+        morning_end: null,
+        afternoon_start: null,
+        afternoon_end: null,
+      });
+      return;
+    }
+
+    updateDay(idx, block === "morning"
+      ? { morning_start: null, morning_end: null }
+      : { afternoon_start: null, afternoon_end: null });
   }
 
   function copyMonToWeekdays() {
@@ -1563,6 +1639,7 @@ function EmployeeProfileDialog({
             <Typography variant="body2" color="text.secondary">
               Imposta l&apos;area operativa di appartenenza e l&apos;orario contrattuale settimanale.
               L&apos;orario viene usato come riferimento nel Planner per precompilare i turni.
+              Deseleziona la casella di mattino o pomeriggio per un orario part-time (solo mattina o solo pomeriggio).
             </Typography>
 
             {/* Area operativa */}
@@ -1694,27 +1771,43 @@ function EmployeeProfileDialog({
                       />
                     </Stack>
 
-                    {day.enabled ? (
+                    {day.enabled ? (() => {
+                      const hasMorning = Boolean(day.morning_start || day.morning_end);
+                      const hasAfternoon = Boolean(day.afternoon_start || day.afternoon_end);
+                      return (
                       <>
                         {/* Col 2: mattino */}
                         <Stack direction="row" spacing={0.5} alignItems="center">
-                          <TextField
-                            type="time"
+                          <Checkbox
                             size="small"
-                            value={day.morning_start ?? ""}
-                            onChange={(e) => updateDay(idx, { morning_start: e.target.value || null })}
-                            inputProps={{ step: 300 }}
-                            sx={{ width: 110 }}
+                            checked={hasMorning}
+                            onChange={(e) => toggleBlock(idx, "morning", e.target.checked)}
+                            title="Lavora al mattino"
+                            sx={{ p: 0.25, flexShrink: 0 }}
                           />
-                          <Typography variant="body2" color="text.disabled" sx={{ flexShrink: 0 }}>→</Typography>
-                          <TextField
-                            type="time"
-                            size="small"
-                            value={day.morning_end ?? ""}
-                            onChange={(e) => updateDay(idx, { morning_end: e.target.value || null })}
-                            inputProps={{ step: 300 }}
-                            sx={{ width: 110 }}
-                          />
+                          {hasMorning ? (
+                            <>
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.morning_start ?? ""}
+                                onChange={(e) => updateDay(idx, { morning_start: e.target.value || null })}
+                                inputProps={{ step: 300 }}
+                                sx={{ width: 110 }}
+                              />
+                              <Typography variant="body2" color="text.disabled" sx={{ flexShrink: 0 }}>→</Typography>
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.morning_end ?? ""}
+                                onChange={(e) => updateDay(idx, { morning_end: e.target.value || null })}
+                                inputProps={{ step: 300 }}
+                                sx={{ width: 110 }}
+                              />
+                            </>
+                          ) : (
+                            <Typography variant="caption" color="text.disabled" fontStyle="italic">non lavorativo</Typography>
+                          )}
                         </Stack>
 
                         {/* Col 3: pausa */}
@@ -1724,23 +1817,36 @@ function EmployeeProfileDialog({
 
                         {/* Col 4: pomeriggio */}
                         <Stack direction="row" spacing={0.5} alignItems="center">
-                          <TextField
-                            type="time"
+                          <Checkbox
                             size="small"
-                            value={day.afternoon_start ?? ""}
-                            onChange={(e) => updateDay(idx, { afternoon_start: e.target.value || null })}
-                            inputProps={{ step: 300 }}
-                            sx={{ width: 110 }}
+                            checked={hasAfternoon}
+                            onChange={(e) => toggleBlock(idx, "afternoon", e.target.checked)}
+                            title="Lavora al pomeriggio"
+                            sx={{ p: 0.25, flexShrink: 0 }}
                           />
-                          <Typography variant="body2" color="text.disabled" sx={{ flexShrink: 0 }}>→</Typography>
-                          <TextField
-                            type="time"
-                            size="small"
-                            value={day.afternoon_end ?? ""}
-                            onChange={(e) => updateDay(idx, { afternoon_end: e.target.value || null })}
-                            inputProps={{ step: 300 }}
-                            sx={{ width: 110 }}
-                          />
+                          {hasAfternoon ? (
+                            <>
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.afternoon_start ?? ""}
+                                onChange={(e) => updateDay(idx, { afternoon_start: e.target.value || null })}
+                                inputProps={{ step: 300 }}
+                                sx={{ width: 110 }}
+                              />
+                              <Typography variant="body2" color="text.disabled" sx={{ flexShrink: 0 }}>→</Typography>
+                              <TextField
+                                type="time"
+                                size="small"
+                                value={day.afternoon_end ?? ""}
+                                onChange={(e) => updateDay(idx, { afternoon_end: e.target.value || null })}
+                                inputProps={{ step: 300 }}
+                                sx={{ width: 110 }}
+                              />
+                            </>
+                          ) : (
+                            <Typography variant="caption" color="text.disabled" fontStyle="italic">non lavorativo</Typography>
+                          )}
                         </Stack>
 
                         {/* Col 5: ore */}
@@ -1755,7 +1861,8 @@ function EmployeeProfileDialog({
                           {fmtMinutes(total)}
                         </Typography>
                       </>
-                    ) : (
+                      );
+                    })() : (
                       <Typography
                         variant="caption"
                         color="text.disabled"
