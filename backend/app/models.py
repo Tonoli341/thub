@@ -3,11 +3,20 @@ from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import Boolean, Column, Date, DateTime, Enum, ForeignKey, Integer, JSON, LargeBinary, Numeric, String, Table, Text, Time, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db import Base
 from app.enums import AssignmentCause, JustificationApprovalStatus, JustificationType, UserRole
 from app.services.normalization import normalize_phone
+
+
+# Colonne che sul database reale sono jsonb, perché è così che le crea
+# ensure_schema_updates() in app/db.py. Dichiararle JSON qui le faceva nascere
+# `json` su un database nuovo — create_all gira per primo e quei blocchi sono
+# tutti dietro `if inspector.has_table(...)` — e `jsonb` su quelli esistenti:
+# due ambienti divergenti. La variante tiene il SQLite dei test su JSON.
+JSONB_OR_JSON = JSON().with_variant(JSONB, "postgresql")
 
 
 class TimestampMixin:
@@ -29,7 +38,7 @@ class OperationalArea(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_operational: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    buildings: Mapped[list] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    buildings: Mapped[list] = mapped_column(JSONB_OR_JSON, default=list, server_default="[]", nullable=False)
 
     employees: Mapped[list["Employee"]] = relationship(back_populates="default_operational_area")
 
@@ -118,7 +127,11 @@ class InfinityBillingCustomerSupplierMap(TimestampMixin, Base):
     customer_supplier_description: Mapped[str] = mapped_column(String(160), nullable=False)
     jupiter_description: Mapped[str | None] = mapped_column(Text)
     operational_area_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("operational_areas.id"))
-    buildings: Mapped[list] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    # Qui la variante non è solo coerenza: buildings fa parte del vincolo UNIQUE
+    # definito sopra e Postgres non sa costruire un indice B-tree su `json` (il
+    # tipo non ha operatore di uguaglianza). Con JSON, create_all fallisce su un
+    # database nuovo e il backend non parte affatto.
+    buildings: Mapped[list] = mapped_column(JSONB_OR_JSON, default=list, server_default="[]", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     infinity_billing_item: Mapped["InfinityBillingItem"] = relationship()
@@ -204,7 +217,7 @@ class Employee(TimestampMixin, Base):
     planner_access_level: Mapped[str | None] = mapped_column(String(32))
     default_operational_area_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("operational_areas.id"))
     default_immobile: Mapped[str | None] = mapped_column(String(32))
-    default_schedule: Mapped[list | None] = mapped_column(JSON)
+    default_schedule: Mapped[list | None] = mapped_column(JSONB_OR_JSON)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     local_user_username: Mapped[str | None] = mapped_column(String(120), index=True)
     local_user_password_hash: Mapped[str | None] = mapped_column(Text)
@@ -559,7 +572,7 @@ class TeamDailyNote(TimestampMixin, Base):
     team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
     work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     workload: Mapped[str | None] = mapped_column(Text)
-    table_rows: Mapped[list] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    table_rows: Mapped[list] = mapped_column(JSONB_OR_JSON, default=list, server_default="[]", nullable=False)
     owner_employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"))
 
     team: Mapped["Team"] = relationship()
@@ -828,7 +841,7 @@ class DailyRecord(Base):
     date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    pauses: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    pauses: Mapped[list] = mapped_column(JSONB_OR_JSON, nullable=False, default=list, server_default="[]")
     work_seconds: Mapped[int | None] = mapped_column(Integer)
     pause_seconds: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
