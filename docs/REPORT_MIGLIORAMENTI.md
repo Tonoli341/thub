@@ -189,6 +189,19 @@ pulire schema/`TimesheetSyncRun` se non più alimentata.
 correttezza: gli `ALTER TABLE` manuali non sono versionati, non hanno rollback e divergono dai modelli
 (es. `JSON` vs `JSONB`).
 
+**Chiuso il 2026-08-21, ma non come previsto qui.** Il setup Alembic del 2026-07-03 era completo e
+corretto (`env.py`, baseline, alembic installato nell'immagine) ma **nessuno eseguiva mai
+`alembic upgrade head`**: `init_db()` non lo chiama. Risultato: i database restavano fermi a
+`0001_baseline` mentre lo schema avanzava per conto suo via `ensure_schema_updates()`, e le 30
+revisioni scritte nel frattempo duplicavano gli stessi `ALTER`. Sono state assorbite nella baseline
+vuota — nessuna operazione sul database di produzione, l'id di revisione è rimasto `0001_baseline`
+quindi le righe `alembic_version` esistenti sono ancora valide.
+
+La sostituzione vera e propria **non è stata fatta e non va riproposta**: `ensure_schema_updates()`
+resta dov'è, congelata, come rete di sicurezza per i database rimasti indietro. Riscrivere 118
+istruzioni DDL che hanno costruito lo schema su dati reali è tutto rischio e nessun beneficio. Ciò
+che mancava era il passo di deploy, ora documentato in [README.md](../README.md).
+
 ### 3.2 Duplicazioni da unificare
 - `_collect_report_ids` in 3 file (`assignments.py:18`, `absence_permissions.py:35`,
   `timesheets.py:365`).

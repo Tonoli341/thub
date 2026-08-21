@@ -113,6 +113,14 @@ def _ensure_index(connection, *, table_name: str, index_name: str, column_expr: 
 
 
 def ensure_schema_updates() -> None:
+    """Allineamenti idempotenti dello schema, eseguiti a ogni avvio.
+
+    **Congelata dal 2026-08-21: non aggiungere altri blocchi qui.** Le modifiche
+    di schema nuove passano da Alembic (`alembic revision --autogenerate` +
+    `alembic upgrade head` come passo esplicito del deploy). Questa funzione
+    resta perché ha costruito lo schema attuale su dati reali e continua a fare
+    da rete di sicurezza per i database rimasti indietro rispetto alla baseline.
+    """
     inspector = inspect(engine)
     if inspector.has_table("employees"):
         columns = {column["name"] for column in inspector.get_columns("employees")}

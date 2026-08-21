@@ -39,7 +39,7 @@ backend/app/
   api/               un router per dominio; __init__.py decide cosa è protetto
   api/deps.py        require_* → UNICO punto di autorizzazione
   services/          logica di dominio, integrazioni, sicurezza, audit
-  migrations/        Alembic (baseline 0001, head attuale 0025_team_reporting_notifications)
+  migrations/        Alembic (baseline 0001 vuota, head 0002_assignment_cause_visita_idoneita)
   tests/             pytest su SQLite in-memory (91 test)
 frontend/src/
   api.js             UNICO client HTTP (token, impersonation, 401→logout, download)
@@ -72,8 +72,17 @@ anche se il codice sembra migliorabile. Se pensi vada cambiato → passa da §2 
   (`DROP`, `DELETE` massivi, `TRUNCATE`, backfill che sovrascrivono) senza richiesta
   esplicita e conferma.
 - **Le migrazioni già committate non si modificano mai.** Si aggiunge una revisione nuova.
-  Il file `0022_merge_reporting_and_absence_heads.py` esiste perché due rami hanno già
-  generato head paralleli: dopo ogni `alembic revision` verifica `alembic heads`.
+  Dopo ogni `alembic revision` verifica `alembic heads`: deve restarne **uno solo**.
+- **Alembic è il meccanismo ufficiale dello schema, e va davvero eseguito.**
+  `alembic upgrade head` è un passo esplicito del rilascio (vedi [README.md](README.md)),
+  non parte del `lifespan`: in produzione uvicorn gira con `--workers 2` e due processi
+  migrerebbero in parallelo sullo stesso database.
+- **`ensure_schema_updates()` e `ensure_operational_reporting_schema()` sono congelate**
+  (2026-08-21). Continuano a girare all'avvio come rete di sicurezza per i database
+  rimasti indietro, ma **non si aggiungono altri blocchi lì dentro**: una colonna nuova
+  è una revisione Alembic. Storia: le revisioni 0002→0031 erano state scritte ma mai
+  eseguite — `init_db()` non chiama `alembic upgrade` — e duplicavano gli ALTER di
+  `db.py`; sono state assorbite nella baseline vuota senza toccare il database.
 - `ensure_alembic_baseline()` e la catena di `init_db()` in [backend/app/db.py](backend/app/db.py)
   hanno un ordine che conta (create_all → schema updates → baseline → seed → propagazione
   org). Non riordinare, non "semplificare".
@@ -179,7 +188,7 @@ qui vale più dell'eleganza del singolo file.
 | Anti-pattern | Perché è rifiutato |
 |---|---|
 | Aggiungere una colonna e affidarsi a `create_all()` | `create_all` **non** altera tabelle esistenti: in sviluppo sembra funzionare, in produzione l'app parte e va in errore alla prima query. Sempre Alembic |
-| Modificare una migrazione già committata | I DB che l'hanno già applicata non la rieseguono: schema divergente e silenzioso |
+| Modificare una migrazione già committata | I DB che l'hanno già applicata non la rieseguono: schema divergente e silenzioso. L'unica eccezione già avvenuta è la riscrittura di `0001_baseline` il 2026-08-21, lecita solo perché il suo `upgrade()` era e resta `pass`: nessun database aveva mai eseguito nulla da quel file |
 | `fetch()` diretto dentro una pagina React | Bypassa token, impersonation e gestione 401 di `api.js`: l'utente resta su una pagina morta invece di essere sloggato |
 | Controllo di ruolo scritto a mano nell'endpoint | Duplica `build_auth_user_read` e diverge appena i permessi cambiano. È così che nascono gli IDOR |
 | Nuova route su `api_router` invece di `protected_router` | La pubblichi senza autenticazione. È già successo (vedi §1.3 dei report in `docs/`) |

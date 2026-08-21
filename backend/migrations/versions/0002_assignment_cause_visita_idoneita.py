@@ -6,16 +6,20 @@ Su Postgres 12+ ``ADD VALUE`` è ammesso dentro una transazione a patto di non
 usare il valore nuovo nella stessa transazione — questa revisione non lo usa.
 Sui dialetti senza enum nativo (SQLite dei test) non c'è nulla da fare.
 
-Revision ID: 0031_assignment_cause_visita_idoneita
-Revises: 0030_reporting_allocation_audit
+È la prima revisione applicata davvero dopo la ripartenza della baseline: serve
+anche a verificare che la catena `alembic upgrade head` funzioni end-to-end su
+un caso innocuo e idempotente, prima di affidarle una modifica importante.
+
+Revision ID: 0002_assignment_cause_visita_idoneita
+Revises: 0001_baseline
 Create Date: 2026-08-21
 """
 
 from alembic import op
 
 
-revision = "0031_assignment_cause_visita_idoneita"
-down_revision = "0030_reporting_allocation_audit"
+revision = "0002_assignment_cause_visita_idoneita"
+down_revision = "0001_baseline"
 branch_labels = None
 depends_on = None
 

@@ -419,6 +419,26 @@ Dopo il primo avvio, frontend e backend restano in live-reload:
 
 Serve un nuovo `docker compose up --build` solo se cambi Dockerfile o dipendenze.
 
+### Migrazioni di schema
+
+Lo schema **non** si aggiorna da solo all'avvio: `alembic upgrade head` è un passo
+esplicito del rilascio, da eseguire dopo aver portato il codice nuovo e prima di
+considerare il deploy concluso.
+
+```bash
+docker compose exec backend alembic upgrade head
+docker compose exec backend alembic current      # verifica la revisione applicata
+```
+
+È un passo separato e non parte del `lifespan` per due motivi: in produzione uvicorn
+gira con `--workers 2` e due processi migrerebbero in parallelo sullo stesso database;
+e un fallimento deve fermare il rilascio in modo visibile, invece di lasciare un
+backend che riparte in loop.
+
+La baseline `0001_baseline` è vuota e corrisponde allo schema già esistente in
+produzione: sui database attivi non c'è nulla da riapplicare, vengono marcati
+automaticamente da `ensure_alembic_baseline()` al primo avvio.
+
 Punti di accesso:
 
 - applicazione: `http://localhost:8088`

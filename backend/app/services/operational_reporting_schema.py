@@ -4,6 +4,9 @@ Il progetto crea le tabelle mancanti con ``create_all`` all'avvio, ma questo
 non aggiunge colonne a tabelle già presenti. Questo piccolo compat layer evita
 che un deploy applicativo precedente ad ``alembic upgrade head`` renda il
 modulo indisponibile. Alembic resta la fonte ufficiale della revisione schema.
+
+Come ``ensure_schema_updates`` in ``app.db``, è **congelata dal 2026-08-21**:
+le modifiche di schema nuove si scrivono come revisione Alembic, non qui.
 """
 
 from sqlalchemy import inspect, text
