@@ -1446,7 +1446,9 @@ function EmployeeProfileDialog({
                   <Box>
                     <Typography variant="body2" fontWeight={600}>Accesso rendicontazioni</Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Admin sempre abilitato. Per HR e Manager il toggle deve essere attivo.
+                      Admin sempre abilitato. Per HR e Manager il toggle deve essere attivo (visibilità su tutta
+                      l'azienda). Per un Collaboratore il toggle non dà accesso alle rendicontazioni aziendali, ma
+                      abilita la Rendicontazione operativa solo per le squadre di cui è indicato come owner.
                     </Typography>
                   </Box>
                 }

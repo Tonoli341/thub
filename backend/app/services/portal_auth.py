@@ -118,6 +118,7 @@ def _build_permission_fields(
 
     if is_portal:
         can_access_timesheets = True
+        can_access_operational_reporting = False
         can_access_planning = False
         can_access_calendar = False
         can_access_organization = False
@@ -130,6 +131,10 @@ def _build_permission_fields(
         can_access_timesheets = effective_role == "admin" or (
             effective_role in ("hr", "manager") and timesheets_enabled
         )
+        # Stesso criterio di services/operational_reporting.require_reporting_access:
+        # ammette qualunque ruolo con la spunta attiva, non solo hr/manager, perché
+        # l'accesso è poi limitato per squadra da Team.operational_reporting_owner_employee_id.
+        can_access_operational_reporting = effective_role == "admin" or timesheets_enabled
         planner_access_level = resolve_planner_access_level(employee, effective_role, is_portal=is_portal)
         can_access_planning = planner_access_level is not None
         can_access_calendar = True
@@ -160,6 +165,7 @@ def _build_permission_fields(
         can_access_calendar=can_access_calendar,
         can_access_organization=can_access_organization,
         can_access_timesheets=can_access_timesheets,
+        can_access_operational_reporting=can_access_operational_reporting,
         can_access_workloads=can_access_workloads,
         can_access_expirations=can_access_expirations,
         expirations_scope=expirations_scope,

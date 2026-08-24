@@ -426,16 +426,14 @@ function SidebarNav({ user, collapsed, search }) {
         if (item.requires === "calendar") return Boolean(user?.can_access_calendar);
         if (item.requires === "organization") return Boolean(user?.can_access_organization);
         if (item.requires === "timesheets") return Boolean(user?.can_access_timesheets);
-        if (item.requires === "operationalReporting") return Boolean(
-          user?.effective_role === "admin" || (user?.effective_role === "manager" && user?.can_access_timesheets)
-        );
+        if (item.requires === "operationalReporting") return Boolean(user?.can_access_operational_reporting);
         if (item.requires === "workloads") return Boolean(user?.can_access_workloads);
         if (item.requires === "deliveries") return Boolean(user?.can_access_deliveries);
         if (item.requires === "maintenance") return Boolean(user?.can_access_maintenance);
         return true;
       }),
     })).filter((section) => section.items.length > 0),
-    [user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets, user?.can_access_workloads, user?.can_access_deliveries, user?.can_access_maintenance],
+    [user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets, user?.can_access_operational_reporting, user?.can_access_workloads, user?.can_access_deliveries, user?.can_access_maintenance],
   );
 
   const displayedSections = useMemo(() => {
@@ -503,10 +501,7 @@ function ProtectedLayout() {
   const { logout, user, effectiveUser, isImpersonating, stopImpersonation, startImpersonation } = useAuth();
   const { darkMode, setDarkMode } = useAppTheme();
   const timesheetsOnly = Boolean(effectiveUser?.can_access_timesheets && !effectiveUser?.can_access_planning && !effectiveUser?.can_access_calendar && !effectiveUser?.can_access_organization);
-  const canAccessOperationalReporting = Boolean(
-    effectiveUser?.effective_role === "admin"
-    || (effectiveUser?.effective_role === "manager" && effectiveUser?.can_access_timesheets)
-  );
+  const canAccessOperationalReporting = Boolean(effectiveUser?.can_access_operational_reporting);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
 

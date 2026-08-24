@@ -1210,6 +1210,7 @@ class AuthUserRead(BaseModel):
     can_access_calendar: bool = False
     can_access_organization: bool = False
     can_access_timesheets: bool = False
+    can_access_operational_reporting: bool = False
     can_access_workloads: bool = False
     can_access_expirations: bool = False
     expirations_scope: Literal["none", "reports", "all"] = "none"

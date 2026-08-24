@@ -10,8 +10,11 @@ timer.
 ## Accesso
 
 - Admin: tutte le squadre.
-- Manager con `config_can_access_timesheets`: solo le squadre in cui è indicato
-  direttamente come `operational_reporting_owner_employee_id`.
+- Qualunque dipendente con `config_can_access_timesheets` (Manager o
+  Collaboratore): solo le squadre in cui è indicato direttamente come
+  `operational_reporting_owner_employee_id`. Il ruolo non conta, solo l'essere
+  owner della squadra — vedi `require_reporting_access` in
+  `services/operational_reporting.py`.
 - Ogni altro utente: nessun accesso.
 - Squadre prive di `operational_reporting_owner_employee_id`: solo Admin.
 
