@@ -25,6 +25,7 @@ import {
   InputAdornment,
   Link,
   ListItemText,
+  Menu,
   MenuItem,
   Paper,
   Snackbar,
@@ -94,6 +95,25 @@ function employeeMatchesSearch(employee, searchTokens) {
   if (searchTokens.length === 0) return true;
   const name = normalizeSearchText(employee.full_name);
   return searchTokens.every((token) => name.includes(token));
+}
+
+// Viste salvate: solo i filtri, per browser (come il tema chiaro/scuro in ThemeContext).
+// Nessun salvataggio lato server: cambiando PC/browser le viste non seguono l'utente.
+const PLANNER_VIEWS_STORAGE_KEY = "thub-planner-views";
+
+function loadPlannerViews() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PLANNER_VIEWS_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePlannerViewsToStorage(views) {
+  try {
+    localStorage.setItem(PLANNER_VIEWS_STORAGE_KEY, JSON.stringify(views));
+  } catch {}
 }
 
 const ROLE_OPTIONS = [
@@ -402,6 +422,49 @@ export default function PlannerPage() {
   const [teamWorkloadEdit, setTeamWorkloadEdit] = useState(null);
   const [sortMode, setSortMode] = useState("team"); // "alpha" | "team"
   const { darkMode } = useAppTheme();
+
+  const [savedPlannerViews, setSavedPlannerViews] = useState(loadPlannerViews);
+  const [viewsMenuAnchor, setViewsMenuAnchor] = useState(null);
+  const [saveViewDialogOpen, setSaveViewDialogOpen] = useState(false);
+  const [saveViewName, setSaveViewName] = useState("");
+
+  const applySavedPlannerView = useCallback((view) => {
+    setPlannerView(view.plannerView);
+    setRoleFilter(view.roleFilter);
+    setTeamFilter(view.teamFilter);
+    setEmployeeSearch(view.employeeSearch);
+    setSortMode(view.sortMode);
+    setViewsMenuAnchor(null);
+  }, []);
+
+  const handleSavePlannerView = useCallback(() => {
+    const name = saveViewName.trim();
+    if (!name) return;
+    const newView = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      plannerView,
+      roleFilter,
+      teamFilter,
+      employeeSearch,
+      sortMode,
+    };
+    setSavedPlannerViews((prev) => {
+      const next = [...prev.filter((v) => v.name !== name), newView];
+      savePlannerViewsToStorage(next);
+      return next;
+    });
+    setSaveViewName("");
+    setSaveViewDialogOpen(false);
+  }, [saveViewName, plannerView, roleFilter, teamFilter, employeeSearch, sortMode]);
+
+  const handleDeletePlannerView = useCallback((id) => {
+    setSavedPlannerViews((prev) => {
+      const next = prev.filter((v) => v.id !== id);
+      savePlannerViewsToStorage(next);
+      return next;
+    });
+  }, []);
 
   // ref so copyFromMutation always sees current justifications
   const justificationsRef = useRef(null);
@@ -2137,6 +2200,50 @@ export default function PlannerPage() {
             variant="outlined"
             size="small"
             className="planner-copy-btn"
+            onClick={(e) => setViewsMenuAnchor(e.currentTarget)}
+          >
+            👁 Viste
+          </Button>
+          <Menu
+            anchorEl={viewsMenuAnchor}
+            open={Boolean(viewsMenuAnchor)}
+            onClose={() => setViewsMenuAnchor(null)}
+          >
+            {savedPlannerViews.length === 0 && (
+              <MenuItem disabled>Nessuna vista salvata</MenuItem>
+            )}
+            {savedPlannerViews.map((view) => (
+              <MenuItem
+                key={view.id}
+                onClick={() => applySavedPlannerView(view)}
+                sx={{ display: "flex", justifyContent: "space-between", gap: 1, minWidth: 220 }}
+              >
+                <ListItemText primary={view.name} />
+                <IconButton
+                  size="small"
+                  edge="end"
+                  aria-label={`Elimina vista ${view.name}`}
+                  onClick={(e) => { e.stopPropagation(); handleDeletePlannerView(view.id); }}
+                >
+                  ✕
+                </IconButton>
+              </MenuItem>
+            ))}
+            <Divider />
+            <MenuItem
+              onClick={() => {
+                setViewsMenuAnchor(null);
+                setSaveViewName("");
+                setSaveViewDialogOpen(true);
+              }}
+            >
+              💾 Salva vista corrente…
+            </MenuItem>
+          </Menu>
+          <Button
+            variant="outlined"
+            size="small"
+            className="planner-copy-btn"
             onClick={() => {
               setCopyFromDate("");
               setCopyFromTeamIds(null);
@@ -3331,6 +3438,40 @@ export default function PlannerPage() {
             disabled={!canWritePlanning || (assignmentsQuery.data?.length ?? 0) === 0 || clearDayMutation.isPending}
           >
             {clearDayMutation.isPending ? "Eliminazione…" : "Conferma eliminazione"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Salva vista corrente dialog ──────────────────────────────── */}
+      <Dialog
+        open={saveViewDialogOpen}
+        onClose={() => setSaveViewDialogOpen(false)}
+        PaperProps={{ className: "planner-dialog" }}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle className="planner-dialog-title">Salva vista corrente</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="Nome vista"
+            value={saveViewName}
+            onChange={(e) => setSaveViewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSavePlannerView(); }}
+            sx={{ mt: 1 }}
+          />
+          {savedPlannerViews.some((v) => v.name === saveViewName.trim()) && saveViewName.trim() && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Esiste già una vista con questo nome: verrà sovrascritta.
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSaveViewDialogOpen(false)}>Annulla</Button>
+          <Button variant="contained" onClick={handleSavePlannerView} disabled={!saveViewName.trim()}>
+            Salva
           </Button>
         </DialogActions>
       </Dialog>
