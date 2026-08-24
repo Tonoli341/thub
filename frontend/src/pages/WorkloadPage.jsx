@@ -580,8 +580,8 @@ export default function WorkloadPage() {
                   <TableHead>
                     {/* Row 1 — group headers */}
                     <TableRow>
-                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, pl: 2.5, width: 220, verticalAlign: "middle" }}>Cliente</TableCell>
-                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: 200, verticalAlign: "middle" }}>Fornitore</TableCell>
+                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, pl: 2.5, width: 260, verticalAlign: "middle" }}>Cliente</TableCell>
+                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: 240, verticalAlign: "middle" }}>Fornitore</TableCell>
                       <TableCell
                         colSpan={2}
                         sx={{
