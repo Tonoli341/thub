@@ -122,7 +122,7 @@ def get_dashboard(
     # Employees with planner assignments today
     present_rows = db.execute(
         select(
-            Employee.id, Employee.full_name,
+            Employee.id, Employee.full_name, Employee.tms_role_description,
             Assignment.area, Assignment.immobile,
             Assignment.start_time, Assignment.end_time,
         )
@@ -134,10 +134,10 @@ def get_dashboard(
     emp_areas: dict[str, tuple[str, list[str]]] = {}
     # Una riga per allocazione, deduplicata: la stessa persona puo' comparire in
     # piu' immobili nella stessa giornata.
-    area_shifts: dict[str, list[tuple[str, str, str | None]]] = {}
+    area_shifts: dict[str, list[tuple[str, str, str | None, str | None]]] = {}
     seen_area_shifts: set[tuple[str, str, str | None]] = set()
     shifts_per_employee: dict[str, int] = {}
-    for emp_id, emp_name, area, immobile, start_time, end_time in present_rows:
+    for emp_id, emp_name, role, area, immobile, start_time, end_time in present_rows:
         if emp_id not in emp_areas:
             emp_areas[emp_id] = (emp_name, [])
         area_key = " ".join(filter(None, [area, immobile]))
@@ -154,7 +154,7 @@ def get_dashboard(
         seen_area_shifts.add(shift_key)
         shifts_per_employee[emp_id] = shifts_per_employee.get(emp_id, 0) + 1
         area_shifts.setdefault(area_key or NO_AREA_LABEL, []).append(
-            (emp_id, emp_name, time_range)
+            (emp_id, emp_name, time_range, role)
         )
 
     # L'orario si mostra solo a chi ha piu' di un'allocazione nella giornata:
@@ -166,8 +166,9 @@ def get_dashboard(
                 employee_id=emp_id,
                 employee_name=emp_name,
                 time_range=time_range if shifts_per_employee.get(emp_id, 0) > 1 else None,
+                role=role,
             )
-            for emp_id, emp_name, time_range in shifts
+            for emp_id, emp_name, time_range, role in shifts
         ]
         for area, shifts in area_shifts.items()
     }

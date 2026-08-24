@@ -1034,6 +1034,9 @@ class DashboardAreaPerson(BaseModel):
     employee_id: str
     employee_name: str
     time_range: str | None = None
+    # Ruolo TMS del dipendente (es. "Magazziniere", "Officina"): a differenza
+    # di area/immobile non cambia quando si sposta il turno nel Planner.
+    role: str | None = None
 
 
 class DashboardDetail(BaseModel):

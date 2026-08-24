@@ -716,9 +716,16 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                           justifyContent="space-between"
                           sx={{ minWidth: 0 }}
                         >
-                          <Typography fontSize={11.5} sx={{ minWidth: 0, color: "text.primary", overflowWrap: "anywhere" }}>
-                            {person.employee_name}
-                          </Typography>
+                          <Stack spacing={0} sx={{ minWidth: 0 }}>
+                            <Typography fontSize={11.5} sx={{ minWidth: 0, color: "text.primary", overflowWrap: "anywhere" }}>
+                              {person.employee_name}
+                            </Typography>
+                            {person.role && (
+                              <Typography fontSize={9.5} sx={{ minWidth: 0, color: "text.secondary", overflowWrap: "anywhere" }}>
+                                {person.role}
+                              </Typography>
+                            )}
+                          </Stack>
                           {person.time_range && (
                             <Box sx={{ px: 0.55, py: 0.1, borderRadius: 1, bgcolor: `${accent}14`, color: accent, fontSize: 10, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
                               {person.time_range}
