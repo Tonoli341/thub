@@ -1331,11 +1331,20 @@ export default function PlannerPage() {
 
     // Il carico di lavoro e' un dato di squadra: resta diviso per squadra
     // anche se le persone qui sopra sono raggruppate per area.
-    const sumWorkload = (rows) => rows.reduce((acc, row) => ({
-      inb: acc.inb + Number(row.inbound_count || 0),
-      out: acc.out + Number(row.outbound_count || 0),
-      plt: acc.plt + Number(row.pallet_count || 0),
-    }), { inb: 0, out: 0, plt: 0 });
+    // Il pallet segue il mezzo (come in WorkloadPage): su una riga mista
+    // l'inbound ha la precedenza, quindi il pallet conta come IN.
+    const sumWorkload = (rows) => rows.reduce((acc, row) => {
+      const inbound = Number(row.inbound_count || 0);
+      const outbound = Number(row.outbound_count || 0);
+      const pallets = Number(row.pallet_count || 0);
+      return {
+        inb: acc.inb + inbound,
+        out: acc.out + outbound,
+        plt: acc.plt + pallets,
+        pltIn: acc.pltIn + (inbound > 0 ? pallets : 0),
+        pltOut: acc.pltOut + (inbound === 0 && outbound > 0 ? pallets : 0),
+      };
+    }, { inb: 0, out: 0, plt: 0, pltIn: 0, pltOut: 0 });
 
     const workloadTeams = (teamsQuery.data ?? [])
       .filter((team) => !teamFilterActive || reportTeamIds.includes(team.id))
@@ -1360,7 +1369,9 @@ export default function PlannerPage() {
       inb: acc.inb + team.totals.inb,
       out: acc.out + team.totals.out,
       plt: acc.plt + team.totals.plt,
-    }), { inb: 0, out: 0, plt: 0 });
+      pltIn: acc.pltIn + team.totals.pltIn,
+      pltOut: acc.pltOut + team.totals.pltOut,
+    }), { inb: 0, out: 0, plt: 0, pltIn: 0, pltOut: 0 });
 
     return {
       title: "Planner - Riepilogo allocazioni",
@@ -1612,7 +1623,7 @@ export default function PlannerPage() {
       drawTopRect(margin, pageHeight - 58, contentWidth, 1.6, C.green);
       // La data sta sulla riga della sezione, non accanto al titolo: con i
       // giorni lunghi ("mercoledi' 21 settembre") si sovrapporrebbero.
-      drawTextRight(capitalize(report.dateLabel), pageWidth - margin, pageHeight - 76, 10, { color: C.inkSoft });
+      drawTextRight(capitalize(report.dateLabel), pageWidth - margin, pageHeight - 75, 13, { bold: true, color: C.ink });
 
       if (currentSection) {
         const badge = teamBadgeImages[currentSection.id];
@@ -1635,6 +1646,14 @@ export default function PlannerPage() {
 
     const ensureSpace = (height) => {
       if (y - height < contentBottom) startPage();
+    };
+
+    // Valore di `y` appena dopo l'intestazione di una pagina nuova (senza
+    // `currentSection`): confrontarlo con `y` dice se la pagina corrente ha
+    // gia' del contenuto, per non forzare un salto su una pagina ancora vuota.
+    const topOfPageY = pageHeight - 92;
+    const startSectionPage = () => {
+      if (y < topOfPageY) startPage();
     };
 
     // ── Blocchi ───────────────────────────────────────────────────────────
@@ -1674,15 +1693,21 @@ export default function PlannerPage() {
       y -= 15;
     };
 
-    // Totali come KPI: tre riquadri sopra la tabella, al posto della riga
-    // verde acceso in coda che li nascondeva in fondo all'elenco.
+    // Totali come KPI: quattro riquadri sopra la tabella, stessa
+    // scomposizione della dashboard /carichi (mezzi e pallet, IN/OUT).
     const drawKpiRow = (totals) => {
       const boxWidth = 104;
       const boxHeight = 36;
       const gap = 9;
       ensureSpace(boxHeight + 12);
       let x = margin;
-      for (const [label, value] of [["IN", totals.inb], ["OUT", totals.out], ["PLT", totals.plt]]) {
+      const boxes = [
+        ["MEZZI IN", totals.inb],
+        ["MEZZI OUT", totals.out],
+        ["PLT IN", totals.pltIn],
+        ["PLT OUT", totals.pltOut],
+      ];
+      for (const [label, value] of boxes) {
         drawTopRect(x, y, boxWidth, boxHeight, C.greenSoft, C.greenLine);
         drawText(label, x + 11, y - 13, 7.5, { bold: true, color: C.inkSoft });
         drawText(String(value), x + 11, y - 28, 14, { bold: true, color: C.green });
@@ -1882,7 +1907,8 @@ export default function PlannerPage() {
     }
 
     // Personale in turno, raggruppato per area+immobile come in dashboard.
-    ensureSpace(60);
+    // Macro-blocco separato: parte sempre su una pagina propria.
+    startSectionPage();
     drawBlockTitle("Personale in turno", `${report.totals.allocations} allocazion${report.totals.allocations === 1 ? "e" : "i"}`);
     if (report.areaGroups.length === 0) {
       ensureSpace(16);
@@ -1899,8 +1925,8 @@ export default function PlannerPage() {
     }
 
     if (report.workloadTeams.length > 0) {
-      y -= 6;
-      ensureSpace(70);
+      // Macro-blocco separato: parte sempre su una pagina propria.
+      startSectionPage();
       drawBlockTitle("Carichi di lavoro", "per squadra");
       for (const team of report.workloadTeams) {
         ensureSpace(38 + (team.rows.length > 0 ? 96 : 40));
