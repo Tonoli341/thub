@@ -1619,7 +1619,7 @@ export default function PlannerPage() {
       const logoWidth = logoRatio * logoHeight;
       drawImageTop(logoImage, margin, pageHeight - 22, logoWidth, logoHeight);
       const titleX = margin + logoWidth + 14;
-      const titleText = "Planning operativo giornaliero";
+      const titleText = "Riepilogo giornaliero";
       drawText(titleText, titleX, pageHeight - 46, 20, { bold: true, color: C.ink });
       drawTopRect(margin, pageHeight - 58, contentWidth, 1.6, C.green);
       // Data sulla stessa riga del titolo, allineata a destra: con i giorni
