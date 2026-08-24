@@ -386,6 +386,7 @@ export default function PlannerPage() {
   const [areaPickerState, setAreaPickerState] = useState(null);
   const [editingBlock, setEditingBlock] = useState(null);
   const [editForm, setEditForm] = useState({});
+  const [duplicateTargetId, setDuplicateTargetId] = useState("");
   const [absenceBlockMsg, setAbsenceBlockMsg] = useState(null);
   const absenceBlockTimerRef = useRef(null);
   const [copyFromOpen, setCopyFromOpen] = useState(false);
@@ -563,6 +564,35 @@ export default function PlannerPage() {
       setAreaPickerState(null);
     },
     onError: () => setAreaPickerState(null),
+  });
+
+  // Duplica l'allocazione aperta nel dialog su un altro dipendente della
+  // stessa squadra: a differenza di "Copia da giorno" (che copia per data,
+  // stesso dipendente) qui la data resta quella corrente e cambia la persona.
+  const duplicateToEmployeeMutation = useMutation({
+    mutationFn: ({ source, employeeId }) => createAssignment({
+      employee_id: employeeId,
+      work_date: selectedDate,
+      start_time: typeof source.start_time === "string" ? source.start_time.slice(0, 5) : source.start_time,
+      end_time: typeof source.end_time === "string" ? source.end_time.slice(0, 5) : source.end_time,
+      break_start: source.break_start ? String(source.break_start).slice(0, 5) : null,
+      break_end: source.break_end ? String(source.break_end).slice(0, 5) : null,
+      area: source.area,
+      immobile: source.immobile,
+      cause: source.cause,
+      notes: source.notes ?? null,
+      training_course_id: source.training_course_id ?? null,
+    }),
+    onSuccess: (_created, { employeeId }) => {
+      queryClient.invalidateQueries({ queryKey: ["assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["planner-day-audit"] });
+      const target = duplicateCandidates.find((candidate) => candidate.id === employeeId);
+      setGenerateSnackbar(`Allocazione duplicata su ${target?.name ?? "collega"}`);
+      setDuplicateTargetId("");
+    },
+    onError: (error) => {
+      setGenerateSnackbar(error?.message || "Duplicazione non riuscita.");
+    },
   });
 
   const updateMutation = useMutation({
@@ -1229,7 +1259,22 @@ export default function PlannerPage() {
       notes: a.notes ?? "",
       trainingCourseId: a.training_course_id ?? "",
     });
+    setDuplicateTargetId("");
   }
+
+  // Colleghi della stessa squadra su cui si può duplicare l'allocazione aperta:
+  // esclude il dipendente sorgente e chi è fuori dallo scope di scrittura
+  // dell'utente (employeesQuery è già filtrata lato server per planner_access_level).
+  const duplicateCandidates = useMemo(() => {
+    if (!editingBlock) return [];
+    const team = employeeTeamMap[editingBlock.employee_id];
+    if (!team) return [];
+    const writableIds = new Set((employeesQuery.data ?? []).map((employee) => employee.id));
+    return team.members
+      .filter((member) => member.employee_id !== editingBlock.employee_id && writableIds.has(member.employee_id))
+      .map((member) => ({ id: member.employee_id, name: member.employee_name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [editingBlock, employeeTeamMap, employeesQuery.data]);
 
   function saveEditBlock() {
     if (!editingBlock || !canWritePlanning) return;
@@ -3055,6 +3100,33 @@ export default function PlannerPage() {
               </>
             )}
             <TextField label="Note" value={editForm.notes ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))} multiline minRows={2} fullWidth size="small" />
+            {canWritePlanning && duplicateCandidates.length > 0 && (
+              <>
+                <Divider />
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <TextField
+                    select
+                    label="Duplica su collega"
+                    value={duplicateTargetId}
+                    onChange={(e) => setDuplicateTargetId(e.target.value)}
+                    fullWidth
+                    size="small"
+                  >
+                    <MenuItem value="">Seleziona collega della squadra</MenuItem>
+                    {duplicateCandidates.map((candidate) => (
+                      <MenuItem key={candidate.id} value={candidate.id}>{candidate.name}</MenuItem>
+                    ))}
+                  </TextField>
+                  <Button
+                    variant="outlined"
+                    onClick={() => duplicateToEmployeeMutation.mutate({ source: editingBlock, employeeId: duplicateTargetId })}
+                    disabled={!duplicateTargetId || duplicateToEmployeeMutation.isPending}
+                  >
+                    {duplicateToEmployeeMutation.isPending ? "Duplico…" : "Duplica"}
+                  </Button>
+                </Stack>
+              </>
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
