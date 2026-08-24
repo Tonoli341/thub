@@ -299,6 +299,10 @@ export default function WorkloadPage() {
   // Signatures of the rows already present, to prevent copying duplicates.
   const existingSignatures = useMemo(() => new Set(rows.map(rowSignature)), [rows]);
 
+  // Nessuna riga ha una nota: la colonna Note/Info si riduce al minimo e lo
+  // spazio recuperato va a Cliente/Fornitore, che ne beneficiano di più.
+  const hasAnyNotes = useMemo(() => rows.some((row) => String(row.notes || "").trim() !== ""), [rows]);
+
   // Each preview row annotated with whether it already exists in the current table.
   const previewRowsWithMeta = useMemo(() => {
     if (!copyFromPreviewRows) return null;
@@ -575,13 +579,13 @@ export default function WorkloadPage() {
             </Box>
 
             <Box sx={{ overflowX: "auto" }}>
-              <Box sx={{ minWidth: 1260 }}>
+              <Box sx={{ minWidth: hasAnyNotes ? 1350 : 1536 }}>
                 <Table size="small" sx={{ "& .MuiTableCell-root": { verticalAlign: "middle" } }}>
                   <TableHead>
                     {/* Row 1 — group headers */}
                     <TableRow>
-                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, pl: 2.5, width: 260, verticalAlign: "middle" }}>Cliente</TableCell>
-                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: 240, verticalAlign: "middle" }}>Fornitore</TableCell>
+                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, pl: 2.5, width: hasAnyNotes ? 300 : 420, verticalAlign: "middle" }}>Cliente</TableCell>
+                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: hasAnyNotes ? 280 : 380, verticalAlign: "middle" }}>Fornitore</TableCell>
                       <TableCell
                         colSpan={2}
                         sx={{
@@ -595,7 +599,9 @@ export default function WorkloadPage() {
                         MEZZI
                       </TableCell>
                       <TableCell rowSpan={2} sx={{ ...COL_HEADER, ...NUM_CELL, color: "#7c3aed", verticalAlign: "middle" }}>PLT</TableCell>
-                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, verticalAlign: "middle" }}>Note / Info</TableCell>
+                      {/* Nessuna nota in tabella: colonna ridotta al minimo, lo
+                          spazio recuperato va a Cliente/Fornitore. */}
+                      <TableCell rowSpan={2} sx={{ ...COL_HEADER, verticalAlign: "middle", ...(hasAnyNotes ? {} : { width: 90, maxWidth: 90 }) }}>Note / Info</TableCell>
                       <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: 150, verticalAlign: "middle" }}>Magazzino</TableCell>
                       <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: 160, verticalAlign: "middle" }}>Ultima modifica</TableCell>
                       <TableCell rowSpan={2} sx={{ ...COL_HEADER, width: 48, pr: 1.5 }} />
