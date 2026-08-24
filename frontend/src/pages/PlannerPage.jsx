@@ -56,6 +56,7 @@ import {
   upsertTeamDailyNote,
 } from "../api";
 import { plannerBuildingCodes } from "../buildings";
+import { getRoleColor, getRoleLabel } from "../roles";
 import lexendFontUrl from "../assets/fonts/Lexend-VariableFont_wght.ttf";
 import logoTonoli from "../upload/logoTonoli.png";
 import { buildCopySourceTeams, notesForCopiedAssignment } from "./plannerCopy";
@@ -272,7 +273,7 @@ function getAbsenceDisplayLabel(justification) {
 // Nome + fascia oraria per il riepilogo: la stessa persona puo' comparire su
 // piu' immobili nella stessa giornata, l'orario e' cio' che li distingue.
 function getAllocationDisplayLabel(allocation) {
-  const meta = [allocation.role, allocation.timeRange].filter(Boolean).join(", ");
+  const meta = [getRoleLabel(allocation.role), allocation.timeRange].filter(Boolean).join(", ");
   return meta ? `${allocation.name} (${meta})` : allocation.name;
 }
 function compareAllocations(a, b) {
@@ -1953,10 +1954,11 @@ export default function PlannerPage() {
       const timeText = allocation.timeRange || "";
       const timeWidth = timeText ? measureText(timeText, cardMetaSize) + 10 : 0;
       const nameLines = wrapTight(allocation.name, cardWidth - 24 - timeWidth, cardNameSize);
-      const roleText = allocation.role || null;
+      const roleText = getRoleLabel(allocation.role);
+      const roleColor = allocation.role ? getRoleColor(allocation.role) : null;
       const noteLines = allocation.note ? wrapTight(allocation.note, cardWidth - 32, cardNoteSize) : [];
       const height = 9 + nameLines.length * 12 + (roleText ? 11 : 0) + (noteLines.length ? noteLines.length * 10.5 + 4 : 0) + 8;
-      return { allocation, nameLines, roleText, noteLines, timeText, height };
+      return { allocation, nameLines, roleText, roleColor, noteLines, timeText, height };
     };
 
     const drawCard = (card, x, topY, accentColor) => {
@@ -1971,7 +1973,11 @@ export default function PlannerPage() {
         drawTextRight(card.timeText, x + cardWidth - 10, topY - 16, cardMetaSize, { color: C.inkSoft });
       }
       if (card.roleText) {
-        drawText(card.roleText, x + 12, textY, cardMetaSize, { color: C.inkSoft });
+        // Quadratino colorato per ruolo (stessa palette di getRoleColor in
+        // OrgChartPage.jsx): distingue magazzinieri/officina a colpo d'occhio
+        // anche nel PDF, non solo nella card web.
+        drawTopRect(x + 12, textY + 6, 6, 6, card.roleColor);
+        drawText(card.roleText, x + 22, textY, cardMetaSize, { bold: true, color: card.roleColor });
         textY -= 11;
       }
       if (card.noteLines.length > 0) {

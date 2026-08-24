@@ -3,6 +3,7 @@ import dayjs from "dayjs";
 import FilterSelect from "../components/FilterSelect";
 import { absenceWindowLabel } from "./presenceLookup";
 import PageHeader from "../components/PageHeader";
+import { getRoleColor, getRoleLabel } from "../roles";
 import isoWeek from "dayjs/plugin/isoWeek";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -716,14 +717,20 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                           justifyContent="space-between"
                           sx={{ minWidth: 0 }}
                         >
-                          <Stack spacing={0} sx={{ minWidth: 0 }}>
+                          <Stack spacing={0.25} sx={{ minWidth: 0 }}>
                             <Typography fontSize={11.5} sx={{ minWidth: 0, color: "text.primary", overflowWrap: "anywhere" }}>
                               {person.employee_name}
                             </Typography>
                             {person.role && (
-                              <Typography fontSize={9.5} sx={{ minWidth: 0, color: "text.secondary", overflowWrap: "anywhere" }}>
-                                {person.role}
-                              </Typography>
+                              <Box sx={{
+                                alignSelf: "flex-start",
+                                px: 0.55, py: 0.1, borderRadius: 1,
+                                bgcolor: `${getRoleColor(person.role)}18`,
+                                color: getRoleColor(person.role),
+                                fontSize: 9.5, fontWeight: 700, whiteSpace: "nowrap",
+                              }}>
+                                {getRoleLabel(person.role)}
+                              </Box>
                             )}
                           </Stack>
                           {person.time_range && (
