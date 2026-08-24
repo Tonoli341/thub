@@ -1619,11 +1619,17 @@ export default function PlannerPage() {
       const logoWidth = logoRatio * logoHeight;
       drawImageTop(logoImage, margin, pageHeight - 22, logoWidth, logoHeight);
       const titleX = margin + logoWidth + 14;
-      drawText("Planning operativo giornaliero", titleX, pageHeight - 46, 20, { bold: true, color: C.ink });
+      const titleText = "Planning operativo giornaliero";
+      drawText(titleText, titleX, pageHeight - 46, 20, { bold: true, color: C.ink });
       drawTopRect(margin, pageHeight - 58, contentWidth, 1.6, C.green);
-      // La data sta sulla riga della sezione, non accanto al titolo: con i
-      // giorni lunghi ("mercoledi' 21 settembre") si sovrapporrebbero.
-      drawTextRight(capitalize(report.dateLabel), pageWidth - margin, pageHeight - 75, 13, { bold: true, color: C.ink });
+      // Data sulla stessa riga del titolo, allineata a destra: con i giorni
+      // lunghi ("mercoledi' 21 settembre") il corpo si riduce per non toccare
+      // il titolo, che ha larghezza fissa.
+      const dateText = capitalize(report.dateLabel);
+      const dateMaxWidth = (pageWidth - margin) - (titleX + measureText(titleText, 20)) - 12;
+      let dateSize = 13;
+      while (dateSize > 9 && measureText(dateText, dateSize) > dateMaxWidth) dateSize -= 1;
+      drawTextRight(dateText, pageWidth - margin, pageHeight - 46, dateSize, { bold: true, color: C.ink });
 
       if (currentSection) {
         const badge = teamBadgeImages[currentSection.id];
