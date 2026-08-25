@@ -4,6 +4,8 @@ import FilterSelect from "../components/FilterSelect";
 import { absenceWindowLabel } from "./presenceLookup";
 import PageHeader from "../components/PageHeader";
 import { ROLE_LABELS, getRoleColor, getRoleLabel } from "../roles";
+import { buildAreaColorMap, getAreaColorForKey } from "../areaColors";
+import { useAppTheme } from "../ThemeContext";
 import isoWeek from "dayjs/plugin/isoWeek";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -32,7 +34,7 @@ import {
 } from "@mui/material";
 
 import { useAuth } from "../auth";
-import { getDashboard, getDashboardApprover, getDashboardBirthdays, getDashboardExpirations, getDashboardMe, getEmployeeOptions, getJustifications, getEmployeePhoto, updateJustificationApproval } from "../api";
+import { getDashboard, getDashboardApprover, getDashboardBirthdays, getDashboardExpirations, getDashboardMe, getEmployeeOptions, getJustifications, getEmployeePhoto, getOperationalAreas, updateJustificationApproval } from "../api";
 
 dayjs.extend(isoWeek);
 
@@ -652,7 +654,7 @@ function OrgMetricCard({ title, value, accent, onClick, active, showBell = false
   );
 }
 
-function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustification }) {
+function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustification, areaColorMap }) {
   const [view, setView] = useState("area");
   const hasAlt = Boolean(altItems);
   const displayed = hasAlt && view === "area" ? altItems : items;
@@ -683,6 +685,11 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
               // solo quelle possono aprire il pannello di approvazione.
               const openable = Boolean(item.justification_id && onOpenJustification);
               const open = () => onOpenJustification(item.justification_id);
+              // Ogni area/immobile (Fossano F2, Kimberly K1, ...) prende lo
+              // stesso colore che ha nel Planner, invece del verde unico della
+              // card: e' quello che distingue a colpo d'occhio "dove" senza
+              // dover leggere il nome.
+              const cardColor = (isAreaView && getAreaColorForKey(item.employee_name, areaColorMap)?.border) || accent;
               return (
               <Box
                 key={`${item.employee_id}-${i}`}
@@ -707,15 +714,15 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                   borderRadius: 2,
                   gap: 0.75,
                   cursor: openable ? "pointer" : "default",
-                  background: isAreaView ? `${accent}08` : "transparent",
-                  border: isAreaView ? `1px solid ${accent}22` : "1px solid transparent",
-                  "&:hover": { bgcolor: isAreaView ? `${accent}10` : "#f8f8fa" },
-                  "&:focus-visible": { outline: `2px solid ${accent}`, outlineOffset: 2 },
+                  background: isAreaView ? `${cardColor}08` : "transparent",
+                  border: isAreaView ? `1px solid ${cardColor}33` : "1px solid transparent",
+                  "&:hover": { bgcolor: isAreaView ? `${cardColor}12` : "#f8f8fa" },
+                  "&:focus-visible": { outline: `2px solid ${cardColor}`, outlineOffset: 2 },
                 }}
               >
                 <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between" sx={{ minWidth: 0 }}>
                   {isAreaView ? (
-                    <Typography fontSize={13} fontWeight={700} sx={{ minWidth: 0, color: accent }}>
+                    <Typography fontSize={13} fontWeight={700} sx={{ minWidth: 0, color: cardColor }}>
                       {item.employee_name}
                     </Typography>
                   ) : (
@@ -727,7 +734,7 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                     </Stack>
                   )}
                   {isAreaView && (
-                    <Box sx={{ px: 0.75, py: 0.2, borderRadius: 999, bgcolor: `${accent}18`, color: accent, fontSize: 10, fontWeight: 800, flexShrink: 0, whiteSpace: "nowrap" }}>
+                    <Box sx={{ px: 0.75, py: 0.2, borderRadius: 999, bgcolor: `${cardColor}18`, color: cardColor, fontSize: 10, fontWeight: 800, flexShrink: 0, whiteSpace: "nowrap" }}>
                       {areaPeopleCount(item)} pers.
                     </Box>
                   )}
@@ -760,7 +767,7 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                                   {person.employee_name}
                                 </Typography>
                                 {person.time_range && (
-                                  <Box sx={{ px: 0.55, py: 0.1, borderRadius: 1, bgcolor: `${accent}14`, color: accent, fontSize: 10, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
+                                  <Box sx={{ px: 0.55, py: 0.1, borderRadius: 1, bgcolor: `${cardColor}14`, color: cardColor, fontSize: 10, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
                                     {person.time_range}
                                   </Box>
                                 )}
@@ -1526,6 +1533,20 @@ export default function DashboardPage() {
 
   const approverPending = approverQuery.data?.pending_requests ?? [];
 
+  // Stessa queryKey del Planner (backend/app/api/dashboard.py usa la stessa
+  // chiave "Area Immobile"): condivide la cache e garantisce che un'area
+  // abbia sempre lo stesso colore in entrambe le pagine.
+  const { darkMode } = useAppTheme();
+  const areasQuery = useQuery({
+    queryKey: ["operational-areas", "planner"],
+    queryFn: () => getOperationalAreas({ activeOnly: true, operationalOnly: true }),
+    staleTime: 5 * 60 * 1000,
+  });
+  const areaColorMap = useMemo(
+    () => buildAreaColorMap(areasQuery.data, darkMode),
+    [areasQuery.data, darkMode]
+  );
+
   function toggleOrg(key) {
     setActiveOrgCard((prev) => (prev === key ? null : key));
   }
@@ -1680,6 +1701,7 @@ export default function DashboardPage() {
                   : undefined}
                 altItems={activeOrgConfig.key === "present" ? (orgData.present_by_area ?? []) : undefined}
                 altTitle="In Planner oggi · per area operativa"
+                areaColorMap={areaColorMap}
               />
             </Stack>
           )}
