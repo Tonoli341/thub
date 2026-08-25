@@ -56,7 +56,7 @@ import {
   upsertTeamDailyNote,
 } from "../api";
 import { plannerBuildingCodes } from "../buildings";
-import { getRoleColor, getRoleLabel } from "../roles";
+import { groupByRole } from "../roles";
 import { AREA_PALETTE, buildAreaColorMap } from "../areaColors";
 import lexendFontUrl from "../assets/fonts/Lexend-VariableFont_wght.ttf";
 import logoTonoli from "../upload/logoTonoli.png";
@@ -252,8 +252,7 @@ function getAbsenceDisplayLabel(justification) {
 // Nome + fascia oraria per il riepilogo: la stessa persona puo' comparire su
 // piu' immobili nella stessa giornata, l'orario e' cio' che li distingue.
 function getAllocationDisplayLabel(allocation) {
-  const meta = [getRoleLabel(allocation.role), allocation.timeRange].filter(Boolean).join(", ");
-  return meta ? `${allocation.name} (${meta})` : allocation.name;
+  return allocation.timeRange ? `${allocation.name} (${allocation.timeRange})` : allocation.name;
 }
 function compareAllocations(a, b) {
   return a.name.localeCompare(b.name) || String(a.startTime ?? "").localeCompare(String(b.startTime ?? ""));
@@ -1412,6 +1411,7 @@ export default function PlannerPage() {
           )),
         peopleCount: new Set(group.allocations.map((allocation) => allocation.employeeId)).size,
       }))
+      .map((group) => ({ ...group, roleGroups: groupByRole(group.allocations) }))
       // "Senza area" in coda: e' il raccoglitore, non un'area vera.
       .sort((a, b) =>
         Number(a.name === NO_AREA_KEY) - Number(b.name === NO_AREA_KEY)
@@ -1495,8 +1495,11 @@ export default function PlannerPage() {
     if (report.areaGroups.length === 0) lines.push("• Nessuna allocazione");
     for (const group of report.areaGroups) {
       lines.push(`🏢 ${group.name} (${group.peopleCount} ${group.peopleCount === 1 ? "persona" : "persone"})`);
-      for (const allocation of group.allocations) {
-        lines.push(`  - ${getAllocationDisplayLabel(allocation)}${allocation.note ? ` — Note: ${allocation.note}` : ""}`);
+      for (const roleGroup of group.roleGroups) {
+        lines.push(`  ${roleGroup.label} (${roleGroup.items.length})`);
+        for (const allocation of roleGroup.items) {
+          lines.push(`    - ${getAllocationDisplayLabel(allocation)}${allocation.note ? ` — Note: ${allocation.note}` : ""}`);
+        }
       }
     }
     lines.push("");
@@ -1929,11 +1932,9 @@ export default function PlannerPage() {
       const timeText = allocation.timeRange || "";
       const timeWidth = timeText ? measureText(timeText, cardMetaSize) + 10 : 0;
       const nameLines = wrapTight(allocation.name, cardWidth - 24 - timeWidth, cardNameSize);
-      const roleText = getRoleLabel(allocation.role);
-      const roleColor = allocation.role ? getRoleColor(allocation.role) : null;
       const noteLines = allocation.note ? wrapTight(allocation.note, cardWidth - 32, cardNoteSize) : [];
-      const height = 9 + nameLines.length * 12 + (roleText ? 11 : 0) + (noteLines.length ? noteLines.length * 10.5 + 4 : 0) + 8;
-      return { allocation, nameLines, roleText, roleColor, noteLines, timeText, height };
+      const height = 9 + nameLines.length * 12 + (noteLines.length ? noteLines.length * 10.5 + 4 : 0) + 8;
+      return { allocation, nameLines, noteLines, timeText, height };
     };
 
     const drawCard = (card, x, topY, accentColor) => {
@@ -1946,14 +1947,6 @@ export default function PlannerPage() {
       });
       if (card.timeText) {
         drawTextRight(card.timeText, x + cardWidth - 10, topY - 16, cardMetaSize, { color: C.inkSoft });
-      }
-      if (card.roleText) {
-        // Quadratino colorato per ruolo (stessa palette di getRoleColor in
-        // OrgChartPage.jsx): distingue magazzinieri/officina a colpo d'occhio
-        // anche nel PDF, non solo nella card web.
-        drawTopRect(x + 12, textY + 6, 6, 6, card.roleColor);
-        drawText(card.roleText, x + 22, textY, cardMetaSize, { bold: true, color: card.roleColor });
-        textY -= 11;
       }
       if (card.noteLines.length > 0) {
         textY -= 2;
@@ -2023,7 +2016,13 @@ export default function PlannerPage() {
       ensureSpace(38 + 46);
       drawSectionBand(group, group.peopleCount);
       currentSection = group;
-      drawCardGrid(group.allocations, group.color);
+      // Dentro l'area, le persone sono sottoraggruppate per ruolo TMS
+      // (magazziniere/officina/...) come nella card "In Planner oggi" della
+      // Dashboard: stessa etichetta e stesso colore per ruolo.
+      for (const roleGroup of group.roleGroups) {
+        drawGroupLabel(`${roleGroup.label} (${roleGroup.items.length})`, { color: roleGroup.color });
+        drawCardGrid(roleGroup.items, roleGroup.color);
+      }
       currentSection = null;
       y -= 8;
     }

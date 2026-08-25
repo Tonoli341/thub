@@ -3,7 +3,7 @@ import dayjs from "dayjs";
 import FilterSelect from "../components/FilterSelect";
 import { absenceWindowLabel } from "./presenceLookup";
 import PageHeader from "../components/PageHeader";
-import { ROLE_LABELS, getRoleColor, getRoleLabel } from "../roles";
+import { groupByRole } from "../roles";
 import { buildAreaColorMap, getAreaColorForKey } from "../areaColors";
 import { useAppTheme } from "../ThemeContext";
 import isoWeek from "dayjs/plugin/isoWeek";
@@ -223,33 +223,6 @@ function fmtAbsenceTime(startTime, endTime) {
 function areaPeopleCount(item) {
   if (item.people?.length) return new Set(item.people.map((person) => person.employee_id)).size;
   return item.info ? item.info.split(",").filter(Boolean).length : 0;
-}
-
-// Sottogruppi per ruolo dentro la card di un'area: l'ordine segue ROLE_LABELS
-// (magazzinieri, autisti, ...), chi non ha un tms_role_description finisce in
-// un gruppo residuo in coda invece di sparire dall'elenco.
-const ROLE_ORDER = Object.keys(ROLE_LABELS);
-const NO_ROLE_KEY = "_SENZA_RUOLO";
-const NO_ROLE_COLOR = "#8a8f98";
-
-function groupPeopleByRole(people) {
-  const buckets = new Map();
-  for (const person of people) {
-    const key = person.role || NO_ROLE_KEY;
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key).push(person);
-  }
-  const orderedKeys = [
-    ...ROLE_ORDER.filter((key) => buckets.has(key)),
-    ...[...buckets.keys()].filter((key) => key !== NO_ROLE_KEY && !ROLE_ORDER.includes(key)),
-    ...(buckets.has(NO_ROLE_KEY) ? [NO_ROLE_KEY] : []),
-  ];
-  return orderedKeys.map((key) => ({
-    key,
-    label: key === NO_ROLE_KEY ? "Senza ruolo" : getRoleLabel(key),
-    color: key === NO_ROLE_KEY ? NO_ROLE_COLOR : getRoleColor(key),
-    people: buckets.get(key),
-  }));
 }
 
 function StatusBadge({ status }) {
@@ -742,7 +715,7 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                 <Stack direction="row" spacing={0.5} alignItems="flex-start" justifyContent="space-between" sx={{ minWidth: 0, gap: 1 }}>
                   {isAreaView && item.people?.length > 0 ? (
                     <Stack spacing={0.85} sx={{ minWidth: 0, flex: 1 }}>
-                      {groupPeopleByRole(item.people).map((group) => (
+                      {groupByRole(item.people).map((group) => (
                         <Box key={group.key} sx={{ minWidth: 0 }}>
                           <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mb: 0.3 }}>
                             <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: group.color, flexShrink: 0 }} />
@@ -750,11 +723,11 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                               {group.label}
                             </Typography>
                             <Typography sx={{ fontSize: 10, fontWeight: 700, color: `${group.color}99` }}>
-                              {group.people.length}
+                              {group.items.length}
                             </Typography>
                           </Stack>
                           <Stack spacing={0.3} sx={{ pl: 1.1, borderLeft: `2px solid ${group.color}40` }}>
-                            {group.people.map((person, personIndex) => (
+                            {group.items.map((person, personIndex) => (
                               <Stack
                                 key={`${person.employee_id}-${personIndex}`}
                                 direction="row"
