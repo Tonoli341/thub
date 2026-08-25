@@ -3,7 +3,7 @@ import dayjs from "dayjs";
 import FilterSelect from "../components/FilterSelect";
 import { absenceWindowLabel } from "./presenceLookup";
 import PageHeader from "../components/PageHeader";
-import { getRoleColor, getRoleLabel } from "../roles";
+import { ROLE_LABELS, getRoleColor, getRoleLabel } from "../roles";
 import isoWeek from "dayjs/plugin/isoWeek";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -221,6 +221,33 @@ function fmtAbsenceTime(startTime, endTime) {
 function areaPeopleCount(item) {
   if (item.people?.length) return new Set(item.people.map((person) => person.employee_id)).size;
   return item.info ? item.info.split(",").filter(Boolean).length : 0;
+}
+
+// Sottogruppi per ruolo dentro la card di un'area: l'ordine segue ROLE_LABELS
+// (magazzinieri, autisti, ...), chi non ha un tms_role_description finisce in
+// un gruppo residuo in coda invece di sparire dall'elenco.
+const ROLE_ORDER = Object.keys(ROLE_LABELS);
+const NO_ROLE_KEY = "_SENZA_RUOLO";
+const NO_ROLE_COLOR = "#8a8f98";
+
+function groupPeopleByRole(people) {
+  const buckets = new Map();
+  for (const person of people) {
+    const key = person.role || NO_ROLE_KEY;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(person);
+  }
+  const orderedKeys = [
+    ...ROLE_ORDER.filter((key) => buckets.has(key)),
+    ...[...buckets.keys()].filter((key) => key !== NO_ROLE_KEY && !ROLE_ORDER.includes(key)),
+    ...(buckets.has(NO_ROLE_KEY) ? [NO_ROLE_KEY] : []),
+  ];
+  return orderedKeys.map((key) => ({
+    key,
+    label: key === NO_ROLE_KEY ? "Senza ruolo" : getRoleLabel(key),
+    color: key === NO_ROLE_KEY ? NO_ROLE_COLOR : getRoleColor(key),
+    people: buckets.get(key),
+  }));
 }
 
 function StatusBadge({ status }) {
@@ -707,38 +734,40 @@ function OrgDetailPanel({ title, accent, items, altItems, altTitle, onOpenJustif
                 </Stack>
                 <Stack direction="row" spacing={0.5} alignItems="flex-start" justifyContent="space-between" sx={{ minWidth: 0, gap: 1 }}>
                   {isAreaView && item.people?.length > 0 ? (
-                    <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>
-                      {item.people.map((person, personIndex) => (
-                        <Stack
-                          key={`${person.employee_id}-${personIndex}`}
-                          direction="row"
-                          spacing={0.75}
-                          alignItems="baseline"
-                          justifyContent="space-between"
-                          sx={{ minWidth: 0 }}
-                        >
-                          <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-                            <Typography fontSize={11.5} sx={{ minWidth: 0, color: "text.primary", overflowWrap: "anywhere" }}>
-                              {person.employee_name}
+                    <Stack spacing={0.85} sx={{ minWidth: 0, flex: 1 }}>
+                      {groupPeopleByRole(item.people).map((group) => (
+                        <Box key={group.key} sx={{ minWidth: 0 }}>
+                          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mb: 0.3 }}>
+                            <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: group.color, flexShrink: 0 }} />
+                            <Typography sx={{ fontSize: 10, fontWeight: 800, color: group.color, textTransform: "uppercase", letterSpacing: 0.4, lineHeight: 1.2 }}>
+                              {group.label}
                             </Typography>
-                            {person.role && (
-                              <Box sx={{
-                                alignSelf: "flex-start",
-                                px: 0.55, py: 0.1, borderRadius: 1,
-                                bgcolor: `${getRoleColor(person.role)}18`,
-                                color: getRoleColor(person.role),
-                                fontSize: 9.5, fontWeight: 700, whiteSpace: "nowrap",
-                              }}>
-                                {getRoleLabel(person.role)}
-                              </Box>
-                            )}
+                            <Typography sx={{ fontSize: 10, fontWeight: 700, color: `${group.color}99` }}>
+                              {group.people.length}
+                            </Typography>
                           </Stack>
-                          {person.time_range && (
-                            <Box sx={{ px: 0.55, py: 0.1, borderRadius: 1, bgcolor: `${accent}14`, color: accent, fontSize: 10, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
-                              {person.time_range}
-                            </Box>
-                          )}
-                        </Stack>
+                          <Stack spacing={0.3} sx={{ pl: 1.1, borderLeft: `2px solid ${group.color}40` }}>
+                            {group.people.map((person, personIndex) => (
+                              <Stack
+                                key={`${person.employee_id}-${personIndex}`}
+                                direction="row"
+                                spacing={0.75}
+                                alignItems="baseline"
+                                justifyContent="space-between"
+                                sx={{ minWidth: 0 }}
+                              >
+                                <Typography fontSize={11.5} sx={{ minWidth: 0, color: "text.primary", overflowWrap: "anywhere" }}>
+                                  {person.employee_name}
+                                </Typography>
+                                {person.time_range && (
+                                  <Box sx={{ px: 0.55, py: 0.1, borderRadius: 1, bgcolor: `${accent}14`, color: accent, fontSize: 10, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
+                                    {person.time_range}
+                                  </Box>
+                                )}
+                              </Stack>
+                            ))}
+                          </Stack>
+                        </Box>
                       ))}
                     </Stack>
                   ) : (
