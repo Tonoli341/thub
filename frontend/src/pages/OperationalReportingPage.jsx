@@ -333,6 +333,20 @@ function timeMinutes(value) {
   return hours * 60 + minutes;
 }
 
+// Digitazione libera da tastiera: "9", "930", "09:30" sono tutti orari validi,
+// convalidati solo alla conferma (vedi TimeTextField). Nessun separatore
+// obbligatorio, a differenza dell'input nativo type="time".
+function parseTypedTime(raw) {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim().replace(/[.,]/g, ":");
+  const match = trimmed.match(/^(\d{1,2}):?(\d{2})?$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = match[2] ? Number(match[2]) : 0;
+  if (hours > 23 || minutes > 59) return null;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
 function draftTotals(draft) {
   const start = timeMinutes(draft.actual_start);
   const end = timeMinutes(draft.actual_end);
@@ -821,6 +835,40 @@ function withJupiterDescriptions(customers = []) {
   return customers.filter((customer) => (customer.jupiter_descriptions ?? []).length > 0);
 }
 
+// Campo Dalle/Alle a digitazione libera: niente picker orario nativo. Il
+// valore esterno (derivato dal drag) aggiorna il campo solo quando non è a
+// fuoco, così non si perde quello che l'utente sta scrivendo; la conversione
+// avviene solo alla conferma (blur o Invio), non a ogni tasto premuto.
+function TimeTextField({ label, value, onCommit, disabled }) {
+  const [draft, setDraft] = useState(value ?? "");
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(value ?? "");
+  }, [value, focused]);
+  const commit = () => {
+    const parsed = parseTypedTime(draft);
+    if (parsed && parsed !== value) onCommit(parsed);
+    setDraft(parsed ?? (value ?? ""));
+  };
+  return (
+    <TextField
+      label={label}
+      size="small"
+      disabled={disabled}
+      placeholder="HH:MM"
+      value={draft}
+      inputProps={{ inputMode: "numeric", maxLength: 5 }}
+      InputLabelProps={{ shrink: true }}
+      onFocus={() => setFocused(true)}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => { setFocused(false); commit(); }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") { commit(); event.target.blur(); }
+      }}
+    />
+  );
+}
+
 function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBounds, totalWork, onChange, onPausesChange }) {
   const [customerToAdd, setCustomerToAdd] = useState("");
   const [jupiterToAdd, setJupiterToAdd] = useState("");
@@ -1130,23 +1178,15 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
             </Typography>
           )}
           <Stack direction="row" spacing={1}>
-            <TextField
-              type="time"
+            <TimeTextField
               label="Dalle"
-              size="small"
               value={selectedAllocationSegments.length ? clockLabel(selectedAllocationSegments[0].start) : ""}
-              inputProps={{ step: 600 }}
-              InputLabelProps={{ shrink: true }}
-              onChange={(event) => handleSelectedStartChange(event.target.value)}
+              onCommit={handleSelectedStartChange}
             />
-            <TextField
-              type="time"
+            <TimeTextField
               label="Alle"
-              size="small"
               value={selectedAllocationSegments.length ? clockLabel(selectedAllocationSegments[selectedAllocationSegments.length - 1].end) : ""}
-              inputProps={{ step: 600 }}
-              InputLabelProps={{ shrink: true }}
-              onChange={(event) => handleSelectedEndChange(event.target.value)}
+              onCommit={handleSelectedEndChange}
             />
           </Stack>
           <TextField
@@ -1168,24 +1208,16 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
       >
         <Box className="op-report-create-menu">
           <Stack direction="row" spacing={1} className="op-report-create-time">
-            <TextField
-              type="time"
+            <TimeTextField
               label="Dalle"
-              size="small"
               value={createMenu ? clockLabel(createMenu.clockStart) : ""}
-              inputProps={{ step: 600 }}
-              InputLabelProps={{ shrink: true }}
-              onChange={(event) => updateCreateStart(event.target.value)}
+              onCommit={updateCreateStart}
             />
             {createMode === "activity" && (
-              <TextField
-                type="time"
+              <TimeTextField
                 label="Alle"
-                size="small"
                 value={createMenu ? clockLabel(createMenuEndClock) : ""}
-                inputProps={{ step: 600 }}
-                InputLabelProps={{ shrink: true }}
-                onChange={(event) => updateCreateEnd(event.target.value)}
+                onCommit={updateCreateEnd}
               />
             )}
           </Stack>
