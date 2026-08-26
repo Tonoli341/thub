@@ -787,12 +787,14 @@ function FieldLibrarySection({ items = [], isLoading, error, onCreate, onEdit, o
 
 function InfinityMapDialog({ open, onClose, onSave, item, infinityItems, customerSuppliers, operationalAreas, fieldDefinitions }) {
   const isEdit = Boolean(item?.id);
+  // Un incrocio esistente resta un'unica riga (area singola, come lo schema
+  // DB): la selezione multi-area serve solo in creazione, dove ogni area
+  // scelta diventa una riga separata al salvataggio (vedi performSave).
   const [form, setForm] = useState({
     infinityBillingItem: null,
     customerSupplier: null,
     jupiterDescription: "",
-    operationalArea: null,
-    buildings: [],
+    areaSelections: [], // [{ area: OperationalArea, buildings: string[] }]
     isActive: true,
   });
   const [fieldAssignments, setFieldAssignments] = useState([]);
@@ -802,6 +804,7 @@ function InfinityMapDialog({ open, onClose, onSave, item, infinityItems, custome
 
   function handleOpen() {
     if (item) {
+      const area = operationalAreas.find((e) => e.id === item.operational_area_id) ?? null;
       setForm({
         infinityBillingItem: infinityItems.find((e) => e.id === item.infinity_billing_item_id) ?? null,
         customerSupplier: customerSuppliers.find((e) => e.code === item.customer_supplier_code) ?? {
@@ -809,8 +812,7 @@ function InfinityMapDialog({ open, onClose, onSave, item, infinityItems, custome
           description: item.customer_supplier_description,
         },
         jupiterDescription: item.jupiter_description ?? "",
-        operationalArea: operationalAreas.find((e) => e.id === item.operational_area_id) ?? null,
-        buildings: item.buildings ?? [],
+        areaSelections: area ? [{ area, buildings: item.buildings ?? [] }] : [],
         isActive: item.is_active,
       });
       setFieldAssignments(
@@ -823,7 +825,7 @@ function InfinityMapDialog({ open, onClose, onSave, item, infinityItems, custome
           .filter((fa) => fa.field_def !== null)
       );
     } else {
-      setForm({ infinityBillingItem: null, customerSupplier: null, jupiterDescription: "", operationalArea: null, buildings: [], isActive: true });
+      setForm({ infinityBillingItem: null, customerSupplier: null, jupiterDescription: "", areaSelections: [], isActive: true });
       setFieldAssignments([]);
     }
     setError(null);
@@ -859,21 +861,25 @@ function InfinityMapDialog({ open, onClose, onSave, item, infinityItems, custome
     setIsSaving(true);
     setError(null);
     try {
-      const mapPayload = {
+      // Nessuna area selezionata = incrocio valido per tutte (comportamento
+      // storico, FK nullable); un'area per selezione diventa una riga a sé.
+      const areaParts = form.areaSelections.length > 0
+        ? form.areaSelections.map((sel) => ({ operational_area_id: sel.area.id, buildings: sel.buildings }))
+        : [{ operational_area_id: null, buildings: [] }];
+      const mapPayloads = areaParts.map((areaPart) => ({
         infinity_billing_item_id: form.infinityBillingItem.id,
         customer_supplier_code: form.customerSupplier.code,
         customer_supplier_description: form.customerSupplier.description,
         jupiter_description: form.jupiterDescription.trim() || null,
-        operational_area_id: form.operationalArea?.id ?? null,
-        buildings: form.buildings,
         is_active: form.isActive,
-      };
+        ...areaPart,
+      }));
       const assignments = fieldAssignments.map((a, idx) => ({
         field_definition_id: a.field_def.id,
         is_required: a.is_required,
         sort_order: idx,
       }));
-      await onSave({ mapPayload, assignments });
+      await onSave({ mapPayloads, assignments });
       setWarningOpen(false);
       onClose();
     } catch (e) {
@@ -913,22 +919,65 @@ function InfinityMapDialog({ open, onClose, onSave, item, infinityItems, custome
       </DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
-          <Autocomplete
-            options={operationalAreas}
-            value={form.operationalArea}
-            onChange={(_, value) => setForm((c) => ({ ...c, operationalArea: value, buildings: [] }))}
-            getOptionLabel={(o) => o.name}
-            isOptionEqualToValue={(o, v) => o.id === v.id}
-            renderInput={(params) => <TextField {...params} label="Area operativa" size="small" />}
-          />
-          <Autocomplete
-            multiple
-            options={reportingBuildingCodes(form.operationalArea?.buildings)}
-            value={form.buildings}
-            onChange={(_, value) => setForm((c) => ({ ...c, buildings: value }))}
-            disabled={!form.operationalArea || reportingBuildingCodes(form.operationalArea?.buildings).length === 0}
-            renderInput={(params) => <TextField {...params} label="Immobili" size="small" />}
-          />
+          {isEdit ? (
+            <>
+              <Autocomplete
+                options={operationalAreas}
+                value={form.areaSelections[0]?.area ?? null}
+                onChange={(_, value) => setForm((c) => ({ ...c, areaSelections: value ? [{ area: value, buildings: [] }] : [] }))}
+                getOptionLabel={(o) => o.name}
+                isOptionEqualToValue={(o, v) => o.id === v.id}
+                renderInput={(params) => <TextField {...params} label="Area operativa" size="small" />}
+              />
+              <Autocomplete
+                multiple
+                options={reportingBuildingCodes(form.areaSelections[0]?.area?.buildings)}
+                value={form.areaSelections[0]?.buildings ?? []}
+                onChange={(_, value) => setForm((c) => ({
+                  ...c,
+                  areaSelections: c.areaSelections.length ? [{ ...c.areaSelections[0], buildings: value }] : [],
+                }))}
+                disabled={!form.areaSelections[0]?.area || reportingBuildingCodes(form.areaSelections[0]?.area?.buildings).length === 0}
+                renderInput={(params) => <TextField {...params} label="Immobili" size="small" />}
+              />
+            </>
+          ) : (
+            <>
+              <Autocomplete
+                multiple
+                options={operationalAreas}
+                value={form.areaSelections.map((sel) => sel.area)}
+                onChange={(_, values) => setForm((c) => ({
+                  ...c,
+                  // Un'area già selezionata mantiene gli immobili scelti; una
+                  // nuova parte senza immobili (= tutti quelli dell'area).
+                  areaSelections: values.map((area) => c.areaSelections.find((sel) => sel.area.id === area.id) ?? { area, buildings: [] }),
+                }))}
+                getOptionLabel={(o) => o.name}
+                isOptionEqualToValue={(o, v) => o.id === v.id}
+                renderInput={(params) => (
+                  <TextField {...params} label="Aree operative" size="small" helperText="Nessuna area = incrocio valido per tutte" />
+                )}
+              />
+              {form.areaSelections.map((sel) => {
+                const codes = reportingBuildingCodes(sel.area.buildings);
+                return (
+                  <Autocomplete
+                    key={sel.area.id}
+                    multiple
+                    options={codes}
+                    value={sel.buildings}
+                    onChange={(_, value) => setForm((c) => ({
+                      ...c,
+                      areaSelections: c.areaSelections.map((s) => (s.area.id === sel.area.id ? { ...s, buildings: value } : s)),
+                    }))}
+                    disabled={codes.length === 0}
+                    renderInput={(params) => <TextField {...params} label={`Immobili — ${sel.area.name}`} size="small" />}
+                  />
+                );
+              })}
+            </>
+          )}
           <Autocomplete
             options={customerSuppliers}
             value={form.customerSupplier}
@@ -1287,18 +1336,41 @@ function InfinityMapSection({ items = [], isLoading, error, infinityItems, custo
     setDialogOpen(true);
   }
 
-  async function handleSave({ mapPayload, assignments }) {
-    let mapId;
+  async function handleSave({ mapPayloads, assignments }) {
     if (editItem) {
-      await onEdit(editItem.id, mapPayload);
-      mapId = editItem.id;
+      await onEdit(editItem.id, mapPayloads[0]);
+      await onReplaceAssignments(editItem.id, assignments);
       setSnackbar("Incrocio aggiornato");
-    } else {
-      const newMap = await onCreate(mapPayload);
-      mapId = newMap.id;
-      setSnackbar(dialogItem ? "Incrocio duplicato" : "Incrocio creato");
+      return;
     }
-    await onReplaceAssignments(mapId, assignments);
+    if (mapPayloads.length === 1) {
+      const newMap = await onCreate(mapPayloads[0]);
+      await onReplaceAssignments(newMap.id, assignments);
+      setSnackbar(dialogItem ? "Incrocio duplicato" : "Incrocio creato");
+      return;
+    }
+    // Più aree selezionate = più righe indipendenti: stesso schema "crea e
+    // conta gli scarti" di handleConfirmDuplicateClient qui sotto, per non
+    // perdere le aree già create se una combinazione risulta già esistente.
+    let created = 0;
+    let skipped = 0;
+    for (const mapPayload of mapPayloads) {
+      try {
+        const newMap = await onCreate(mapPayload);
+        if (assignments.length > 0) await onReplaceAssignments(newMap.id, assignments);
+        created += 1;
+      } catch {
+        skipped += 1;
+      }
+    }
+    if (created === 0) {
+      throw new Error("Nessun incrocio creato: esiste già per tutte le aree selezionate.");
+    }
+    setSnackbar(
+      skipped > 0
+        ? `${created} incroci creati, ${skipped} già esistenti`
+        : `${created} incroci creati`
+    );
   }
 
   async function handleConfirmDelete() {
