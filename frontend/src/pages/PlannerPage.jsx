@@ -134,6 +134,17 @@ const NO_TEAM_KEY = "__no_team__";
 // dalla card "In Planner oggi" della dashboard.
 const NO_AREA_KEY = "Senza area";
 
+// Formazione e visita idoneita' non hanno area/immobile (saveEditBlock non li
+// invia mai per queste due cause): senza questa etichetta finirebbero confuse
+// dentro "Senza area" nel riepilogo, come nella card Dashboard. Qui senza
+// emoji (a differenza della card Dashboard, che e' solo React/MUI): il nome
+// del gruppo passa anche dentro drawText del PDF, il cui font Lexend non ha
+// glifi emoji e pdf-lib fallirebbe a codificarli.
+const CAUSE_LABELS = {
+  FORMAZIONE: "Formazione",
+  VISITA_IDONEITA: "Visita idoneità",
+};
+
 // ── helpers ────────────────────────────────────────────────────────────────
 function normalizeAreaKey(area) { return String(area ?? "").trim().toUpperCase(); }
 function getImmobileOptions(area, areasData) {
@@ -1373,12 +1384,18 @@ export default function PlannerPage() {
       allocationCount += 1;
       const areaName = String(assignment.area ?? "").trim();
       const immobile = String(assignment.immobile ?? "").trim();
-      const key = [areaName, immobile].filter(Boolean).join(" ") || NO_AREA_KEY;
+      const causeLabel = CAUSE_LABELS[assignment.cause];
+      const key = causeLabel || [areaName, immobile].filter(Boolean).join(" ") || NO_AREA_KEY;
       if (!groupsByKey[key]) {
+        const causeColor = assignment.cause === "FORMAZIONE"
+          ? TRAINING_COLOR.border
+          : assignment.cause === "VISITA_IDONEITA"
+          ? MEDICAL_CHECK_COLOR.border
+          : null;
         groupsByKey[key] = {
           id: `area:${key}`,
           name: key,
-          color: areaColorMap[areaName]?.border ?? "#006f3d",
+          color: causeColor ?? areaColorMap[areaName]?.border ?? "#006f3d",
           allocations: [],
         };
       }

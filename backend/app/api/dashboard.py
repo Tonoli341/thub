@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import get_db
-from app.enums import JustificationApprovalStatus
+from app.enums import AssignmentCause, JustificationApprovalStatus
 from app.models import Assignment, Employee, Justification, User
 from app.schemas import (
     DashboardAreaPerson,
@@ -35,6 +35,15 @@ from app.services.tms import fetch_all_employee_expirations_from_tms
 
 # Raccoglitore delle allocazioni senza area, come nel riepilogo del Planner.
 NO_AREA_LABEL = "Senza area"
+
+# Formazione e visita idoneita' non hanno area/immobile (vedi editingBlock in
+# PlannerPage.jsx: il payload di queste due cause non li invia mai): senza
+# questa etichetta finirebbero confuse dentro "Senza area" con chi non ha
+# davvero un'area assegnata.
+CAUSE_LABELS = {
+    AssignmentCause.formazione: "🎓 Formazione",
+    AssignmentCause.visita_idoneita: "🩺 Visita idoneità",
+}
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -123,7 +132,7 @@ def get_dashboard(
     present_rows = db.execute(
         select(
             Employee.id, Employee.full_name, Employee.tms_role_description,
-            Assignment.area, Assignment.immobile,
+            Assignment.area, Assignment.immobile, Assignment.cause,
             Assignment.start_time, Assignment.end_time,
         )
         .join(Assignment, Assignment.employee_id == Employee.id)
@@ -137,10 +146,10 @@ def get_dashboard(
     area_shifts: dict[str, list[tuple[str, str, str | None, str | None]]] = {}
     seen_area_shifts: set[tuple[str, str, str | None]] = set()
     shifts_per_employee: dict[str, int] = {}
-    for emp_id, emp_name, role, area, immobile, start_time, end_time in present_rows:
+    for emp_id, emp_name, role, area, immobile, cause, start_time, end_time in present_rows:
         if emp_id not in emp_areas:
             emp_areas[emp_id] = (emp_name, [])
-        area_key = " ".join(filter(None, [area, immobile]))
+        area_key = CAUSE_LABELS.get(cause) or " ".join(filter(None, [area, immobile]))
         if area_key:
             emp_areas[emp_id][1].append(area_key)
         time_range = (
