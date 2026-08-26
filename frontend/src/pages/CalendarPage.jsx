@@ -1,7 +1,7 @@
 import dayjs from "dayjs";
 
 import PageHeader from "../components/PageHeader";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -2392,6 +2392,29 @@ export default function CalendarPage() {
   const [view, setView] = useState("month");
   const [currentDate, setCurrentDate] = useState(today);
   const [selectedDate, setSelectedDate] = useState(today.format("YYYY-MM-DD"));
+  // La cella di oggi (mese o settimana) è già evidenziata via CSS (.today);
+  // qui si tratta solo di farla scorrere in vista, perché su una griglia di 5-6
+  // settimane può restare sotto la piega.
+  const todayCellRef = useRef(null);
+  const [pendingTodayScroll, setPendingTodayScroll] = useState(false);
+  useEffect(() => {
+    if (!pendingTodayScroll) return;
+    todayCellRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setPendingTodayScroll(false);
+  }, [pendingTodayScroll, currentDate, view]);
+  // Alla prima apertura della pagina la vista è già su oggi di default: basta
+  // portarlo in vista, senza toccare currentDate/selectedDate.
+  useEffect(() => {
+    if (activeTab === "calendario") {
+      todayCellRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  function goToToday() {
+    setCurrentDate(today);
+    setSelectedDate(today.format("YYYY-MM-DD"));
+    setPendingTodayScroll(true);
+  }
   const [modalOpen, setModalOpen] = useState(false);
   const [daySummaryDate, setDaySummaryDate] = useState(null);
   const [editingJustification, setEditingJustification] = useState(null);
@@ -2853,7 +2876,7 @@ export default function CalendarPage() {
               <Button className="calendar-nav-button" onClick={() => move(1)}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
               </Button>
-              <Button className="calendar-today-button" onClick={() => setCurrentDate(today)}>Oggi</Button>
+              <Button className="calendar-today-button" onClick={goToToday}>Oggi</Button>
             </Box>
             <Stack direction="row" spacing={1} className="calendar-controls-right">
               <Button className="calendar-ghost-button" onClick={handleLastMonthExport} disabled={isExportingMonth}>
@@ -2913,6 +2936,7 @@ export default function CalendarPage() {
                           return (
                             <Box
                               key={date.toString()}
+                              ref={isToday ? todayCellRef : undefined}
                               className={`calendar-month-cell${inMonth ? "" : " out-of-range"}${isToday ? " today" : ""}`}
                               onClick={() => openDaySummary(date)}
                             >
@@ -2982,6 +3006,7 @@ export default function CalendarPage() {
                 return (
                   <Paper
                     key={date.toString()}
+                    ref={isToday ? todayCellRef : undefined}
                     onClick={() => openDaySummary(date)}
                     className={`calendar-week-card${isToday ? " today" : ""}`}
                   >
