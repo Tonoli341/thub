@@ -248,6 +248,27 @@ function freeNetRanges(allocations, capacity) {
   return ranges;
 }
 
+// Stessi limiti del trascinamento a bordo box (vedi startResize): l'allocazione
+// precedente/successiva più vicina, in minuti netti. Servono per bloccare gli
+// orari digitati a mano nello stesso modo in cui il drag non lascia sovrapporre
+// due attività o sforare la capienza del blocco.
+function neighborBounds(allocations, index, capacity) {
+  const current = allocations[index];
+  const currentStart = Number(current?.start_offset_minutes || 0);
+  const currentEnd = currentStart + Number(current?.minutes || 0);
+  const others = allocations.filter((_, itemIndex) => itemIndex !== index);
+  const previousEnds = others
+    .map((item) => Number(item.start_offset_minutes || 0) + Number(item.minutes || 0))
+    .filter((end) => end <= currentStart);
+  const nextStarts = others
+    .map((item) => Number(item.start_offset_minutes || 0))
+    .filter((start) => start >= currentEnd);
+  return {
+    previousEnd: previousEnds.length ? Math.max(...previousEnds) : 0,
+    nextStart: nextStarts.length ? Math.min(...nextStarts) : capacity,
+  };
+}
+
 function memberToDraft(member, workDate) {
   return {
     report_id: member.report_id ?? null,
@@ -772,6 +793,8 @@ function AllocationTimeline({
                 clockStart: clockSegment?.start ?? segment.start,
                 availableMinutes: range.end - startOffset,
                 segmentEnd: segment.end,
+                rangeStart: range.start,
+                rangeEnd: range.end,
               });
             }}
           >
@@ -852,6 +875,14 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
   const selectedAllocationTime = selectedAllocationSegments.length
     ? `${clockLabel(selectedAllocationSegments[0].start)}–${clockLabel(selectedAllocationSegments[selectedAllocationSegments.length - 1].end)}`
     : "";
+  // Il popover di creazione lavora anch'esso in minuti netti (start_offset_minutes
+  // + minutes): l'orario "Alle" mostrato va riconvertito in clock scavalcando le pause.
+  const createMenuEndSegments = createMenu
+    ? netRangeToClock(customerGeometry.work, createMenu.startOffset, createMenu.startOffset + createMenu.minutes)
+    : [];
+  const createMenuEndClock = createMenuEndSegments.length
+    ? createMenuEndSegments[createMenuEndSegments.length - 1].end
+    : createMenu?.clockStart ?? 0;
   useEffect(() => {
     if (selectedAllocationIndex != null && selectedAllocationIndex >= block.allocations.length) {
       setSelectedAllocationIndex(null);
@@ -866,6 +897,29 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
         index === selectedAllocationIndex ? { ...allocation, ...changes } : allocation
       )),
     });
+  };
+  // Digitare "Dalle"/"Alle" equivale a trascinare i bordi del box: stessi
+  // limiti di startResize (nessuna sovrapposizione, nessuno sforo di capienza),
+  // così i due modi di impostare l'orario restano sincronizzati sullo stesso dato.
+  const handleSelectedStartChange = (value) => {
+    if (selectedAllocationIndex == null || !selectedAllocation) return;
+    if (!value) return;
+    const clock = timeMinutes(value);
+    const net = Math.round(clockToNet(customerGeometry.work, clock) / 10) * 10;
+    const { previousEnd, nextStart } = neighborBounds(block.allocations, selectedAllocationIndex, block.capacity_minutes);
+    const currentEnd = Number(selectedAllocation.start_offset_minutes || 0) + Number(selectedAllocation.minutes || 0);
+    const start = Math.max(previousEnd, Math.min(currentEnd - 10, nextStart - 10, net));
+    updateSelectedAllocation({ start_offset_minutes: start, minutes: currentEnd - start });
+  };
+  const handleSelectedEndChange = (value) => {
+    if (selectedAllocationIndex == null || !selectedAllocation) return;
+    if (!value) return;
+    const clock = timeMinutes(value);
+    const net = Math.round(clockToNet(customerGeometry.work, clock) / 10) * 10;
+    const { nextStart } = neighborBounds(block.allocations, selectedAllocationIndex, block.capacity_minutes);
+    const start = Number(selectedAllocation.start_offset_minutes || 0);
+    const end = Math.max(start + 10, Math.min(nextStart, net));
+    updateSelectedAllocation({ minutes: end - start });
   };
   // Cambiando Area o Immobile cambia l'elenco degli Incroci ammessi: la scelta
   // del cliente va rifatta, e `_needs_customer` tiene fermo l'autosave finché
@@ -902,7 +956,7 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
         actual_area_name: createArea?.name ?? "",
         actual_building: createLocation.actual_building,
         start_offset_minutes: createMenu.startOffset,
-        minutes: Math.min(60, createMenu.availableMinutes),
+        minutes: createMenu.minutes,
         notes: "",
       },
     ]);
@@ -928,18 +982,58 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
 
   const openCreateMenu = (event, position) => {
     const workWindow = customerWorkWindows.find((window) => position.startOffset >= window.start && position.startOffset < window.end);
+    const availableMinutes = Math.min(position.availableMinutes, (workWindow?.end ?? position.startOffset) - position.startOffset);
     // Chi si sposta continua a lavorare dove è arrivato: il box nuovo eredita
     // la destinazione di quello che lo precede, il blocco solo se è il primo.
     setCreateLocation(defaultAllocationLocation(block, position.startOffset));
     setCreateMenu({
       ...position,
-      availableMinutes: Math.min(position.availableMinutes, (workWindow?.end ?? position.startOffset) - position.startOffset),
+      availableMinutes,
+      // Durata di default degli 60 minuti come prima; i campi Dalle/Alle nel
+      // popover permettono di correggerla digitando invece che trascinando.
+      minutes: Math.max(10, Math.min(60, availableMinutes)),
       top: event.clientY,
       left: event.clientX,
     });
     setCreateMode(null);
     setCustomerToAdd("");
     setJupiterToAdd("");
+  };
+
+  // Digitare "Dalle" o "Alle" nel popover di creazione equivale a trascinare i
+  // bordi di un box che non esiste ancora: stessi vincoli (capienza del
+  // blocco, nessuna sovrapposizione con l'attività adiacente) del resize.
+  const updateCreateStart = (value) => {
+    if (!createMenu) return;
+    if (!value) return;
+    const clock = timeMinutes(value);
+    const net = Math.round(clockToNet(customerGeometry.work, clock) / 10) * 10;
+    const currentEnd = createMenu.startOffset + createMenu.minutes;
+    const start = Math.max(createMenu.rangeStart ?? 0, Math.min(currentEnd - 10, net));
+    const newClockStart = netRangeToClock(customerGeometry.work, start, start + 1)[0]?.start ?? createMenu.clockStart;
+    const newWorkWindow = customerGeometry.work.find((window) => newClockStart >= window.start && newClockStart < window.end);
+    setCreateMenu({
+      ...createMenu,
+      startOffset: start,
+      clockStart: newClockStart,
+      segmentEnd: newWorkWindow?.end ?? createMenu.segmentEnd,
+      minutes: currentEnd - start,
+      availableMinutes: (createMenu.rangeEnd ?? currentEnd) - start,
+    });
+  };
+
+  const updateCreateEnd = (value) => {
+    if (!createMenu) return;
+    if (!value) return;
+    const clock = timeMinutes(value);
+    const net = Math.round(clockToNet(customerGeometry.work, clock) / 10) * 10;
+    const rangeEnd = createMenu.rangeEnd ?? createMenu.startOffset + createMenu.availableMinutes;
+    const end = Math.max(createMenu.startOffset + 10, Math.min(rangeEnd, net));
+    setCreateMenu({
+      ...createMenu,
+      minutes: end - createMenu.startOffset,
+      availableMinutes: rangeEnd - createMenu.startOffset,
+    });
   };
 
   return (
@@ -1035,6 +1129,26 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
               Scegli Cliente e Descrizione Jupiter validi per la nuova destinazione: la bozza non viene salvata finché il box è incompleto.
             </Typography>
           )}
+          <Stack direction="row" spacing={1}>
+            <TextField
+              type="time"
+              label="Dalle"
+              size="small"
+              value={selectedAllocationSegments.length ? clockLabel(selectedAllocationSegments[0].start) : ""}
+              inputProps={{ step: 600 }}
+              InputLabelProps={{ shrink: true }}
+              onChange={(event) => handleSelectedStartChange(event.target.value)}
+            />
+            <TextField
+              type="time"
+              label="Alle"
+              size="small"
+              value={selectedAllocationSegments.length ? clockLabel(selectedAllocationSegments[selectedAllocationSegments.length - 1].end) : ""}
+              inputProps={{ step: 600 }}
+              InputLabelProps={{ shrink: true }}
+              onChange={(event) => handleSelectedEndChange(event.target.value)}
+            />
+          </Stack>
           <TextField
             className="op-report-block-notes"
             label="Note attività"
@@ -1053,7 +1167,28 @@ function CustomerAllocationEditor({ block, blockIndex, areas, pauses, pauseBound
         className="op-report-create-popover"
       >
         <Box className="op-report-create-menu">
-          <Typography className="op-report-create-time">Dalle {createMenu ? clockLabel(createMenu.clockStart) : ""}</Typography>
+          <Stack direction="row" spacing={1} className="op-report-create-time">
+            <TextField
+              type="time"
+              label="Dalle"
+              size="small"
+              value={createMenu ? clockLabel(createMenu.clockStart) : ""}
+              inputProps={{ step: 600 }}
+              InputLabelProps={{ shrink: true }}
+              onChange={(event) => updateCreateStart(event.target.value)}
+            />
+            {createMode === "activity" && (
+              <TextField
+                type="time"
+                label="Alle"
+                size="small"
+                value={createMenu ? clockLabel(createMenuEndClock) : ""}
+                inputProps={{ step: 600 }}
+                InputLabelProps={{ shrink: true }}
+                onChange={(event) => updateCreateEnd(event.target.value)}
+              />
+            )}
+          </Stack>
           {!createMode && (
             <Stack direction="row" spacing={1}>
               <Button variant="contained" onClick={() => setCreateMode("activity")}>Attività cliente</Button>

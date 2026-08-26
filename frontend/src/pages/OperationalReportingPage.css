@@ -576,7 +576,7 @@
 
 .op-report-create-popover .MuiPaper-root { border-radius: 10px; box-shadow: 0 10px 32px rgba(20, 32, 28, .20); }
 .op-report-create-menu { width: 320px; padding: 12px; }
-.op-report-create-time { margin-bottom: 9px !important; color: var(--opr-faded); font-size: 10px !important; font-weight: 800 !important; text-transform: uppercase; }
+.op-report-create-time { margin-bottom: 9px !important; }
 
 .op-report-drag-hint { color: var(--opr-faded); font-size: 8.5px !important; line-height: 1 !important; }
 
