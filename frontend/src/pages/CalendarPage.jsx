@@ -2392,34 +2392,6 @@ export default function CalendarPage() {
   const [view, setView] = useState("month");
   const [currentDate, setCurrentDate] = useState(today);
   const [selectedDate, setSelectedDate] = useState(today.format("YYYY-MM-DD"));
-  // La cella di oggi (mese o settimana) è già evidenziata via CSS (.today);
-  // qui si tratta solo di farla scorrere in vista, perché su una griglia di 5-6
-  // settimane può restare sotto la piega. Parte già a true perché la pagina si
-  // apre su oggi di default: va portato in vista anche senza toccare "Oggi".
-  const todayCellRef = useRef(null);
-  const [pendingTodayScroll, setPendingTodayScroll] = useState(true);
-  useEffect(() => {
-    if (!pendingTodayScroll || activeTab !== "calendario") return;
-    let raf2 = null;
-    // Due rAF invece di uno: il primo aspetta il commit del DOM del render
-    // appena scattato (righe/eventi del mese), il secondo che il browser abbia
-    // calcolato il layout finale prima di misurare dove scorrere.
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        todayCellRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-      });
-    });
-    setPendingTodayScroll(false);
-    return () => {
-      cancelAnimationFrame(raf1);
-      if (raf2 != null) cancelAnimationFrame(raf2);
-    };
-  }, [pendingTodayScroll, currentDate, view, activeTab]);
-  function goToToday() {
-    setCurrentDate(today);
-    setSelectedDate(today.format("YYYY-MM-DD"));
-    setPendingTodayScroll(true);
-  }
   const [modalOpen, setModalOpen] = useState(false);
   const [daySummaryDate, setDaySummaryDate] = useState(null);
   const [editingJustification, setEditingJustification] = useState(null);
@@ -2482,6 +2454,39 @@ export default function CalendarPage() {
     queryKey: ["justifications", view, range.start.format("YYYY-MM-DD"), range.end.format("YYYY-MM-DD")],
     queryFn: () => getJustifications(range.start.format("YYYY-MM-DD"), range.end.format("YYYY-MM-DD")),
   });
+
+  // La cella di oggi (mese o settimana) è già evidenziata via CSS (.today);
+  // qui si tratta solo di farla scorrere in vista, perché su una griglia di 5-6
+  // settimane può restare sotto la piega. Parte già a true perché la pagina si
+  // apre su oggi di default: va portato in vista anche senza toccare "Oggi".
+  // L'altezza di ogni riga dipende da --calendar-lanes (CalendarPage.css:320),
+  // calcolato dagli eventi di justificationsQuery: finché è in caricamento le
+  // righe sono al minimo e uno scroll calcolato ora atterrerebbe corto rispetto
+  // a dove finisce la riga di oggi una volta che le righe sopra si allargano.
+  const todayCellRef = useRef(null);
+  const [pendingTodayScroll, setPendingTodayScroll] = useState(true);
+  useEffect(() => {
+    if (!pendingTodayScroll || activeTab !== "calendario" || justificationsQuery.isLoading) return;
+    let raf2 = null;
+    // Due rAF invece di uno: il primo aspetta il commit del DOM del render
+    // appena scattato, il secondo che il browser abbia calcolato il layout
+    // finale (righe già alte quanto devono essere) prima di misurare dove scorrere.
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        todayCellRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+    setPendingTodayScroll(false);
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2 != null) cancelAnimationFrame(raf2);
+    };
+  }, [pendingTodayScroll, currentDate, view, activeTab, justificationsQuery.isLoading]);
+  function goToToday() {
+    setCurrentDate(today);
+    setSelectedDate(today.format("YYYY-MM-DD"));
+    setPendingTodayScroll(true);
+  }
 
   const assignmentsQuery = useQuery({
     queryKey: ["assignments", range.start.format("YYYY-MM-DD"), range.end.format("YYYY-MM-DD")],
