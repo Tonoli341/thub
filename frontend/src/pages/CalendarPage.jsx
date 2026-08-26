@@ -2394,22 +2394,27 @@ export default function CalendarPage() {
   const [selectedDate, setSelectedDate] = useState(today.format("YYYY-MM-DD"));
   // La cella di oggi (mese o settimana) è già evidenziata via CSS (.today);
   // qui si tratta solo di farla scorrere in vista, perché su una griglia di 5-6
-  // settimane può restare sotto la piega.
+  // settimane può restare sotto la piega. Parte già a true perché la pagina si
+  // apre su oggi di default: va portato in vista anche senza toccare "Oggi".
   const todayCellRef = useRef(null);
-  const [pendingTodayScroll, setPendingTodayScroll] = useState(false);
+  const [pendingTodayScroll, setPendingTodayScroll] = useState(true);
   useEffect(() => {
-    if (!pendingTodayScroll) return;
-    todayCellRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!pendingTodayScroll || activeTab !== "calendario") return;
+    let raf2 = null;
+    // Due rAF invece di uno: il primo aspetta il commit del DOM del render
+    // appena scattato (righe/eventi del mese), il secondo che il browser abbia
+    // calcolato il layout finale prima di misurare dove scorrere.
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        todayCellRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
     setPendingTodayScroll(false);
-  }, [pendingTodayScroll, currentDate, view]);
-  // Alla prima apertura della pagina la vista è già su oggi di default: basta
-  // portarlo in vista, senza toccare currentDate/selectedDate.
-  useEffect(() => {
-    if (activeTab === "calendario") {
-      todayCellRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2 != null) cancelAnimationFrame(raf2);
+    };
+  }, [pendingTodayScroll, currentDate, view, activeTab]);
   function goToToday() {
     setCurrentDate(today);
     setSelectedDate(today.format("YYYY-MM-DD"));
