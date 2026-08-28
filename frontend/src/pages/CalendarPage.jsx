@@ -2493,6 +2493,16 @@ export default function CalendarPage() {
     queryFn: () => getAssignments(range.start.format("YYYY-MM-DD"), range.end.format("YYYY-MM-DD")),
   });
 
+  // Query dedicata alle assegnazioni Planner della data selezionata nel form: il
+  // range della vista calendario (assignmentsQuery) copre solo i giorni visibili,
+  // quindi cambiando data dentro la modale (es. su un mese non ancora caricato)
+  // l'avviso di sovrapposizione perderebbe i dati per quel giorno.
+  const formAssignmentsQuery = useQuery({
+    queryKey: ["assignments", "form", form.start_date, form.end_date],
+    queryFn: () => getAssignments(form.start_date, form.end_date),
+    enabled: modalOpen && Boolean(form.employee_id) && Boolean(form.start_date) && Boolean(form.end_date),
+  });
+
   const wideJustificationsQuery = useQuery({
     queryKey: ["justifications", "wide", wideStart, wideEnd],
     queryFn: () => getJustifications(wideStart, wideEnd),
@@ -2784,13 +2794,13 @@ export default function CalendarPage() {
 
   const formOverlapAssignments = useMemo(() => {
     if (!modalOpen || !form.employee_id) return [];
-    return (assignmentsQuery.data ?? [])
+    return (formAssignmentsQuery.data ?? [])
       .filter((assignment) => hasPlannerOverlap(form, assignment))
       .sort((first, second) => (
         first.work_date.localeCompare(second.work_date)
         || String(first.start_time).localeCompare(String(second.start_time))
       ));
-  }, [modalOpen, form, assignmentsQuery.data]);
+  }, [modalOpen, form, formAssignmentsQuery.data]);
   const formHasOverlap = formOverlapAssignments.length > 0;
 
   const filteredJustifications = justifications.filter((item) => {
