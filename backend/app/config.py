@@ -144,6 +144,8 @@ class Settings(BaseSettings):
     ninjaone_client_id: str = ""
     ninjaone_client_secret: str = ""
     ninjaone_scope: str = "monitoring"
+    # Organizzazione NinjaOne unica su cui T-Hub apre i ticket (services/ninjaone_tickets.py).
+    ninjaone_organization_id: str = ""
 
     # Chiave con cui vengono cifrati i segreti delle integrazioni salvati a
     # database (vedi app/services/crypto.py). Non è una credenziale di un

@@ -86,6 +86,43 @@ def _get(path: str, params: dict | None = None) -> dict:
         raise NinjaOneError(f"Risposta NinjaOne non valida ({path}): {exc}") from exc
 
 
+def _post(path: str, json_body: dict) -> dict:
+    token = _get_access_token()
+    try:
+        response = httpx.post(
+            f"{settings.ninjaone_base_url.rstrip('/')}{path}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            json=json_body,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise NinjaOneError(f"Chiamata NinjaOne {path} rifiutata ({exc.response.status_code}): {exc.response.text}") from exc
+    except httpx.HTTPError as exc:
+        raise NinjaOneError(f"Chiamata NinjaOne {path} fallita: {exc}") from exc
+    except ValueError as exc:
+        raise NinjaOneError(f"Risposta NinjaOne non valida ({path}): {exc}") from exc
+
+
+def create_ticket(*, subject: str, description: str, priority: str) -> dict:
+    """Apre un ticket su NinjaOne per l'organizzazione fissa configurata
+    (settings.ninjaone_organization_id). Ritorna il payload di risposta di
+    NinjaOne (contiene l'id del ticket creato)."""
+    if not settings.ninjaone_organization_id:
+        raise NinjaOneError("Integrazione ticketing NinjaOne non configurata: impostare NINJAONE_ORGANIZATION_ID.")
+    return _post(
+        "/v2/ticketing/ticket",
+        {
+            "clientId": int(settings.ninjaone_organization_id),
+            "subject": subject,
+            "description": {"public": True, "body": description, "type": "TEXT"},
+            "priority": priority,
+            "status": "OPEN",
+        },
+    )
+
+
 def _clean_text(value: object) -> str | None:
     if value is None:
         return None
