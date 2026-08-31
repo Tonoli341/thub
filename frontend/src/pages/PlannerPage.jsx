@@ -3,7 +3,7 @@ import dayjs from "dayjs";
 import FilterSelect from "../components/FilterSelect";
 import PageHeader from "../components/PageHeader";
 import "dayjs/locale/it";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppTheme } from "../ThemeContext";
 import { useAuth } from "../auth";
@@ -61,6 +61,10 @@ import { AREA_PALETTE, buildAreaColorMap } from "../areaColors";
 import lexendFontUrl from "../assets/fonts/Lexend-VariableFont_wght.ttf";
 import logoTonoli from "../upload/logoTonoli.png";
 import { buildCopySourceTeams, notesForCopiedAssignment } from "./plannerCopy";
+
+// Lazy: la scheda carico si apre solo occasionalmente in un dialog dal Planner,
+// non deve entrare nel bundle iniziale della pagina.
+const WorkloadPage = lazy(() => import("./WorkloadPage"));
 import {
   isCancelledGesapBooking,
   workloadCustomerLabel,
@@ -389,6 +393,18 @@ export default function PlannerPage() {
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [plannerView, setPlannerView] = useState("employees"); // "employees" | "areas"
   const [collapsedTeams, setCollapsedTeams] = useState({});
+  const [workloadPreview, setWorkloadPreview] = useState(null); // { date, teamId } | null
+
+  // Apre la scheda carico in un dialog senza lasciare il Planner: WorkloadPage
+  // legge data/squadra iniziali dai search param, quindi li impostiamo prima.
+  function openWorkloadPreview(date, teamId) {
+    navigate(`/planner?date=${date}&teamId=${teamId}`, { replace: true });
+    setWorkloadPreview({ date, teamId });
+  }
+  function closeWorkloadPreview() {
+    setWorkloadPreview(null);
+    navigate("/planner", { replace: true });
+  }
   const [prenotazioniCollapsed, setPrenotazioniCollapsed] = useState(false);
   const [prenotazioniClientFilter, setPrenotazioniClientFilter] = useState("");
   const [prenotazioniImportFilter, setPrenotazioniImportFilter] = useState("all"); // "all" | "imported" | "pending"
@@ -2402,7 +2418,7 @@ export default function PlannerPage() {
                         </Box>
                         <Tooltip title={twl ? `Carico: ${twl}` : "Apri scheda carico"} placement="right">
                           <button
-                            onClick={(e) => { e.stopPropagation(); navigate(`/carichi?date=${selectedDate}&teamId=${t.id}`); }}
+                            onClick={(e) => { e.stopPropagation(); openWorkloadPreview(selectedDate, t.id); }}
                             style={{
                               background: twl ? t.color + "28" : "rgba(0,0,0,0.06)",
                               border: `1px solid ${twl ? t.color + "70" : "rgba(0,0,0,0.13)"}`,
@@ -2930,7 +2946,7 @@ export default function PlannerPage() {
                     disabled={isCancelledGesapBooking(item)}
                     onClick={() => {
                       if (item.workload_imported) {
-                        navigate(`/carichi?date=${item.prenotazione?.data || selectedDate}&teamId=${item.workload_team_id}`);
+                        openWorkloadPreview(item.prenotazione?.data || selectedDate, item.workload_team_id);
                         return;
                       }
                       setGesapImportItem(item);
@@ -3574,6 +3590,46 @@ export default function PlannerPage() {
             {upsertTeamDailyNoteMutation.isPending ? "Salvataggio…" : "Salva"}
           </Button>
         </DialogActions>
+      </Dialog>
+
+      {/* Anteprima veloce della scheda carico: resta sul Planner invece di navigare via /carichi. */}
+      <Dialog
+        open={!!workloadPreview}
+        onClose={closeWorkloadPreview}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3, minHeight: "70vh" } }}
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+          <Typography fontWeight={800} fontSize={16}>Carico di lavoro</Typography>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Button
+              size="small"
+              onClick={() => {
+                if (workloadPreview) {
+                  navigate(`/carichi?date=${workloadPreview.date}&teamId=${workloadPreview.teamId}`);
+                }
+              }}
+              sx={{ textTransform: "none", fontWeight: 600 }}
+            >
+              Apri pagina intera
+            </Button>
+            <Button size="small" onClick={closeWorkloadPreview} sx={{ textTransform: "none", fontWeight: 600 }}>
+              Chiudi
+            </Button>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers sx={{ bgcolor: "var(--pl-bg, #f8f8fa)" }}>
+          {workloadPreview && (
+            <Suspense fallback={
+              <Box sx={{ minHeight: 320, display: "grid", placeItems: "center" }}>
+                <CircularProgress sx={{ color: "#007040" }} />
+              </Box>
+            }>
+              <WorkloadPage key={`${workloadPreview.date}-${workloadPreview.teamId}`} />
+            </Suspense>
+          )}
+        </DialogContent>
       </Dialog>
 
       <Snackbar
