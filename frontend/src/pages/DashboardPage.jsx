@@ -1,4 +1,5 @@
 import dayjs from "dayjs";
+import "dayjs/locale/it";
 
 import FilterSelect from "../components/FilterSelect";
 import { absenceWindowLabel } from "./presenceLookup";
@@ -1559,7 +1560,7 @@ export default function DashboardPage() {
                   <Typography sx={{ fontSize: 11, color: "#b45309", fontWeight: 650 }}>
                     🎂 {item.days_remaining === 0
                       ? "Oggi"
-                      : `${dayjs(item.next_birthday).format("D MMMM")} · tra ${item.days_remaining} giorn${item.days_remaining === 1 ? "o" : "i"}`}
+                      : `${dayjs(item.next_birthday).locale("it").format("D MMMM")} · tra ${item.days_remaining} giorn${item.days_remaining === 1 ? "o" : "i"}`}
                   </Typography>
                 </Box>
               </Paper>
