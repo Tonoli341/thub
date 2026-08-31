@@ -1317,6 +1317,89 @@ function OrgChartCanvas() {
     setPrintSelectionState(allPrintSelected ? new Set() : null);
   }
 
+  // Genera un poster A0 allungato: intero organigramma su un'unica pagina, tutto espanso.
+  // Il lato corto resta fisso a 841mm (lato corto A0); il lato lungo si allunga in proporzione
+  // al contenuto invece di essere limitato ai 1189mm standard, come una stampa da plotter.
+  async function handleGeneratePoster() {
+    setPrintMenuAnchor(null);
+    setPrinting(true);
+    setPrintError(null);
+    try {
+      const [{ toPng }, { PDFDocument }] = await Promise.all([
+        import("html-to-image"),
+        import("pdf-lib"),
+      ]);
+      const pageGraph = buildGraph(model, new Set(), badgesMap);
+      setPrintGraph(pageGraph);
+      await waitForNextFrames();
+      const viewportEl = flowWrapperRef.current?.querySelector(".react-flow__viewport");
+      if (!viewportEl) {
+        throw new Error("Impossibile catturare l'organigramma");
+      }
+      await waitForImages(viewportEl);
+
+      const bounds = computeGraphBounds(pageGraph.nodes);
+      const scale = Math.min(3, 8000 / bounds.width, 8000 / bounds.height);
+      const imageWidth = Math.max(1, Math.round(bounds.width * scale));
+      const imageHeight = Math.max(1, Math.round(bounds.height * scale));
+      const viewport = getViewportForBounds(bounds, imageWidth, imageHeight, 0.05, 3, 0);
+      const dataUrl = await toPng(viewportEl, {
+        backgroundColor: "#fdfbf8",
+        width: imageWidth,
+        height: imageHeight,
+        pixelRatio: 1,
+        style: {
+          width: `${imageWidth}px`,
+          height: `${imageHeight}px`,
+          transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+        },
+      });
+
+      const pdfDoc = await PDFDocument.create();
+      const png = await pdfDoc.embedPng(dataUrl);
+      const pageMargin = 24;
+      const a0ShortSide = 2383.94; // lato corto A0 (841mm) in punti
+      const maxLongSide = a0ShortSide * 6; // limite di sicurezza (~5m), oltre non ha senso stampare
+      const aspect = imageWidth / imageHeight;
+      let pageWidth;
+      let pageHeight;
+      if (imageWidth >= imageHeight) {
+        pageHeight = a0ShortSide;
+        pageWidth = Math.min(pageHeight * aspect, maxLongSide);
+      } else {
+        pageWidth = a0ShortSide;
+        pageHeight = Math.min(pageWidth / aspect, maxLongSide);
+      }
+      const page = pdfDoc.addPage([pageWidth, pageHeight]);
+      const fitScale = Math.min((pageWidth - pageMargin * 2) / png.width, (pageHeight - pageMargin * 2) / png.height);
+      const drawWidth = png.width * fitScale;
+      const drawHeight = png.height * fitScale;
+      page.drawImage(png, {
+        x: (pageWidth - drawWidth) / 2,
+        y: (pageHeight - drawHeight) / 2,
+        width: drawWidth,
+        height: drawHeight,
+      });
+
+      const pdfBytes = await pdfDoc.save();
+      const blob = new Blob([pdfBytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `organigramma-poster-a0-${new Date().toISOString().slice(0, 10)}.pdf`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setPrintError(error?.message || "Errore durante la generazione del poster");
+    } finally {
+      setPrintGraph(null);
+      setPrinting(false);
+      window.requestAnimationFrame(() => {
+        fitView({ padding: 0.22, minZoom: 0.2, maxZoom: 1.2 });
+      });
+    }
+  }
+
   async function handleGeneratePdf() {
     // Una pagina A4 orizzontale per ogni sezione selezionata (Board e/o funzioni)
     const pageSpecs = [];
@@ -1504,6 +1587,14 @@ function OrgChartCanvas() {
           transformOrigin={{ vertical: "top", horizontal: "right" }}
           slotProps={{ paper: { sx: { minWidth: 280, maxHeight: 440 } } }}
         >
+          <MenuItem dense onClick={handleGeneratePoster} disabled={model.totalEmployees === 0}>
+            <ListItemText
+              primary="Poster A0 allungato (intero, 1 pagina)"
+              secondary="Tutto espanso, lato lungo variabile"
+              primaryTypographyProps={{ fontWeight: 700 }}
+            />
+          </MenuItem>
+          <Divider />
           <MenuItem dense onClick={togglePrintAll}>
             <Checkbox
               size="small"
@@ -1511,7 +1602,7 @@ function OrgChartCanvas() {
               indeterminate={!allPrintSelected && anyPrintSelected}
               sx={{ p: 0.5, mr: 1 }}
             />
-            <ListItemText primary="Intero organigramma" primaryTypographyProps={{ fontWeight: 700 }} />
+            <ListItemText primary="Intero organigramma (multi-pagina A3)" primaryTypographyProps={{ fontWeight: 700 }} />
           </MenuItem>
           <Divider />
           {printSections.flatMap((section) => {
