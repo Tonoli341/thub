@@ -1682,26 +1682,17 @@ function OrgChartCanvas() {
       const font = await pdfDoc.embedFont(lexendBytes, { subset: true });
 
       const pageMargin = 24;
-      const a0ShortSide = 2383.94; // lato corto A0 (841mm) in punti
-      const maxLongSide = a0ShortSide * 6; // limite di sicurezza (~5m), oltre non ha senso stampare
-      const aspect = bounds.width / bounds.height;
-      let pageWidth;
-      let pageHeight;
-      if (bounds.width >= bounds.height) {
-        pageHeight = a0ShortSide;
-        pageWidth = pageHeight * aspect;
-      } else {
-        pageWidth = a0ShortSide;
-        pageHeight = pageWidth / aspect;
-      }
-      // Se il lato lungo supera il limite di sicurezza, si scalano entrambi i lati mantenendo
-      // le proporzioni del grafico: ridurre solo il lato lungo lascerebbe margini vuoti sul
-      // lato corto, perché la pagina non seguirebbe più l'aspect ratio del contenuto.
-      const longSide = Math.max(pageWidth, pageHeight);
-      if (longSide > maxLongSide) {
-        const shrink = maxLongSide / longSide;
-        pageWidth *= shrink;
-        pageHeight *= shrink;
+      const pageHeight = 2383.94; // altezza fissa a 841mm (lato corto A0), come richiesto
+      const maxLongSide = pageHeight * 6; // limite di sicurezza (~5m), oltre non ha senso stampare
+      // La scala si calcola direttamente dall'altezza fissa, così i blocchi riempiono sempre
+      // tutta l'altezza disponibile: la larghezza pagina è poi derivata dal contenuto già
+      // scalato, invece di essere calcolata a parte dall'aspect ratio (che lasciava un margine
+      // residuo quando i due calcoli non tornavano esattamente).
+      let scale = (pageHeight - pageMargin * 2) / bounds.height;
+      let pageWidth = bounds.width * scale + pageMargin * 2;
+      if (pageWidth > maxLongSide) {
+        pageWidth = maxLongSide;
+        scale = (pageWidth - pageMargin * 2) / bounds.width;
       }
       const page = pdfDoc.addPage([pageWidth, pageHeight]);
       const contentBox = { x: pageMargin, y: pageMargin, width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2 };
