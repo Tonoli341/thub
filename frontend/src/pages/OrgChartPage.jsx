@@ -1247,7 +1247,11 @@ function wrapCenteredLines(text, font, size, maxWidth, maxLines = 2) {
 // vettoriale su una pagina pdf-lib, invece di catturare uno screenshot del DOM React Flow:
 // testo e linee restano vettore reale a qualunque scala di stampa; solo le foto dipendente
 // e le icone dei badge corso restano immagini raster incorporate (vedi sopra).
-async function renderOrgGraphOnPage(pdfDoc, page, font, rgb, positionedNodes, edges, bounds, contentBox, caches) {
+// `projection` definisce come il grafo (in coordinate "px" del layout dagre) si mappa sulla
+// pagina pdf-lib: passare `{ contentBox }` per il comportamento "adatta e centra" (usato dalle
+// pagine A3), oppure `{ scale, originX, topY }` già calcolati esternamente per disegnare un
+// singolo tassello di un poster affiancato su più pagine (vedi handleGeneratePoster).
+async function renderOrgGraphOnPage(pdfDoc, page, font, rgb, positionedNodes, edges, bounds, projection, caches) {
   // Colore ottenuto sfumando l'hex verso il bianco: approssima l'opacità di sfondo usata
   // nella UI (rgba con alpha bassa) senza usare la trasparenza reale di pdf-lib.
   function hexToRgb(hex, alpha = 1) {
@@ -1256,11 +1260,19 @@ async function renderOrgGraphOnPage(pdfDoc, page, font, rgb, positionedNodes, ed
     return rgb(r + (1 - r) * (1 - alpha), g + (1 - g) * (1 - alpha), b + (1 - b) * (1 - alpha));
   }
 
-  const scale = Math.min(contentBox.width / bounds.width, contentBox.height / bounds.height);
-  const drawnWidth = bounds.width * scale;
-  const drawnHeight = bounds.height * scale;
-  const originX = contentBox.x + (contentBox.width - drawnWidth) / 2;
-  const topY = contentBox.y + contentBox.height - (contentBox.height - drawnHeight) / 2;
+  let scale;
+  let originX;
+  let topY;
+  if (projection.contentBox) {
+    const { contentBox } = projection;
+    scale = Math.min(contentBox.width / bounds.width, contentBox.height / bounds.height);
+    const drawnWidth = bounds.width * scale;
+    const drawnHeight = bounds.height * scale;
+    originX = contentBox.x + (contentBox.width - drawnWidth) / 2;
+    topY = contentBox.y + contentBox.height - (contentBox.height - drawnHeight) / 2;
+  } else {
+    ({ scale, originX, topY } = projection);
+  }
 
   // (x,y) sono le coordinate top-left nello spazio del grafo (y cresce verso il basso);
   // qui si convertono nello spazio pdf-lib (origine in basso a sinistra, y cresce in alto).
@@ -1661,9 +1673,11 @@ function OrgChartCanvas() {
     setPrintSelectionState(allPrintSelected ? new Set() : null);
   }
 
-  // Genera un poster A0 allungato: intero organigramma su un'unica pagina, tutto espanso.
-  // Il lato corto resta fisso a 841mm (lato corto A0); il lato lungo si allunga in proporzione
-  // al contenuto invece di essere limitato ai 1189mm standard, come una stampa da plotter.
+  // Genera un poster A0: intero organigramma, tutto espanso, altezza fissa a 841mm (lato
+  // corto A0) sempre riempita per intero. Il PDF ammette al massimo ~508cm per lato: se il
+  // grafico è troppo largo per starci in una sola pagina, il poster viene affiancato su più
+  // pagine della stessa altezza esatta, da accostare fisicamente dopo la stampa da plotter
+  // (l'ordine dei tasselli è l'ordine delle pagine nel PDF, da sinistra a destra).
   async function handleGeneratePoster() {
     setPrintMenuAnchor(null);
     setPrinting(true);
@@ -1681,23 +1695,27 @@ function OrgChartCanvas() {
       const lexendBytes = await fetch(lexendFontUrl).then((res) => res.arrayBuffer());
       const font = await pdfDoc.embedFont(lexendBytes, { subset: true });
 
-      const pageMargin = 24;
-      const pageHeight = 2383.94; // altezza fissa a 841mm (lato corto A0), come richiesto
-      const maxLongSide = pageHeight * 6; // limite di sicurezza (~5m), oltre non ha senso stampare
-      // La scala si calcola direttamente dall'altezza fissa, così i blocchi riempiono sempre
-      // tutta l'altezza disponibile: la larghezza pagina è poi derivata dal contenuto già
-      // scalato, invece di essere calcolata a parte dall'aspect ratio (che lasciava un margine
-      // residuo quando i due calcoli non tornavano esattamente).
-      let scale = (pageHeight - pageMargin * 2) / bounds.height;
-      let pageWidth = bounds.width * scale + pageMargin * 2;
-      if (pageWidth > maxLongSide) {
-        pageWidth = maxLongSide;
-        scale = (pageWidth - pageMargin * 2) / bounds.width;
-      }
-      const page = pdfDoc.addPage([pageWidth, pageHeight]);
-      const contentBox = { x: pageMargin, y: pageMargin, width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2 };
+      const verticalMargin = 24;
+      const pageHeight = 2383.94; // altezza fissa a 841mm (lato corto A0)
+      // La scala si deriva sempre dall'altezza fissa, così i blocchi riempiono tutta
+      // l'altezza disponibile su ogni tassello, qualunque sia la larghezza complessiva.
+      const scale = (pageHeight - verticalMargin * 2) / bounds.height;
+      const drawnWidth = bounds.width * scale;
+
+      // Limite di formato di una pagina PDF: 14400pt (~508cm) per lato. Si resta sotto con
+      // un margine di sicurezza; nessun margine orizzontale tra i tasselli, perché andranno
+      // accostati fisicamente e uno spazio vuoto ai bordi lascerebbe una giunta visibile.
+      const maxTileWidth = 14300;
+      const tileCount = Math.max(1, Math.ceil(drawnWidth / maxTileWidth));
       const caches = { photos: new Map(), badgeIcons: new Map() };
-      await renderOrgGraphOnPage(pdfDoc, page, font, rgb, pageGraph.nodes, pageGraph.edges, bounds, contentBox, caches);
+
+      for (let tileIndex = 0; tileIndex < tileCount; tileIndex++) {
+        const startX = tileIndex * maxTileWidth;
+        const tileWidth = tileIndex === tileCount - 1 ? drawnWidth - startX : maxTileWidth;
+        const page = pdfDoc.addPage([tileWidth, pageHeight]);
+        const projection = { scale, originX: -startX, topY: pageHeight - verticalMargin };
+        await renderOrgGraphOnPage(pdfDoc, page, font, rgb, pageGraph.nodes, pageGraph.edges, bounds, projection, caches);
+      }
 
       const pdfBytes = await pdfDoc.save();
       const blob = new Blob([pdfBytes], { type: "application/pdf" });
@@ -1781,7 +1799,7 @@ function OrgChartCanvas() {
         const pageHeight = isPortrait ? a3Long : a3Short;
         const page = pdfDoc.addPage([pageWidth, pageHeight]);
         const contentBox = { x: pageMargin, y: pageMargin, width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2 };
-        await renderOrgGraphOnPage(pdfDoc, page, font, rgb, pageGraph.nodes, pageGraph.edges, bounds, contentBox, caches);
+        await renderOrgGraphOnPage(pdfDoc, page, font, rgb, pageGraph.nodes, pageGraph.edges, bounds, { contentBox }, caches);
       }
 
       const pdfBytes = await pdfDoc.save();
@@ -1871,8 +1889,8 @@ function OrgChartCanvas() {
         >
           <MenuItem dense onClick={handleGeneratePoster} disabled={model.totalEmployees === 0}>
             <ListItemText
-              primary="Poster A0 allungato (intero, 1 pagina)"
-              secondary="Tutto espanso, lato lungo variabile"
+              primary="Poster A0 allungato (intero)"
+              secondary="Tutto espanso, altezza 841mm piena, più pagine da accostare se largo"
               primaryTypographyProps={{ fontWeight: 700 }}
             />
           </MenuItem>
