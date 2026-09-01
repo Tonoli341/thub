@@ -1661,9 +1661,8 @@ function OrgChartCanvas() {
     setPrintSelectionState(allPrintSelected ? new Set() : null);
   }
 
-  // Genera un poster A0 allungato: intero organigramma su un'unica pagina, tutto espanso.
-  // Il lato corto resta fisso a 841mm (lato corto A0); il lato lungo si allunga in proporzione
-  // al contenuto invece di essere limitato ai 1189mm standard, come una stampa da plotter.
+  // Genera un poster A0 verticale standard (841×1189mm): intero organigramma su un'unica
+  // pagina, tutto espanso, scalato al massimo per riempire il foglio.
   async function handleGeneratePoster() {
     setPrintMenuAnchor(null);
     setPrinting(true);
@@ -1681,28 +1680,12 @@ function OrgChartCanvas() {
       const lexendBytes = await fetch(lexendFontUrl).then((res) => res.arrayBuffer());
       const font = await pdfDoc.embedFont(lexendBytes, { subset: true });
 
+      // Vero foglio A0 verticale standard (841×1189mm), non più un poster allungato: il
+      // contenuto viene scalato al massimo che ci sta (icone, testo e avatar compresi,
+      // dato che sono vettoriali e seguono lo stesso fattore di scala della pagina).
       const pageMargin = 24;
-      const a0ShortSide = 2383.94; // lato corto A0 (841mm) in punti
-      const maxLongSide = a0ShortSide * 6; // limite di sicurezza (~5m), oltre non ha senso stampare
-      const aspect = bounds.width / bounds.height;
-      let pageWidth;
-      let pageHeight;
-      if (bounds.width >= bounds.height) {
-        pageHeight = a0ShortSide;
-        pageWidth = pageHeight * aspect;
-      } else {
-        pageWidth = a0ShortSide;
-        pageHeight = pageWidth / aspect;
-      }
-      // Se il lato lungo supera il limite di sicurezza, si scalano entrambi i lati mantenendo
-      // le proporzioni del grafico: ridurre solo il lato lungo lascerebbe margini vuoti sul
-      // lato corto, perché la pagina non seguirebbe più l'aspect ratio del contenuto.
-      const longSide = Math.max(pageWidth, pageHeight);
-      if (longSide > maxLongSide) {
-        const shrink = maxLongSide / longSide;
-        pageWidth *= shrink;
-        pageHeight *= shrink;
-      }
+      const pageWidth = 2383.94; // 841mm in punti
+      const pageHeight = 3370.39; // 1189mm in punti
       const page = pdfDoc.addPage([pageWidth, pageHeight]);
       const contentBox = { x: pageMargin, y: pageMargin, width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2 };
       const caches = { photos: new Map(), badgeIcons: new Map() };
@@ -1880,8 +1863,8 @@ function OrgChartCanvas() {
         >
           <MenuItem dense onClick={handleGeneratePoster} disabled={model.totalEmployees === 0}>
             <ListItemText
-              primary="Poster A0 allungato (intero, 1 pagina)"
-              secondary="Tutto espanso, lato lungo variabile"
+              primary="Poster A0 verticale (intero, 1 pagina)"
+              secondary="Tutto espanso, formato standard 841×1189mm"
               primaryTypographyProps={{ fontWeight: 700 }}
             />
           </MenuItem>
