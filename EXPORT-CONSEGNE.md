@@ -1,4 +1,4 @@
-# Export sezione "Consegna DPI e vestiario" (/consegne)
+# Export sezione "Consegna DPI e vestiario" (/dotazioni)
 
 Codice completo, verbatim, per replicare la sezione in un altro tool.
 Stack: **React + MUI + react-i18next** (frontend) · **FastAPI + SQLAlchemy + Pydantic** (backend).
@@ -8,7 +8,7 @@ Dipendenze npm: `@mui/material`, `@mui/icons-material`, `react-i18next`, `i18nex
 
 ## Architettura
 
-- La pagina web `/consegne` ha 3 tab: **Storico consegne** (lista, segna restituito, export Excel, export scheda DPI Word per dipendente), **Dipendenti** (aggiungi/disattiva), **Materiale** (articoli con categorie `vestiario|dpi|altro` e taglie).
+- La pagina web `/dotazioni` ha 3 tab: **Storico consegne** (lista, segna restituito, export Excel, export scheda DPI Word per dipendente), **Dipendenti** (aggiungi/disattiva), **Materiale** (articoli con categorie `vestiario|dpi|altro` e taglie).
 - **La creazione della consegna (POST `/api/deliveries` con firma base64) NON avviene da questa pagina web**: è fatta via API da un client esterno (app mobile). Il backend qui incluso la supporta completamente.
 - Endpoint API:
   - `POST /api/deliveries` — crea consegne (multi-articolo, firma obbligatoria)
@@ -911,7 +911,7 @@ export async function apiFetch<T = any>(input: RequestInfo | URL, init: RequestI
 ```tsx
 import DeliveriesPage from './pages/Deliveries';
 // ...
-<Route path="/consegne" element={<DeliveriesPage />} />
+<Route path="/dotazioni" element={<DeliveriesPage />} />
 ```
 
 ### 1.4 Chiavi i18n (`frontend/src/i18n.ts`, estratto — sezione consegne)

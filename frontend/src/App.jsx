@@ -55,7 +55,7 @@ const SIDEBAR_SECTIONS = [
       { to: "/planner", label: "Planner", icon: "briefcase", requires: "planning" },
       { to: "/carichi", label: "Carichi", icon: "document", requires: "workloads" },
       { to: "/calendario", label: "Assenze", icon: "sun", requires: "calendar" },
-      { to: "/consegne", label: "Consegne", icon: "box", requires: "deliveries" },
+      { to: "/dotazioni", label: "Consegne", icon: "box", requires: "deliveries" },
       { to: "/manutenzioni", label: "Manutenzioni", icon: "tools", requires: "maintenance" },
     ],
   },
@@ -721,7 +721,7 @@ function ProtectedLayout() {
               <Route path="/" element={timesheetsOnly ? <Navigate to="/rendicontazioni/dashboard" replace /> : <DashboardPage />} />
               <Route path="/organigramma" element={effectiveUser?.can_access_organization ? <OrgChartPage /> : <Navigate to="/" replace />} />
               <Route path="/dipendenti" element={effectiveUser?.can_access_organization ? <EmployeesPage onImpersonate={effectiveUser?.effective_role === "admin" ? startImpersonation : undefined} /> : <Navigate to="/" replace />} />
-              <Route path="/consegne" element={effectiveUser?.can_access_deliveries ? <ConsegnePage /> : <Navigate to="/" replace />} />
+              <Route path="/dotazioni" element={effectiveUser?.can_access_deliveries ? <ConsegnePage /> : <Navigate to="/" replace />} />
               <Route path="/manutenzioni" element={effectiveUser?.can_access_maintenance ? <MaintenancePage /> : <Navigate to="/" replace />} />
               {/* Firma consegna dispositivo: accessibile a ogni utente autenticato,
                   il backend verifica che la consegna appartenga al dipendente collegato. */}
