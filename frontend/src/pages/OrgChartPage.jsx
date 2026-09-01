@@ -1689,10 +1689,19 @@ function OrgChartCanvas() {
       let pageHeight;
       if (bounds.width >= bounds.height) {
         pageHeight = a0ShortSide;
-        pageWidth = Math.min(pageHeight * aspect, maxLongSide);
+        pageWidth = pageHeight * aspect;
       } else {
         pageWidth = a0ShortSide;
-        pageHeight = Math.min(pageWidth / aspect, maxLongSide);
+        pageHeight = pageWidth / aspect;
+      }
+      // Se il lato lungo supera il limite di sicurezza, si scalano entrambi i lati mantenendo
+      // le proporzioni del grafico: ridurre solo il lato lungo lascerebbe margini vuoti sul
+      // lato corto, perché la pagina non seguirebbe più l'aspect ratio del contenuto.
+      const longSide = Math.max(pageWidth, pageHeight);
+      if (longSide > maxLongSide) {
+        const shrink = maxLongSide / longSide;
+        pageWidth *= shrink;
+        pageHeight *= shrink;
       }
       const page = pdfDoc.addPage([pageWidth, pageHeight]);
       const contentBox = { x: pageMargin, y: pageMargin, width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2 };
