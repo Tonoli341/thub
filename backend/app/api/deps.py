@@ -10,7 +10,6 @@ from sqlalchemy.orm import selectinload
 from app.db import get_db
 from app.models import Employee, User
 from app.config import settings
-from app.services.absence_permissions import get_linked_tms_employee
 from app.services.portal_auth import build_auth_user_read
 from app.services.security import bearer_scheme, decode_access_token, get_current_user
 
@@ -91,15 +90,6 @@ def require_manager_or_above(current_user: User = Depends(get_current_user), db:
     if auth.effective_role not in ("admin", "hr", "manager"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accesso riservato ai responsabili.")
     return current_user
-
-
-def require_linked_tms_employee(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Employee:
-    """Utenti con mapping LDAP -> dipendente TMS attivo (pagina /dipendenti-ldap),
-    esclude l'utente portale. Usato per aprire ticket NinjaOne a nome del dipendente."""
-    employee = get_linked_tms_employee(db, current_user)
-    if employee is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Utente non collegato a un dipendente.")
-    return employee
 
 
 def require_deliveries_tablet_access(

@@ -25,7 +25,6 @@ from app.api.integrations import router as integrations_router
 from app.api.justifications import router as justifications_router
 from app.api.ldap_employees import router as ldap_employees_router
 from app.api.maintenance import router as maintenance_router
-from app.api.ninjaone_tickets import router as ninjaone_tickets_router
 from app.api.notifications import router as notifications_router
 from app.api.org_entities import router as org_entities_router
 from app.api.operational_reporting import router as operational_reporting_router
@@ -58,7 +57,6 @@ api_router.include_router(device_assets_router)
 api_router.include_router(device_deliveries_router)
 api_router.include_router(employees_router)
 protected_router.include_router(ldap_employees_router)
-protected_router.include_router(ninjaone_tickets_router)
 protected_router.include_router(maintenance_router)
 protected_router.include_router(projects_router)
 protected_router.include_router(infinity_billing_customer_supplier_map_router)

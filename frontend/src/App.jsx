@@ -37,7 +37,6 @@ const IntegrationsPage = lazy(() => import("./pages/IntegrationsPage"));
 const ConsegnePage = lazy(() => import("./pages/ConsegnePage"));
 const DeliverySignaturePage = lazy(() => import("./pages/DeliverySignaturePage"));
 const MaintenancePage = lazy(() => import("./pages/MaintenancePage"));
-const NinjaOneTicketsPage = lazy(() => import("./pages/NinjaOneTicketsPage"));
 
 function PageLoader() {
   return (
@@ -57,7 +56,6 @@ const SIDEBAR_SECTIONS = [
       { to: "/carichi", label: "Carichi", icon: "document", requires: "workloads" },
       { to: "/calendario", label: "Assenze", icon: "sun", requires: "calendar" },
       { to: "/consegne", label: "Consegne", icon: "box", requires: "deliveries" },
-      { to: "/ticket-ninjaone", label: "Ticket assistenza", icon: "checklist" },
       { to: "/manutenzioni", label: "Manutenzioni", icon: "tools", requires: "maintenance" },
     ],
   },
@@ -724,10 +722,6 @@ function ProtectedLayout() {
               <Route path="/organigramma" element={effectiveUser?.can_access_organization ? <OrgChartPage /> : <Navigate to="/" replace />} />
               <Route path="/dipendenti" element={effectiveUser?.can_access_organization ? <EmployeesPage onImpersonate={effectiveUser?.effective_role === "admin" ? startImpersonation : undefined} /> : <Navigate to="/" replace />} />
               <Route path="/consegne" element={effectiveUser?.can_access_deliveries ? <ConsegnePage /> : <Navigate to="/" replace />} />
-              {/* Ticket assistenza NinjaOne: accessibile a ogni utente autenticato con
-                  mapping LDAP -> dipendente TMS attivo; senza mapping il backend risponde
-                  403 alla creazione (require_linked_tms_employee), non c'è gating qui. */}
-              <Route path="/ticket-ninjaone" element={<NinjaOneTicketsPage />} />
               <Route path="/manutenzioni" element={effectiveUser?.can_access_maintenance ? <MaintenancePage /> : <Navigate to="/" replace />} />
               {/* Firma consegna dispositivo: accessibile a ogni utente autenticato,
                   il backend verifica che la consegna appartenga al dipendente collegato. */}

@@ -828,23 +828,6 @@ class ActiveActivity(Base):
     employee: Mapped["Employee"] = relationship(foreign_keys=[employee_id])
 
 
-class NinjaOneTicket(TimestampMixin, Base):
-    """Ticket aperti da T-Hub verso NinjaOne (services/ninjaone.py::create_ticket).
-    Traccia solo lo stato all'apertura: non c'è polling né webhook di aggiornamento."""
-
-    __tablename__ = "ninjaone_tickets"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    ninja_ticket_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    subject: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    priority: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)
-    requested_by_id: Mapped[str] = mapped_column(String(36), ForeignKey("employees.id"), nullable=False, index=True)
-
-    requested_by: Mapped["Employee"] = relationship(foreign_keys=[requested_by_id])
-
-
 class DailyRecord(Base):
     __tablename__ = "daily_records"
     __table_args__ = (
