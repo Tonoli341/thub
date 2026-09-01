@@ -1,11 +1,12 @@
 import dagre from "dagre";
 import PageHeader, { HeaderButton } from "../components/PageHeader";
 import { useQuery } from "@tanstack/react-query";
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, getViewportForBounds, useReactFlow } from "@xyflow/react";
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, useReactFlow } from "@xyflow/react";
 import { Alert, Avatar, Box, Button, Checkbox, Chip, CircularProgress, Divider, ListItemText, Menu, MenuItem, Paper, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getEmployeeCourseBadges, getEmployeePhoto, getEmployees, getOrgDepartments, getOrgFunctions } from "../api";
+import lexendFontUrl from "../assets/fonts/Lexend-VariableFont_wght.ttf";
 
 const groupNodeWidth = 220;
 const functionNodeHeight = 86;
@@ -1142,21 +1143,366 @@ function computeGraphBounds(nodes) {
   return { x: minX - padding, y: minY - padding, width: maxX - minX + padding * 2, height: maxY - minY + padding * 2 };
 }
 
-function waitForNextFrames() {
-  return new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+function hexToRgbComponents(hex) {
+  const clean = String(hex || "#000000").replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+  return [
+    parseInt(full.slice(0, 2), 16) / 255,
+    parseInt(full.slice(2, 4), 16) / 255,
+    parseInt(full.slice(4, 6), 16) / 255,
+  ];
 }
 
-// Le foto dei nodi appena montati (prima compressi) partono in fetch dopo il mount:
-// attende che tutte le <img> presenti nel viewport siano caricate, con un timeout di sicurezza.
-async function waitForImages(container, timeoutMs = 5000) {
-  await new Promise((resolve) => setTimeout(resolve, 350));
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const images = [...container.querySelectorAll("img")];
-    if (images.every((img) => img.complete)) {
-      return;
+// Disegna un rettangolo (eventualmente arrotondato) come path vettoriale: pdf-lib non ha
+// drawRectangle con raggio, quindi si costruisce a mano il path SVG equivalente.
+function roundedRectSvgPath(width, height, radius) {
+  const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+  return `M${r},0 H${width - r} A${r},${r} 0 0 1 ${width},${r} V${height - r} A${r},${r} 0 0 1 ${width - r},${height} H${r} A${r},${r} 0 0 1 0,${height - r} V${r} A${r},${r} 0 0 1 ${r},0 Z`;
+}
+
+function drawVectorRoundedRect(page, { x, y, width, height, radius = 0, color, borderColor, borderWidth = 0 }) {
+  page.drawSvgPath(roundedRectSvgPath(width, height, radius), {
+    x,
+    y: y + height,
+    scale: 1,
+    color,
+    borderColor,
+    borderWidth,
+  });
+}
+
+// Disegna un'icona emoji su canvas e la incorpora come piccola immagine: nessun font
+// vettoriale standard include le emoji dei badge corso, è l'unico modo di averle nel PDF
+// (stesso trucco già usato per i badge squadra dell'export del Planner).
+async function renderIconPng(pdfDoc, iconCache, key, drawFn, size = 44) {
+  if (iconCache.has(key)) {
+    return iconCache.get(key);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  drawFn(ctx, size);
+  const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const image = await pdfDoc.embedPng(bytes);
+  iconCache.set(key, image);
+  return image;
+}
+
+// La foto dipendente resta l'unico elemento raster del PDF (non c'è equivalente vettoriale
+// per una fotografia): viene incorporata così com'è, con cache per non riscaricarla due
+// volte se lo stesso dipendente compare su più pagine (es. board + funzione).
+async function getPersonPhotoImage(pdfDoc, photoCache, employeeId) {
+  if (photoCache.has(employeeId)) {
+    return photoCache.get(employeeId);
+  }
+  try {
+    const blob = await getEmployeePhoto(employeeId);
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const image = blob.type === "image/png" ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
+    photoCache.set(employeeId, image);
+    return image;
+  } catch {
+    photoCache.set(employeeId, null);
+    return null;
+  }
+}
+
+function drawCenteredText(page, { text, font, size, color, centerX, y, maxWidth }) {
+  const clean = String(text ?? "");
+  let content = clean;
+  while (content.length > 1 && font.widthOfTextAtSize(content, size) > maxWidth) {
+    content = content.slice(0, -1);
+  }
+  if (content !== clean && content.length > 1) {
+    content = `${content.slice(0, -1)}…`;
+  }
+  const width = font.widthOfTextAtSize(content, size);
+  page.drawText(content, { x: centerX - width / 2, y, size, font, color });
+}
+
+// Spezza il nome su due righe se non entra in una sola (come il testo che va a capo nella UI).
+function wrapCenteredLines(text, font, size, maxWidth, maxLines = 2) {
+  const words = String(text ?? "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth || !current) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = word;
+      if (lines.length === maxLines - 1) break;
     }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  if (current) lines.push(current);
+  return lines.slice(0, maxLines);
+}
+
+// Ridisegna un grafo (nodi + archi, già posizionati da buildGraph/dagre) come grafica
+// vettoriale su una pagina pdf-lib, invece di catturare uno screenshot del DOM React Flow:
+// testo e linee restano vettore reale a qualunque scala di stampa; solo le foto dipendente
+// e le icone dei badge corso restano immagini raster incorporate (vedi sopra).
+async function renderOrgGraphOnPage(pdfDoc, page, font, rgb, positionedNodes, edges, bounds, contentBox, caches) {
+  // Colore ottenuto sfumando l'hex verso il bianco: approssima l'opacità di sfondo usata
+  // nella UI (rgba con alpha bassa) senza usare la trasparenza reale di pdf-lib.
+  function hexToRgb(hex, alpha = 1) {
+    const [r, g, b] = hexToRgbComponents(hex);
+    if (alpha >= 1) return rgb(r, g, b);
+    return rgb(r + (1 - r) * (1 - alpha), g + (1 - g) * (1 - alpha), b + (1 - b) * (1 - alpha));
+  }
+
+  const scale = Math.min(contentBox.width / bounds.width, contentBox.height / bounds.height);
+  const drawnWidth = bounds.width * scale;
+  const drawnHeight = bounds.height * scale;
+  const originX = contentBox.x + (contentBox.width - drawnWidth) / 2;
+  const topY = contentBox.y + contentBox.height - (contentBox.height - drawnHeight) / 2;
+
+  // (x,y) sono le coordinate top-left nello spazio del grafo (y cresce verso il basso);
+  // qui si convertono nello spazio pdf-lib (origine in basso a sinistra, y cresce in alto).
+  function toPageRect(x, y, width, height) {
+    const left = originX + (x - bounds.x) * scale;
+    const top = topY - (y - bounds.y) * scale;
+    return { x: left, y: top - height * scale, width: width * scale, height: height * scale };
+  }
+
+  const nodeById = new Map(positionedNodes.map((node) => [node.id, node]));
+
+  // Archi: connettore "a gomito" (verticale-orizzontale-verticale), come l'edge smoothstep
+  // di React Flow ma disegnato con segmenti di linea vettoriali.
+  for (const edge of edges) {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || !target) continue;
+    const sourceWidth = source.data.width ?? personNodeWidth;
+    const sourceHeight = source.data.height ?? personNodeHeight;
+    const targetWidth = target.data.width ?? personNodeWidth;
+    const targetHeight = target.data.height ?? personNodeHeight;
+    const sourceRect = toPageRect(source.position.x, source.position.y, sourceWidth, sourceHeight);
+    const targetRect = toPageRect(target.position.x, target.position.y, targetWidth, targetHeight);
+    const start = { x: sourceRect.x + sourceRect.width / 2, y: sourceRect.y };
+    const end = { x: targetRect.x + targetRect.width / 2, y: targetRect.y + targetRect.height };
+    const midY = (start.y + end.y) / 2;
+    const color = rgb(0.478, 0.537, 0.6);
+    page.drawLine({ start, end: { x: start.x, y: midY }, thickness: 1.1, color });
+    page.drawLine({ start: { x: start.x, y: midY }, end: { x: end.x, y: midY }, thickness: 1.1, color });
+    page.drawLine({ start: { x: end.x, y: midY }, end, thickness: 1.1, color });
+    // Piccola punta di freccia verso il nodo figlio
+    const arrowSize = 4.5;
+    page.drawSvgPath(`M0,0 L${arrowSize},${arrowSize * 1.6} L${-arrowSize},${arrowSize * 1.6} Z`, {
+      x: end.x,
+      y: end.y,
+      color,
+    });
+  }
+
+  for (const node of positionedNodes) {
+    const width = node.data.width ?? personNodeWidth;
+    const height = node.data.height ?? personNodeHeight;
+    const rect = toPageRect(node.position.x, node.position.y, width, height);
+    const s = scale; // scala per convertire le misure "px" della UI in punti pdf
+
+    if (node.type === "group") {
+      const isFunction = node.data.kind === "function";
+      drawVectorRoundedRect(page, {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        radius: (isFunction ? 16 : 12) * s,
+        color: isFunction ? rgb(0.035, 0.29, 0.22) : rgb(0.988, 0.984, 0.973),
+        borderColor: isFunction ? rgb(1, 1, 1) : rgb(0.886, 0.886, 0.898),
+        borderWidth: 1,
+      });
+      const textColor = isFunction ? rgb(1, 1, 1) : rgb(0.118, 0.118, 0.192);
+      const centerX = rect.x + rect.width / 2;
+      drawCenteredText(page, {
+        text: isFunction ? "FUNZIONE" : "ENTE / DIPARTIMENTO",
+        font,
+        size: 7.5 * s,
+        color: textColor,
+        centerX,
+        y: rect.y + rect.height - 18 * s,
+        maxWidth: rect.width - 12 * s,
+      });
+      drawCenteredText(page, {
+        text: node.data.label,
+        font,
+        size: (isFunction ? 15 : 12.5) * s,
+        color: textColor,
+        centerX,
+        y: rect.y + rect.height / 2 - 3 * s,
+        maxWidth: rect.width - 16 * s,
+      });
+      drawCenteredText(page, {
+        text: `${node.data.employeeCount} risorse`,
+        font,
+        size: 9 * s,
+        color: textColor,
+        centerX,
+        y: rect.y + 14 * s,
+        maxWidth: rect.width - 12 * s,
+      });
+      continue;
+    }
+
+    if (node.type === "direttivo") {
+      drawVectorRoundedRect(page, {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        radius: 16 * s,
+        color: rgb(0.247, 0.271, 0.29),
+        borderColor: rgb(1, 1, 1),
+        borderWidth: 0.6,
+      });
+      const centerX = rect.x + rect.width / 2;
+      drawCenteredText(page, {
+        text: "ORGANO",
+        font,
+        size: 7 * s,
+        color: rgb(0.945, 0.925, 0.882),
+        centerX,
+        y: rect.y + rect.height - 16 * s,
+        maxWidth: rect.width - 12 * s,
+      });
+      drawCenteredText(page, {
+        text: "BOARD",
+        font,
+        size: 13 * s,
+        color: rgb(0.945, 0.925, 0.882),
+        centerX,
+        y: rect.y + rect.height / 2 - 4 * s,
+        maxWidth: rect.width - 12 * s,
+      });
+      drawCenteredText(page, {
+        text: `${node.data.employeeCount} membri`,
+        font,
+        size: 9 * s,
+        color: rgb(0.945, 0.925, 0.882),
+        centerX,
+        y: rect.y + 12 * s,
+        maxWidth: rect.width - 12 * s,
+      });
+      continue;
+    }
+
+    // Nodo persona
+    const isCollapsed = node.data.isCollapsed;
+    drawVectorRoundedRect(page, {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      radius: 12 * s,
+      color: rgb(0.988, 0.988, 0.992),
+      borderColor: isCollapsed ? rgb(0.231, 0.51, 0.965) : rgb(0.886, 0.886, 0.898),
+      borderWidth: isCollapsed ? 1.5 : 1,
+    });
+
+    const centerX = rect.x + rect.width / 2;
+    const avatarRadius = 22 * s;
+    const avatarCenterY = rect.y + rect.height - 12 * s - avatarRadius;
+    const photoImage = node.data.hasPhoto
+      ? await getPersonPhotoImage(pdfDoc, caches.photos, node.data.employeeId)
+      : null;
+    if (photoImage) {
+      page.drawImage(photoImage, {
+        x: centerX - avatarRadius,
+        y: avatarCenterY - avatarRadius,
+        width: avatarRadius * 2,
+        height: avatarRadius * 2,
+      });
+    } else {
+      page.drawCircle({ x: centerX, y: avatarCenterY, size: avatarRadius, color: hexToRgb(node.data.color) });
+      drawCenteredText(page, {
+        text: node.data.initials,
+        font,
+        size: 11 * s,
+        color: rgb(1, 1, 1),
+        centerX,
+        y: avatarCenterY - 4 * s,
+        maxWidth: avatarRadius * 1.8,
+      });
+    }
+
+    const nameLines = wrapCenteredLines(node.data.fullName, font, 8.5 * s, rect.width - 12 * s);
+    let lineY = avatarCenterY - avatarRadius - 14 * s;
+    for (const line of nameLines) {
+      drawCenteredText(page, {
+        text: line,
+        font,
+        size: 8.5 * s,
+        color: rgb(0.118, 0.118, 0.192),
+        centerX,
+        y: lineY,
+        maxWidth: rect.width - 12 * s,
+      });
+      lineY -= 10 * s;
+    }
+
+    const displayLabel = getPersonDisplayLabel({
+      resourceLabel: node.data.resourceLabel,
+      isTeamLeader: node.data.isTeamLeader,
+      isDirettivo: node.data.isDirettivo,
+    });
+    const tone = resourceTone[displayLabel] ?? resourceTone.Collaboratore;
+    const chipY = lineY - 4 * s;
+    drawVectorRoundedRect(page, {
+      x: rect.x + 10 * s,
+      y: chipY - 11 * s,
+      width: rect.width - 20 * s,
+      height: 15 * s,
+      radius: 7.5 * s,
+      color: hexToRgb(tone.text, 0.14),
+    });
+    drawCenteredText(page, {
+      text: displayLabel,
+      font,
+      size: 7.5 * s,
+      color: hexToRgb(tone.text),
+      centerX,
+      y: chipY - 8 * s,
+      maxWidth: rect.width - 24 * s,
+    });
+
+    const badges = node.data.courseBadges;
+    if (badges) {
+      const visible = COURSE_BADGES.filter(({ key }) => (badges[key] ?? "missing") !== "missing");
+      if (visible.length > 0) {
+        const badgeSize = 12 * s;
+        const gap = 4 * s;
+        const totalWidth = visible.length * badgeSize + (visible.length - 1) * gap;
+        let badgeX = centerX - totalWidth / 2;
+        const badgeY = chipY - 22 * s;
+        for (const { key, icon, label } of visible) {
+          const status = badges[key];
+          const color = BADGE_STATUS_COLOR[status];
+          const icon32 = await renderIconPng(pdfDoc, caches.badgeIcons, `${key}:${status}`, (ctx, size) => {
+            ctx.clearRect(0, 0, size, size);
+            ctx.fillStyle = `${color}33`;
+            ctx.beginPath();
+            ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = color;
+            ctx.stroke();
+            ctx.font = "20px Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(icon, size / 2, size / 2 + 1);
+          }, 32);
+          page.drawImage(icon32, { x: badgeX, y: badgeY, width: badgeSize, height: badgeSize });
+          badgeX += badgeSize + gap;
+          void label; // solo per il title/tooltip nella UI, non serve nel PDF
+        }
+      }
+    }
   }
 }
 
@@ -1249,10 +1595,8 @@ function OrgChartCanvas() {
   const graph = useMemo(() => buildGraph(model, collapsedIds, badgesMap), [model, collapsedIds, badgesMap]);
 
   // ── Stampa PDF ──────────────────────────────────────────────────────────
-  const flowWrapperRef = useRef(null);
   const [printMenuAnchor, setPrintMenuAnchor] = useState(null);
   const [printSelectionState, setPrintSelectionState] = useState(null); // null = intero organigramma
-  const [printGraph, setPrintGraph] = useState(null); // grafo temporaneo mostrato durante la cattura
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState(null);
 
@@ -1325,45 +1669,25 @@ function OrgChartCanvas() {
     setPrinting(true);
     setPrintError(null);
     try {
-      const [{ toPng }, { PDFDocument }] = await Promise.all([
-        import("html-to-image"),
+      const [{ PDFDocument, rgb }, { default: fontkit }] = await Promise.all([
         import("pdf-lib"),
+        import("@pdf-lib/fontkit"),
       ]);
       const pageGraph = buildGraph(model, new Set(), badgesMap);
-      setPrintGraph(pageGraph);
-      await waitForNextFrames();
-      const viewportEl = flowWrapperRef.current?.querySelector(".react-flow__viewport");
-      if (!viewportEl) {
-        throw new Error("Impossibile catturare l'organigramma");
-      }
-      await waitForImages(viewportEl);
-
       const bounds = computeGraphBounds(pageGraph.nodes);
-      const scale = Math.min(3, 8000 / bounds.width, 8000 / bounds.height);
-      const imageWidth = Math.max(1, Math.round(bounds.width * scale));
-      const imageHeight = Math.max(1, Math.round(bounds.height * scale));
-      const viewport = getViewportForBounds(bounds, imageWidth, imageHeight, 0.05, 3, 0);
-      const dataUrl = await toPng(viewportEl, {
-        backgroundColor: "#fdfbf8",
-        width: imageWidth,
-        height: imageHeight,
-        pixelRatio: 1,
-        style: {
-          width: `${imageWidth}px`,
-          height: `${imageHeight}px`,
-          transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-        },
-      });
 
       const pdfDoc = await PDFDocument.create();
-      const png = await pdfDoc.embedPng(dataUrl);
+      pdfDoc.registerFontkit(fontkit);
+      const lexendBytes = await fetch(lexendFontUrl).then((res) => res.arrayBuffer());
+      const font = await pdfDoc.embedFont(lexendBytes, { subset: true });
+
       const pageMargin = 24;
       const a0ShortSide = 2383.94; // lato corto A0 (841mm) in punti
       const maxLongSide = a0ShortSide * 6; // limite di sicurezza (~5m), oltre non ha senso stampare
-      const aspect = imageWidth / imageHeight;
+      const aspect = bounds.width / bounds.height;
       let pageWidth;
       let pageHeight;
-      if (imageWidth >= imageHeight) {
+      if (bounds.width >= bounds.height) {
         pageHeight = a0ShortSide;
         pageWidth = Math.min(pageHeight * aspect, maxLongSide);
       } else {
@@ -1371,15 +1695,9 @@ function OrgChartCanvas() {
         pageHeight = Math.min(pageWidth / aspect, maxLongSide);
       }
       const page = pdfDoc.addPage([pageWidth, pageHeight]);
-      const fitScale = Math.min((pageWidth - pageMargin * 2) / png.width, (pageHeight - pageMargin * 2) / png.height);
-      const drawWidth = png.width * fitScale;
-      const drawHeight = png.height * fitScale;
-      page.drawImage(png, {
-        x: (pageWidth - drawWidth) / 2,
-        y: (pageHeight - drawHeight) / 2,
-        width: drawWidth,
-        height: drawHeight,
-      });
+      const contentBox = { x: pageMargin, y: pageMargin, width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2 };
+      const caches = { photos: new Map(), badgeIcons: new Map() };
+      await renderOrgGraphOnPage(pdfDoc, page, font, rgb, pageGraph.nodes, pageGraph.edges, bounds, contentBox, caches);
 
       const pdfBytes = await pdfDoc.save();
       const blob = new Blob([pdfBytes], { type: "application/pdf" });
@@ -1392,11 +1710,7 @@ function OrgChartCanvas() {
     } catch (error) {
       setPrintError(error?.message || "Errore durante la generazione del poster");
     } finally {
-      setPrintGraph(null);
       setPrinting(false);
-      window.requestAnimationFrame(() => {
-        fitView({ padding: 0.22, minZoom: 0.2, maxZoom: 1.2 });
-      });
     }
   }
 
@@ -1443,59 +1757,31 @@ function OrgChartCanvas() {
     setPrintError(null);
     try {
       // Come per l'export del planner, le librerie vengono caricate solo al momento della stampa
-      const [{ toPng }, { PDFDocument }] = await Promise.all([
-        import("html-to-image"),
+      const [{ PDFDocument, rgb }, { default: fontkit }] = await Promise.all([
         import("pdf-lib"),
+        import("@pdf-lib/fontkit"),
       ]);
       const pdfDoc = await PDFDocument.create();
+      pdfDoc.registerFontkit(fontkit);
+      const lexendBytes = await fetch(lexendFontUrl).then((res) => res.arrayBuffer());
+      const font = await pdfDoc.embedFont(lexendBytes, { subset: true });
       const a3Long = 1190.55; // A3 in punti
       const a3Short = 841.89;
       const pageMargin = 24;
+      const caches = { photos: new Map(), badgeIcons: new Map() };
 
       for (const spec of pageSpecs) {
         // Grafo della sola sezione, con tutti i rami espansi
         const pageGraph = buildGraph(spec, new Set(), badgesMap);
-        setPrintGraph(pageGraph);
-        await waitForNextFrames();
-        const viewportEl = flowWrapperRef.current?.querySelector(".react-flow__viewport");
-        if (!viewportEl) {
-          continue;
-        }
-        await waitForImages(viewportEl);
-
         const bounds = computeGraphBounds(pageGraph.nodes);
-        // Cattura ad alta risoluzione (fino a 3x, max 8000px per lato) per una stampa nitida
-        const scale = Math.min(3, 8000 / bounds.width, 8000 / bounds.height);
-        const imageWidth = Math.max(1, Math.round(bounds.width * scale));
-        const imageHeight = Math.max(1, Math.round(bounds.height * scale));
-        const viewport = getViewportForBounds(bounds, imageWidth, imageHeight, 0.05, 3, 0);
-        const dataUrl = await toPng(viewportEl, {
-          backgroundColor: "#fdfbf8",
-          width: imageWidth,
-          height: imageHeight,
-          pixelRatio: 1,
-          style: {
-            width: `${imageWidth}px`,
-            height: `${imageHeight}px`,
-            transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-          },
-        });
 
-        const png = await pdfDoc.embedPng(dataUrl);
         // Orientamento della pagina A3 in base alle proporzioni del grafico
-        const isPortrait = imageHeight > imageWidth;
+        const isPortrait = bounds.height > bounds.width;
         const pageWidth = isPortrait ? a3Short : a3Long;
         const pageHeight = isPortrait ? a3Long : a3Short;
         const page = pdfDoc.addPage([pageWidth, pageHeight]);
-        const fitScale = Math.min((pageWidth - pageMargin * 2) / png.width, (pageHeight - pageMargin * 2) / png.height);
-        const drawWidth = png.width * fitScale;
-        const drawHeight = png.height * fitScale;
-        page.drawImage(png, {
-          x: (pageWidth - drawWidth) / 2,
-          y: (pageHeight - drawHeight) / 2,
-          width: drawWidth,
-          height: drawHeight,
-        });
+        const contentBox = { x: pageMargin, y: pageMargin, width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2 };
+        await renderOrgGraphOnPage(pdfDoc, page, font, rgb, pageGraph.nodes, pageGraph.edges, bounds, contentBox, caches);
       }
 
       const pdfBytes = await pdfDoc.save();
@@ -1509,11 +1795,7 @@ function OrgChartCanvas() {
     } catch (error) {
       setPrintError(error?.message || "Errore durante la generazione del PDF");
     } finally {
-      setPrintGraph(null);
       setPrinting(false);
-      window.requestAnimationFrame(() => {
-        fitView({ padding: 0.22, minZoom: 0.2, maxZoom: 1.2 });
-      });
     }
   }
 
@@ -1661,7 +1943,6 @@ function OrgChartCanvas() {
       {printError && <Alert severity="error" onClose={() => setPrintError(null)}>{printError}</Alert>}
 
       <Paper
-        ref={flowWrapperRef}
         sx={{
           height: "calc(100vh - 280px)",
           minHeight: 640,
@@ -1679,8 +1960,8 @@ function OrgChartCanvas() {
           </Box>
         ) : (
           <ReactFlow
-            nodes={(printGraph ?? graph).nodes}
-            edges={(printGraph ?? graph).edges}
+            nodes={graph.nodes}
+            edges={graph.edges}
             nodeTypes={nodeTypes}
             onNodeClick={handleNodeClick}
             fitView
