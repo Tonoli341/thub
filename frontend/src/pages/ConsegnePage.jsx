@@ -74,7 +74,7 @@ const AREAS = [
     icon: "shield",
     accent: "#007040",
     gradient: "linear-gradient(135deg, rgba(18,77,52,0.98), rgba(0,112,64,0.92))",
-    title: "Consegne DPI e vestiario",
+    title: "Dotazioni DPI e vestiario",
     description:
       "Dispositivi di protezione individuale e vestiario aziendale: storico consegne con firma, schede DPI e catalogo articoli con taglie. I dipendenti arrivano dall'anagrafica TMS.",
   },
@@ -870,7 +870,7 @@ export default function ConsegnePage() {
   return (
     <>
       <Stack spacing={3}>
-        <PageHeader section="Consegne" title={activeArea.title} />
+        <PageHeader section="Dotazioni" title={activeArea.title} />
 
         {/* Area e contatori: seconda barra, non nella banda del titolo (regole 2-3) */}
         <FilterBar dense>

@@ -55,7 +55,7 @@ const SIDEBAR_SECTIONS = [
       { to: "/planner", label: "Planner", icon: "briefcase", requires: "planning" },
       { to: "/carichi", label: "Carichi", icon: "document", requires: "workloads" },
       { to: "/calendario", label: "Assenze", icon: "sun", requires: "calendar" },
-      { to: "/dotazioni", label: "Consegne", icon: "box", requires: "deliveries" },
+      { to: "/dotazioni", label: "Dotazioni", icon: "box", requires: "deliveries" },
       { to: "/manutenzioni", label: "Manutenzioni", icon: "tools", requires: "maintenance" },
     ],
   },
