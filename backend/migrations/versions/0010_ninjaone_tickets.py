@@ -5,20 +5,15 @@ lo stato all'apertura, nessun aggiornamento successivo (né polling né webhook)
 Migrazione additiva: una tabella nuova.
 
 Revision ID: 0010_ninjaone_tickets
-Revises: 0003_assignment_cause_visita_idoneita_lowercase
+Revises: 0009_maintenance_notification_rules
 Create Date: 2026-08-31
-
-Nota: aggancia all'ultima revisione committata in git (0003), non alla 0009
-del modulo Manutenzioni — quella catena (0004-0009) esiste solo nel working
-tree, mai committata. Se in futuro viene committata separatamente, questa
-revisione andrà riordinata per evitare due head paralleli.
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "0010_ninjaone_tickets"
-down_revision = "0003_assignment_cause_visita_idoneita_lowercase"
+down_revision = "0009_maintenance_notification_rules"
 branch_labels = None
 depends_on = None
 
