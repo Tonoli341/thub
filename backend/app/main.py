@@ -10,6 +10,7 @@ from app.api import api_router
 from app.config import settings
 from app.db import init_db
 from app.services.errors import DomainError
+from app.services.maintenance_deadline_reminders import maintenance_deadline_email_scheduler
 from app.services.operational_reporting_reminders import operational_reporting_email_scheduler
 
 _DEFAULT_JWT_SECRET = "change-this-in-production"
@@ -41,12 +42,16 @@ async def lifespan(_: FastAPI):
     _ensure_production_secrets()
     init_db()
     reminder_task = asyncio.create_task(operational_reporting_email_scheduler())
+    maintenance_reminder_task = asyncio.create_task(maintenance_deadline_email_scheduler())
     try:
         yield
     finally:
         reminder_task.cancel()
+        maintenance_reminder_task.cancel()
         with suppress(asyncio.CancelledError):
             await reminder_task
+        with suppress(asyncio.CancelledError):
+            await maintenance_reminder_task
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

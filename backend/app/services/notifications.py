@@ -12,7 +12,9 @@ from app.services.absence_permissions import (
     get_linked_tms_employee,
     list_pending_justifications_for_approver,
 )
+from app.services.maintenance_deadlines import build_deadline_notifications
 from app.services.operational_reporting import list_reporting_notifications
+from app.services.portal_auth import build_auth_user_read
 
 
 JUSTIFICATION_LABELS = {
@@ -34,68 +36,75 @@ def build_notifications(
     target_employee: Employee | None = None,
 ) -> list[dict]:
     employee = target_employee or get_linked_tms_employee(db, current_user)
-    if employee is None:
-        return []
 
     notifications: list[dict] = []
-    for item in list_reporting_notifications(
-        db,
-        current_user,
-        target_employee=employee,
-    ):
-        query = urlencode({
-            "day": item["work_date"].isoformat(),
-            "team": item["team_id"],
-            "employee": item["missing_employee_ids"][0],
-        })
-        notifications.append({
-            "id": item["id"],
-            "category": "operational_reporting",
-            "title": item["title"],
-            "message": item["message"],
-            "detail": ", ".join(item["missing_employee_names"]),
-            "href": f"/rendicontazioni/operativa?{query}",
-            "created_at": None,
-        })
 
-    for justification in list_pending_justifications_for_approver(db, employee):
-        type_label = JUSTIFICATION_LABELS.get(justification.justification_type, "Assenza")
-        notifications.append({
-            "id": f"absence-approval:{justification.id}",
-            "category": "absence_approval",
-            "title": f"Richiesta di {type_label.lower()} da approvare",
-            "message": (
-                f"{justification.employee.full_name} · "
-                f"{_date_range_label(justification.start_date, justification.end_date)}"
-            ),
-            "detail": justification.created_by_name,
-            "href": "/",
-            "created_at": justification.created_at,
-        })
+    # Le scadenze manutenzioni non dipendono da un Employee collegato (a
+    # differenza delle altre categorie qui sotto): un utente Admin/Operations
+    # senza anagrafica TMS deve comunque vederle.
+    auth = build_auth_user_read(db, current_user)
+    if auth.can_access_maintenance:
+        notifications.extend(build_deadline_notifications(db, current_user))
 
-    signature_requests = db.scalars(
-        select(DeviceDelivery)
-        .where(
-            DeviceDelivery.employee_id == employee.id,
-            DeviceDelivery.returned_at.is_(None),
-            DeviceDelivery.signature_requested_at.is_not(None),
-            or_(
-                DeviceDelivery.signed_at.is_(None),
-                DeviceDelivery.signed_at < DeviceDelivery.signature_requested_at,
-            ),
-        )
-        .order_by(DeviceDelivery.signature_requested_at.desc())
-    ).all()
-    for delivery in signature_requests:
-        notifications.append({
-            "id": f"device-delivery-signature:{delivery.id}",
-            "category": "device_delivery_signature",
-            "title": "Firma consegna dispositivo richiesta",
-            "message": delivery.device_label,
-            "detail": "Apri la consegna, leggi la policy e apponi la firma.",
-            "href": f"/le-mie-consegne/{delivery.id}/firma",
-            "created_at": delivery.signature_requested_at,
-        })
+    if employee is not None:
+        for item in list_reporting_notifications(
+            db,
+            current_user,
+            target_employee=employee,
+        ):
+            query = urlencode({
+                "day": item["work_date"].isoformat(),
+                "team": item["team_id"],
+                "employee": item["missing_employee_ids"][0],
+            })
+            notifications.append({
+                "id": item["id"],
+                "category": "operational_reporting",
+                "title": item["title"],
+                "message": item["message"],
+                "detail": ", ".join(item["missing_employee_names"]),
+                "href": f"/rendicontazioni/operativa?{query}",
+                "created_at": None,
+            })
+
+        for justification in list_pending_justifications_for_approver(db, employee):
+            type_label = JUSTIFICATION_LABELS.get(justification.justification_type, "Assenza")
+            notifications.append({
+                "id": f"absence-approval:{justification.id}",
+                "category": "absence_approval",
+                "title": f"Richiesta di {type_label.lower()} da approvare",
+                "message": (
+                    f"{justification.employee.full_name} · "
+                    f"{_date_range_label(justification.start_date, justification.end_date)}"
+                ),
+                "detail": justification.created_by_name,
+                "href": "/",
+                "created_at": justification.created_at,
+            })
+
+        signature_requests = db.scalars(
+            select(DeviceDelivery)
+            .where(
+                DeviceDelivery.employee_id == employee.id,
+                DeviceDelivery.returned_at.is_(None),
+                DeviceDelivery.signature_requested_at.is_not(None),
+                or_(
+                    DeviceDelivery.signed_at.is_(None),
+                    DeviceDelivery.signed_at < DeviceDelivery.signature_requested_at,
+                ),
+            )
+            .order_by(DeviceDelivery.signature_requested_at.desc())
+        ).all()
+        for delivery in signature_requests:
+            notifications.append({
+                "id": f"device-delivery-signature:{delivery.id}",
+                "category": "device_delivery_signature",
+                "title": "Firma consegna dispositivo richiesta",
+                "message": delivery.device_label,
+                "detail": "Apri la consegna, leggi la policy e apponi la firma.",
+                "href": f"/le-mie-consegne/{delivery.id}/firma",
+                "created_at": delivery.signature_requested_at,
+            })
 
     def sort_key(notification: dict) -> tuple[int, float]:
         created_at = notification["created_at"]

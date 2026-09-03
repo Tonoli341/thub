@@ -145,6 +145,18 @@ class Settings(BaseSettings):
     ninjaone_client_secret: str = ""
     ninjaone_scope: str = "monitoring"
 
+    # Fileserver SMB dei documenti del modulo Manutenzioni (app/services/smb_storage.py).
+    # Per scelta esplicita dell'utente le credenziali vivono qui e non cifrate a
+    # database come le altre integrazioni: non è un'integrazione con GUI di
+    # amministrazione, ma configurazione d'ambiente del servizio documentale.
+    app_smb_host: str = ""
+    app_smb_port: int = 445
+    app_smb_share: str = ""
+    app_smb_username: str = ""
+    app_smb_password: str = ""
+    app_smb_domain: str = ""
+    app_smb_base_path: str = "manutenzioni"
+
     # Chiave con cui vengono cifrati i segreti delle integrazioni salvati a
     # database (vedi app/services/crypto.py). Non è una credenziale di un
     # servizio esterno: è la chiave che li protegge, va impostata per ambiente e

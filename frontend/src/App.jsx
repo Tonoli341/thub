@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
-import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Alert, Box, Button, CircularProgress, Container, InputBase, Stack, Tooltip, Typography } from "@mui/material";
 
 import { useAuth } from "./auth";
@@ -7,6 +8,8 @@ import { useAppTheme } from "./ThemeContext";
 import ErrorBoundary from "./ErrorBoundary";
 import LoginPage from "./pages/LoginPage";
 import NotificationsBell from "./NotificationsBell";
+import { Icon } from "./components/Icon";
+import { getMaintenanceAssetFamilies } from "./maintenanceAssetsApi";
 
 // Code-splitting per route: le pagine (alcune molto grandi, con dipendenze come
 // pdf-lib o @xyflow/react) vengono scaricate solo quando servono.
@@ -37,6 +40,13 @@ const IntegrationsPage = lazy(() => import("./pages/IntegrationsPage"));
 const ConsegnePage = lazy(() => import("./pages/ConsegnePage"));
 const DeliverySignaturePage = lazy(() => import("./pages/DeliverySignaturePage"));
 const MaintenancePage = lazy(() => import("./pages/MaintenancePage"));
+const MaintenanceDashboardPage = lazy(() => import("./pages/MaintenanceDashboardPage"));
+const MaintenanceAssetsPage = lazy(() => import("./pages/MaintenanceAssetsPage"));
+const MaintenanceAssetDetailPage = lazy(() => import("./pages/MaintenanceAssetDetailPage"));
+const MaintenanceDeadlinesPage = lazy(() => import("./pages/MaintenanceDeadlinesPage"));
+const MaintenanceAssetTypesAdminPage = lazy(() => import("./pages/MaintenanceAssetTypesAdminPage"));
+const MaintenanceNotificationRulesPage = lazy(() => import("./pages/MaintenanceNotificationRulesPage"));
+const MaintenanceAssetPublicPage = lazy(() => import("./pages/MaintenanceAssetPublicPage"));
 
 function PageLoader() {
   return (
@@ -46,23 +56,58 @@ function PageLoader() {
   );
 }
 
+// Ogni sezione appartiene a uno dei due macro-moduli scelti in ModuleChooserPage
+// (vedi ProtectedLayout): "thub" per l'operatività quotidiana, "maintenance" per
+// il modulo Manutenzioni. SidebarNav filtra anche per questo campo, oltre che per
+// i permessi già esistenti in `requires:`.
 const SIDEBAR_SECTIONS = [
   {
     key: "quick",
     title: null,
+    module: "thub",
     items: [
       { to: "/", label: "Home", icon: "home" },
       { to: "/planner", label: "Planner", icon: "briefcase", requires: "planning" },
       { to: "/carichi", label: "Carichi", icon: "document", requires: "workloads" },
       { to: "/calendario", label: "Assenze", icon: "sun", requires: "calendar" },
+    ],
+  },
+  {
+    key: "consegne",
+    title: "Dotazioni",
+    module: "deliveries",
+    items: [
       { to: "/dotazioni", label: "Dotazioni", icon: "box", requires: "deliveries" },
-      { to: "/manutenzioni", label: "Manutenzioni", icon: "tools", requires: "maintenance" },
+    ],
+  },
+  {
+    // I sottogruppi famiglia sono iniettati dinamicamente da SidebarNav, una
+    // cartella per famiglia configurata in Manutenzioni · Famiglie/classi
+    // (vedi MaintenanceAssetTypesAdminPage), ciascuna con le sue classi come
+    // voci. Vuoto qui = nessuna famiglia ancora configurata: la sezione
+    // mostra comunque Dashboard, Scadenze e Questionario.
+    key: "manutenzioni",
+    title: "Manutenzioni",
+    module: "maintenance",
+    // items compare prima dei sottogruppi famiglia (iniettati da SidebarNav),
+    // trailingItems dopo: l'ordine richiesto è Dashboard, [famiglie], Scadenze,
+    // Questionario.
+    items: [
+      { to: "/manutenzioni", label: "Dashboard", icon: "panel", requires: "maintenance", exact: true },
+    ],
+    trailingItems: [
+      { to: "/manutenzioni/scadenze", label: "Scadenze", icon: "checklist", requires: "maintenance" },
+      { to: "/manutenzioni/questionario", label: "Questionario", icon: "document", requires: "maintenance" },
+      { to: "/manutenzioni/categorie", label: "Manutenzioni classificazione", icon: "tools", requires: "admin" },
+      { to: "/manutenzioni/notifiche", label: "Manutenzioni · Notifiche", icon: "receipt", requires: "admin" },
     ],
   },
   {
     key: "rendicontazioni",
     title: "Rendicontazioni",
+    module: "reporting",
     items: [
+      { to: "/commesse", label: "Jupiter", icon: "planet", requires: "organization" },
       { to: "/rendicontazioni/operativa/dashboard", label: "Dashboard operativa", icon: "panel", requires: "operationalReporting" },
       { to: "/rendicontazioni/operativa", label: "Operativa", icon: "clock", requires: "operationalReporting", exact: true },
     ],
@@ -70,6 +115,7 @@ const SIDEBAR_SECTIONS = [
   {
     key: "strumenti",
     title: "Strumenti",
+    module: "thub",
     items: [
       { to: "/modifiche-tool", label: "Modifiche tool", icon: "checklist", requires: "organization" },
     ],
@@ -77,6 +123,7 @@ const SIDEBAR_SECTIONS = [
   {
     key: "impresa",
     title: "Impresa",
+    module: "thub",
     items: [
       { to: "/dipendenti", label: "Dipendenti", icon: "user", requires: "organization" },
       { to: "/squadre", label: "Squadre", icon: "team", requires: "organization" },
@@ -87,9 +134,9 @@ const SIDEBAR_SECTIONS = [
   {
     key: "configurazione",
     title: "Configurazione",
+    module: "thub",
     items: [
       { to: "/dipendenti-ldap", label: "Mapping LDAP", icon: "folder", requires: "organization" },
-      { to: "/commesse", label: "Jupiter", icon: "planet", requires: "organization" },
       { to: "/aree-operative", label: "Aree operative", icon: "document", requires: "organization" },
       { to: "/formazione", label: "Formazione", icon: "graduation", requires: "hr" },
       { to: "/integrazioni", label: "Integrazioni", icon: "plug", requires: "admin" },
@@ -100,9 +147,18 @@ const SIDEBAR_SECTIONS = [
   },
 ];
 
-function THubLogo({ size = 28 }) {
+// Etichetta del modulo mostrata accanto al logo in sidebar quando è attivo
+// (vedi ProtectedLayout) e come titolo dei box in ModuleChooserPage.
+const MODULE_LABELS = {
+  thub: "Risorse",
+  maintenance: "Manutenzioni",
+  deliveries: "Dotazioni",
+  reporting: "Rendicontazioni",
+};
+
+function THubLogo({ size = 28, suffix }) {
   return (
-    <Box sx={{ display: "inline-flex", alignItems: "center", gap: "0.38em", lineHeight: 1 }}>
+    <Box sx={{ display: "inline-flex", alignItems: "center", gap: "0.38em", lineHeight: 1, minWidth: 0 }}>
       <svg width={size} height={size} viewBox="0 0 200 200" aria-hidden="true" style={{ flexShrink: 0, display: "block" }}>
         <defs><clipPath id="thub-cl"><circle cx="100" cy="100" r="62" /></clipPath></defs>
         <rect width="200" height="200" rx="44" fill="#F0ECE0" />
@@ -121,249 +177,16 @@ function THubLogo({ size = 28 }) {
           letterSpacing: "-0.02em",
           lineHeight: 1,
           color: "var(--color-sidebar-text)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
         }}
       >
         T<Box component="span" sx={{ color: "var(--color-accent)" }}>-</Box>Hub
+        {suffix && <Box component="span" sx={{ fontWeight: 500 }}> {suffix}</Box>}
       </Box>
     </Box>
   );
-}
-
-function Icon({ name, size = 20, stroke = 1.9 }) {
-  const common = {
-    width: size,
-    height: size,
-    viewBox: "0 0 24 24",
-    fill: "none",
-    xmlns: "http://www.w3.org/2000/svg",
-    stroke: "currentColor",
-    strokeWidth: stroke,
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-  };
-
-  switch (name) {
-    case "home":
-      return (
-        <svg {...common}>
-          <path d="M3 10.5 12 3l9 7.5" />
-          <path d="M5.5 9.5V20h13V9.5" />
-        </svg>
-      );
-    case "briefcase":
-      return (
-        <svg {...common}>
-          <rect x="3" y="7" width="18" height="12" rx="2.5" />
-          <path d="M9 7V5.8A1.8 1.8 0 0 1 10.8 4h2.4A1.8 1.8 0 0 1 15 5.8V7" />
-          <path d="M3 11.5h18" />
-        </svg>
-      );
-    case "calendar":
-      return (
-        <svg {...common}>
-          <rect x="4" y="5" width="16" height="15" rx="2.5" />
-          <path d="M8 3v4" />
-          <path d="M16 3v4" />
-          <path d="M4 9.5h16" />
-        </svg>
-      );
-    case "user":
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="8" r="3.5" />
-          <path d="M5 20a7 7 0 0 1 14 0" />
-        </svg>
-      );
-    case "users":
-      return (
-        <svg {...common}>
-          <circle cx="9" cy="9" r="3" />
-          <path d="M4.5 18a4.5 4.5 0 0 1 9 0" />
-          <path d="M16.5 6.8a2.5 2.5 0 1 1 0 5" />
-          <path d="M18.8 18a4 4 0 0 0-2.8-3.8" />
-        </svg>
-      );
-    case "team":
-      return (
-        <svg {...common}>
-          <circle cx="8" cy="9" r="2.5" />
-          <circle cx="16" cy="9" r="2.5" />
-          <path d="M3.8 18a4.2 4.2 0 0 1 8.4 0" />
-          <path d="M11.8 18a4.2 4.2 0 0 1 8.4 0" />
-        </svg>
-      );
-    case "orgchart":
-      return (
-        <svg {...common}>
-          <rect x="9" y="4" width="6" height="4" rx="1" />
-          <rect x="4" y="16" width="6" height="4" rx="1" />
-          <rect x="14" y="16" width="6" height="4" rx="1" />
-          <path d="M12 8v4" />
-          <path d="M7 16v-2h10v2" />
-        </svg>
-      );
-    case "folder":
-      return (
-        <svg {...common}>
-          <path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h3l1.8 2H18a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 18 19H6A2.5 2.5 0 0 1 3.5 16.5z" />
-        </svg>
-      );
-    case "document":
-      return (
-        <svg {...common}>
-          <rect x="6" y="3.5" width="12" height="17" rx="2" />
-          <path d="M9 8.5h6" />
-          <path d="M9 12h6" />
-          <path d="M9 15.5h4" />
-        </svg>
-      );
-    case "checklist":
-      return (
-        <svg {...common}>
-          <path d="M9 6h11" />
-          <path d="M9 12h11" />
-          <path d="M9 18h11" />
-          <path d="m4 6 1.5 1.5L8 4" />
-          <path d="m4 12 1.5 1.5L8 10" />
-          <path d="m4 18 1.5 1.5L8 16" />
-        </svg>
-      );
-    case "box":
-      return (
-        <svg {...common}>
-          <path d="M12 3 20 7v10l-8 4-8-4V7z" />
-          <path d="M4 7l8 4 8-4" />
-          <path d="M12 11v9" />
-        </svg>
-      );
-    case "receipt":
-      return (
-        <svg {...common}>
-          <path d="M7 4h10v16l-2.5-1.4L12 20l-2.5-1.4L7 20z" />
-          <path d="M9.5 8.5h5" />
-          <path d="M9.5 12h5" />
-          <path d="M9.5 15.5h3.5" />
-        </svg>
-      );
-    case "search":
-      return (
-        <svg {...common}>
-          <circle cx="11" cy="11" r="6.5" />
-          <path d="m16 16 4 4" />
-        </svg>
-      );
-    case "panel":
-      return (
-        <svg {...common}>
-          <rect x="4" y="5" width="16" height="14" rx="2.5" />
-          <path d="M10 5v14" />
-        </svg>
-      );
-    case "chevron-down":
-      return (
-        <svg {...common}>
-          <path d="m7 10 5 5 5-5" />
-        </svg>
-      );
-    case "tree-palm":
-      return (
-        <svg {...common}>
-          <path d="M12 22 C11.5 17 11.5 13 13 9" />
-          <path d="M13 9 C10 7 6 8 5 5 C8 3 12 6 13 9" />
-          <path d="M13 9 C16 7 20 8 21 5 C18 3 14 6 13 9" />
-          <path d="M13 9 C13 6 15 3 18 2 C17 5 15 7 13 9" />
-          <path d="M13 9 C13 6 11 3 8 2 C9 5 11 7 13 9" />
-        </svg>
-      );
-    case "beach-umbrella":
-      return (
-        <svg {...common}>
-          <path d="M2 13C2 7.5 6.5 3 12 3s10 4.5 10 10" />
-          <path d="M12 3v10" />
-          <path d="M6.5 5.5 11 13" />
-          <path d="M17.5 5.5 13 13" />
-          <path d="M12 13l3.5 8.5" />
-        </svg>
-      );
-    case "sun":
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-        </svg>
-      );
-    case "plane":
-      return (
-        <svg {...common}>
-          <path d="M22 16.5 12.5 21 10 17l-7-2.5 2-3 5 1 2.5-5-7-4 1.5-2 9 2 4-4c1-1 2.5-.5 3 .5s0 2.5-1 3l-4 4 2 9-3 1.5z" />
-        </svg>
-      );
-    case "structure":
-      return (
-        <svg {...common}>
-          <rect x="8.5" y="3" width="7" height="4.5" rx="1" />
-          <rect x="3" y="16.5" width="6" height="4.5" rx="1" />
-          <rect x="15" y="16.5" width="6" height="4.5" rx="1" />
-          <path d="M12 7.5v3.5" />
-          <path d="M6 16.5v-2.5h12v2.5" />
-          <path d="M12 11v3" />
-        </svg>
-      );
-    case "graduation":
-      return (
-        <svg {...common}>
-          <path d="M12 4 2.5 9 12 14l9.5-5L12 4Z" />
-          <path d="M6.5 11.2v4.3c0 1 2.5 2.5 5.5 2.5s5.5-1.5 5.5-2.5v-4.3" />
-          <path d="M21.5 9v5" />
-        </svg>
-      );
-    case "code":
-      return (
-        <svg {...common}>
-          <path d="m8 9-3 3 3 3" />
-          <path d="m16 9 3 3-3 3" />
-          <path d="m14 4-4 16" />
-        </svg>
-      );
-    case "clock":
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="8.5" />
-          <path d="M12 7.5V12l3 2" />
-        </svg>
-      );
-    case "pulse":
-      return (
-        <svg {...common}>
-          <path d="M3 12h4l2.5-6 4.5 12 2.5-6H21" />
-        </svg>
-      );
-    case "planet":
-      return (
-        <svg {...common}>
-          <circle cx="11" cy="12" r="6.5" />
-          <ellipse cx="11" cy="12" rx="10.5" ry="3" transform="rotate(-18 11 12)" />
-        </svg>
-      );
-    case "plug":
-      return (
-        <svg {...common}>
-          <path d="M9 3v5" />
-          <path d="M15 3v5" />
-          <path d="M6.5 8h11v3.5a5.5 5.5 0 0 1-11 0V8Z" />
-          <path d="M12 17v4" />
-        </svg>
-      );
-    case "tools":
-      return (
-        <svg {...common}>
-          <path d="M14.7 6.3a4 4 0 0 0-5-5L12 3.6 9.6 6 7.3 3.7a4 4 0 0 0 5 5L20 16.4a2.1 2.1 0 0 1-3 3z" />
-          <path d="m5 13-2.7 2.7a2.1 2.1 0 0 0 3 3L8 16" />
-        </svg>
-      );
-    default:
-      return null;
-  }
 }
 
 function SidebarLink({ item, active, collapsed }) {
@@ -412,36 +235,82 @@ function SidebarLink({ item, active, collapsed }) {
   ) : inner;
 }
 
-function SidebarNav({ user, collapsed, search }) {
+function SidebarNav({ user, collapsed, search, activeModule }) {
   const location = useLocation();
   const [openGroups, setOpenGroups] = useState({ rendicontazioni: true, impresa: true });
 
+  const assetFamiliesQuery = useQuery({
+    queryKey: ["maintenance-asset-families"],
+    queryFn: getMaintenanceAssetFamilies,
+    enabled: Boolean(user?.can_access_maintenance),
+    staleTime: 60000,
+  });
+
+  const sectionsWithAssetCategories = useMemo(() => {
+    // Una sotto-cartella per famiglia, con le sue classi come voci — vera
+    // alberatura a tre livelli (Manutenzioni > Famiglia > Classe), non un
+    // elenco piatto: con più famiglie serve vederle distinte nel menu.
+    const familySubGroups = (assetFamiliesQuery.data ?? []).map((assetFamily) => ({
+      key: `manutenzioni-family-${assetFamily.id}`,
+      title: assetFamily.label,
+      icon: assetFamily.icon || "box",
+      items: (assetFamily.classes ?? []).map((assetClass) => ({
+        to: `/manutenzioni/asset/${assetClass.code}`,
+        label: assetClass.label,
+        icon: assetClass.icon || "tools",
+        requires: "maintenance",
+      })),
+    }));
+    return SIDEBAR_SECTIONS.map((section) =>
+      section.key === "manutenzioni" ? { ...section, items: [...section.items], subGroups: familySubGroups } : section
+    );
+  }, [assetFamiliesQuery.data]);
+
+  const itemAllowed = (item) => {
+    if (item.requires === "admin") return user?.effective_role === "admin";
+    if (item.requires === "hr") return user?.effective_role === "admin" || user?.effective_role === "hr";
+    if (item.requires === "planning") return Boolean(user?.can_access_planning);
+    if (item.requires === "calendar") return Boolean(user?.can_access_calendar);
+    if (item.requires === "organization") return Boolean(user?.can_access_organization);
+    if (item.requires === "timesheets") return Boolean(user?.can_access_timesheets);
+    if (item.requires === "operationalReporting") return Boolean(user?.can_access_operational_reporting);
+    if (item.requires === "workloads") return Boolean(user?.can_access_workloads);
+    if (item.requires === "deliveries") return Boolean(user?.can_access_deliveries);
+    if (item.requires === "maintenance") return Boolean(user?.can_access_maintenance);
+    return true;
+  };
+
   const visibleSections = useMemo(
-    () => SIDEBAR_SECTIONS.map((section) => ({
-      ...section,
-      items: section.items.filter((item) => {
-        if (item.requires === "admin") return user?.effective_role === "admin";
-        if (item.requires === "hr") return user?.effective_role === "admin" || user?.effective_role === "hr";
-        if (item.requires === "planning") return Boolean(user?.can_access_planning);
-        if (item.requires === "calendar") return Boolean(user?.can_access_calendar);
-        if (item.requires === "organization") return Boolean(user?.can_access_organization);
-        if (item.requires === "timesheets") return Boolean(user?.can_access_timesheets);
-        if (item.requires === "operationalReporting") return Boolean(user?.can_access_operational_reporting);
-        if (item.requires === "workloads") return Boolean(user?.can_access_workloads);
-        if (item.requires === "deliveries") return Boolean(user?.can_access_deliveries);
-        if (item.requires === "maintenance") return Boolean(user?.can_access_maintenance);
-        return true;
-      }),
-    })).filter((section) => section.items.length > 0),
-    [user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets, user?.can_access_operational_reporting, user?.can_access_workloads, user?.can_access_deliveries, user?.can_access_maintenance],
+    () => sectionsWithAssetCategories
+      .filter((section) => !activeModule || section.module === activeModule)
+      .map((section) => ({
+        ...section,
+        items: section.items.filter(itemAllowed),
+        trailingItems: (section.trailingItems ?? []).filter(itemAllowed),
+        subGroups: (section.subGroups ?? [])
+          .map((subGroup) => ({ ...subGroup, items: subGroup.items.filter(itemAllowed) }))
+          .filter((subGroup) => subGroup.items.length > 0),
+      })).filter(
+        (section) => section.items.length > 0 || section.trailingItems.length > 0 || (section.subGroups ?? []).length > 0,
+      ),
+    [sectionsWithAssetCategories, activeModule, user?.effective_role, user?.can_access_organization, user?.can_access_planning, user?.can_access_calendar, user?.can_access_timesheets, user?.can_access_operational_reporting, user?.can_access_workloads, user?.can_access_deliveries, user?.can_access_maintenance],
   );
 
   const displayedSections = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return visibleSections;
     return visibleSections
-      .map((section) => ({ ...section, items: section.items.filter((item) => item.label.toLowerCase().includes(q)) }))
-      .filter((section) => section.items.length > 0);
+      .map((section) => ({
+        ...section,
+        items: section.items.filter((item) => item.label.toLowerCase().includes(q)),
+        trailingItems: (section.trailingItems ?? []).filter((item) => item.label.toLowerCase().includes(q)),
+        subGroups: (section.subGroups ?? [])
+          .map((subGroup) => ({ ...subGroup, items: subGroup.items.filter((item) => item.label.toLowerCase().includes(q)) }))
+          .filter((subGroup) => subGroup.items.length > 0),
+      }))
+      .filter(
+        (section) => section.items.length > 0 || section.trailingItems.length > 0 || (section.subGroups ?? []).length > 0,
+      );
   }, [visibleSections, search]);
 
   const isSearching = search.trim().length > 0;
@@ -490,9 +359,166 @@ function SidebarNav({ user, collapsed, search }) {
                 </Box>
               );
             })}
+
+            {isOpen && (section.subGroups ?? []).map((subGroup) => {
+              const subOpen = isSearching || openGroups[subGroup.key] !== false;
+              return (
+                <Box component="li" key={subGroup.key} sx={{ mt: 0.5 }}>
+                  {!collapsed && (
+                    <Button
+                      onClick={() => setOpenGroups((current) => ({ ...current, [subGroup.key]: !current[subGroup.key] }))}
+                      sx={{
+                        width: "100%",
+                        minWidth: 0,
+                        px: 0.75,
+                        py: 0.4,
+                        justifyContent: "flex-start",
+                        gap: 0.75,
+                        borderRadius: "6px",
+                        color: "var(--color-sidebar-text)",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        textTransform: "none",
+                        "&:hover": { background: "var(--color-sidebar-hover-bg)" },
+                      }}
+                    >
+                      <Box sx={{ width: 18, height: 18, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                        <Icon name={subGroup.icon} size={16} />
+                      </Box>
+                      <Box component="span" sx={{ flex: 1, textAlign: "left" }}>{subGroup.title}</Box>
+                      <Box sx={{ width: 12, height: 12, color: "var(--color-sidebar-text-muted)", display: "inline-flex", alignItems: "center", justifyContent: "center", transform: subOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s" }}>
+                        <Icon name="chevron-down" size={12} stroke={2.1} />
+                      </Box>
+                    </Button>
+                  )}
+                  {subOpen && (
+                    <Box component="ul" sx={{ listStyle: "none", m: 0, pl: collapsed ? 0 : 1.5 }}>
+                      {subGroup.items.map((item) => {
+                        const active = location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+                        return (
+                          <Box component="li" key={item.to} sx={{ mt: 0.25 }}>
+                            <SidebarLink item={item} active={active} collapsed={collapsed} />
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  )}
+                </Box>
+              );
+            })}
+
+            {isOpen && (section.trailingItems ?? []).map((item) => {
+              const active = item.to === "/" || item.exact
+                ? location.pathname === item.to
+                : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+              return (
+                <Box component="li" key={item.to} sx={{ mt: 0.25 }}>
+                  <SidebarLink item={item} active={active} collapsed={collapsed} />
+                </Box>
+              );
+            })}
           </Box>
         );
       })}
+    </Box>
+  );
+}
+
+// Chiave localStorage per ricordare il modulo scelto tra una sessione e l'altra
+// dello stesso browser (vedi ProtectedLayout).
+const MODULE_STORAGE_KEY = "thub.activeModule";
+
+function moduleForPath(pathname) {
+  if (pathname.startsWith("/manutenzioni")) return "maintenance";
+  if (pathname.startsWith("/dotazioni")) return "deliveries";
+  if (pathname.startsWith("/commesse") || pathname.startsWith("/rendicontazioni/operativa")) return "reporting";
+  return "thub";
+}
+
+function ModuleBox({ icon, title, description, onClick, accent }) {
+  return (
+    <Box
+      component="button"
+      onClick={onClick}
+      sx={{
+        width: 280,
+        maxWidth: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+        gap: 1.5,
+        p: 3,
+        border: "1px solid var(--color-sidebar-border)",
+        borderRadius: "18px",
+        bgcolor: "background.paper",
+        cursor: "pointer",
+        textAlign: "left",
+        font: "inherit",
+        transition: "transform 0.15s, box-shadow 0.15s, border-color 0.15s",
+        "&:hover": {
+          transform: "translateY(-2px)",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.08)",
+          borderColor: accent,
+        },
+      }}
+    >
+      <Box sx={{ width: 48, height: 48, borderRadius: "12px", bgcolor: accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Icon name={icon} size={24} />
+      </Box>
+      <Typography sx={{ fontSize: 18, fontWeight: 700, color: "text.primary" }}>{title}</Typography>
+      <Typography sx={{ fontSize: 13, color: "text.secondary" }}>{description}</Typography>
+    </Box>
+  );
+}
+
+function ModuleChooserPage({ canAccessMaintenance, canAccessDeliveries, canAccessReporting, onSelect, onLogout }) {
+  return (
+    <Box sx={{ minHeight: "80vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, px: 2 }}>
+      <Box sx={{ textAlign: "center" }}>
+        <THubLogo size={40} />
+        <Typography sx={{ mt: 1.5, fontSize: 14, color: "text.secondary" }}>
+          Scegli l'area in cui vuoi entrare
+        </Typography>
+      </Box>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2.5}>
+        <ModuleBox
+          icon="home"
+          title="T-Hub Risorse"
+          description="Planner, carichi, assenze e anagrafica."
+          accent="#007040"
+          onClick={() => onSelect("thub")}
+        />
+        {canAccessMaintenance && (
+          <ModuleBox
+            icon="tools"
+            title="T-Hub Manutenzioni"
+            description="Asset, scadenze, documenti e questionario di manutenzione."
+            accent="#8a5a00"
+            onClick={() => onSelect("maintenance")}
+          />
+        )}
+        {canAccessDeliveries && (
+          <ModuleBox
+            icon="box"
+            title="T-Hub Dotazioni"
+            description="Dotazioni di dispositivi e DPI ai dipendenti."
+            accent="#0a5f8a"
+            onClick={() => onSelect("deliveries")}
+          />
+        )}
+        {canAccessReporting && (
+          <ModuleBox
+            icon="clock"
+            title="T-Hub Rendicontazioni"
+            description="Commesse Jupiter e rendicontazione operativa."
+            accent="#6a3d9a"
+            onClick={() => onSelect("reporting")}
+          />
+        )}
+      </Stack>
+      <Button onClick={onLogout} sx={{ textTransform: "none", color: "text.secondary", fontSize: 13 }}>
+        Esci
+      </Button>
     </Box>
   );
 }
@@ -502,8 +528,55 @@ function ProtectedLayout() {
   const { darkMode, setDarkMode } = useAppTheme();
   const timesheetsOnly = Boolean(effectiveUser?.can_access_timesheets && !effectiveUser?.can_access_planning && !effectiveUser?.can_access_calendar && !effectiveUser?.can_access_organization);
   const canAccessOperationalReporting = Boolean(effectiveUser?.can_access_operational_reporting);
+  const canAccessMaintenance = Boolean(effectiveUser?.can_access_maintenance);
+  const canAccessDeliveries = Boolean(effectiveUser?.can_access_deliveries);
+  const canAccessReporting = Boolean(effectiveUser?.can_access_organization || canAccessOperationalReporting);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const [activeModule, setActiveModuleState] = useState(() => {
+    try {
+      // Sulla home nuda non si riapre mai il modulo ricordato dalla sessione
+      // precedente: chi arriva su "/" deve sempre vedere la scelta dei moduli.
+      // Il ricordo in localStorage resta valido solo per i link diretti a una
+      // pagina di un modulo (vedi l'effect sotto, basato su moduleForPath).
+      if (window.location.pathname === "/") return null;
+      return localStorage.getItem(MODULE_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+
+  const setActiveModule = (nextModule) => {
+    setActiveModuleState(nextModule);
+    try {
+      if (nextModule) localStorage.setItem(MODULE_STORAGE_KEY, nextModule);
+      else localStorage.removeItem(MODULE_STORAGE_KEY);
+    } catch {
+      // storage non disponibile (es. modalità privata): il modulo resta solo in memoria
+    }
+  };
+
+  // Chi apre un link diretto a una pagina di Manutenzioni (es. da preferiti) entra
+  // in quel modulo senza dover passare dal chooser di "/".
+  useEffect(() => {
+    if (location.pathname === "/") return;
+    const pathModule = moduleForPath(location.pathname);
+    if (pathModule !== activeModule) setActiveModule(pathModule);
+  }, [location.pathname]);
+
+  // Chi non ha accesso a nessun modulo extra (Manutenzioni/Consegne/Rendicontazioni),
+  // o è un utente "solo rendicontazioni", non ha nulla da scegliere: entra sempre
+  // dritto in T-Hub, senza chooser inutile.
+  useEffect(() => {
+    if (!activeModule && (!(canAccessMaintenance || canAccessDeliveries || canAccessReporting) || timesheetsOnly)) {
+      setActiveModule("thub");
+    }
+  }, [activeModule, canAccessMaintenance, canAccessDeliveries, canAccessReporting, timesheetsOnly]);
+
+  const showModuleChooser = location.pathname === "/" && !activeModule;
 
   const sidebarWidth = sidebarCollapsed ? 56 : 240;
 
@@ -515,6 +588,21 @@ function ProtectedLayout() {
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
+      {import.meta.env.DEV && (
+        <Box
+          sx={{
+            bgcolor: "#c62828",
+            color: "#fff",
+            textAlign: "center",
+            fontSize: 12,
+            fontWeight: 700,
+            letterSpacing: 0.5,
+            py: 0.5,
+          }}
+        >
+          AMBIENTE DI SVILUPPO
+        </Box>
+      )}
       {isImpersonating && (
         <Alert
           severity="warning"
@@ -543,6 +631,25 @@ function ProtectedLayout() {
           </Stack>
         </Alert>
       )}
+      {showModuleChooser ? (
+        <ModuleChooserPage
+          canAccessMaintenance={canAccessMaintenance}
+          canAccessDeliveries={canAccessDeliveries}
+          canAccessReporting={canAccessReporting}
+          onSelect={(nextModule) => {
+            setActiveModule(nextModule);
+            const landingPath = nextModule === "maintenance"
+              ? "/manutenzioni"
+              : nextModule === "deliveries"
+                ? "/dotazioni"
+                : nextModule === "reporting"
+                  ? (canAccessOperationalReporting ? "/rendicontazioni/operativa/dashboard" : "/commesse")
+                  : "/";
+            navigate(landingPath);
+          }}
+          onLogout={logout}
+        />
+      ) : (
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: `${sidebarWidth}px minmax(0, 1fr)` }, minHeight: "100vh" }}>
         <Box
           component="aside"
@@ -567,22 +674,25 @@ function ProtectedLayout() {
           <Box sx={{ flexShrink: 0 }}>
             <Box sx={{ height: 56, display: "flex", alignItems: "center", justifyContent: sidebarCollapsed ? "center" : "space-between", gap: 1.5, px: sidebarCollapsed ? 0 : 1.5 }}>
               {!sidebarCollapsed && (
-                <Button
-                  sx={{
-                    minWidth: 0,
-                    flex: 1,
-                    justifyContent: "flex-start",
-                    gap: 1,
-                    px: 0.75,
-                    py: 0.75,
-                    borderRadius: "10px",
-                    color: "var(--color-sidebar-text)",
-                    textTransform: "none",
-                    "&:hover": { background: "var(--color-sidebar-hover-bg)" },
-                  }}
-                >
-                  <THubLogo size={28} />
-                </Button>
+                <Tooltip title="Cambia modulo" placement="right">
+                  <Button
+                    onClick={() => { setActiveModule(null); navigate("/"); }}
+                    sx={{
+                      minWidth: 0,
+                      flex: 1,
+                      justifyContent: "flex-start",
+                      gap: 1,
+                      px: 0.75,
+                      py: 0.75,
+                      borderRadius: "10px",
+                      color: "var(--color-sidebar-text)",
+                      textTransform: "none",
+                      "&:hover": { background: "var(--color-sidebar-hover-bg)" },
+                    }}
+                  >
+                    <THubLogo size={28} suffix={activeModule ? MODULE_LABELS[activeModule] : undefined} />
+                  </Button>
+                </Tooltip>
               )}
               <Tooltip title={sidebarCollapsed ? "Espandi menu" : "Comprimi menu"} placement="right">
                 <Button
@@ -642,7 +752,7 @@ function ProtectedLayout() {
             )}
           </Box>
 
-          <SidebarNav user={effectiveUser} collapsed={sidebarCollapsed} search={sidebarSearch} />
+          <SidebarNav user={effectiveUser} collapsed={sidebarCollapsed} search={sidebarSearch} activeModule={activeModule} />
 
           <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: sidebarCollapsed ? "center" : "space-between", px: sidebarCollapsed ? 0 : 1.5, py: 1, borderTop: "1px solid var(--color-sidebar-border)", bgcolor: "var(--color-sidebar-footer-bg)", gap: 0.5 }}>
             {sidebarCollapsed ? (
@@ -722,7 +832,13 @@ function ProtectedLayout() {
               <Route path="/organigramma" element={effectiveUser?.can_access_organization ? <OrgChartPage /> : <Navigate to="/" replace />} />
               <Route path="/dipendenti" element={effectiveUser?.can_access_organization ? <EmployeesPage onImpersonate={effectiveUser?.effective_role === "admin" ? startImpersonation : undefined} /> : <Navigate to="/" replace />} />
               <Route path="/dotazioni" element={effectiveUser?.can_access_deliveries ? <ConsegnePage /> : <Navigate to="/" replace />} />
-              <Route path="/manutenzioni" element={effectiveUser?.can_access_maintenance ? <MaintenancePage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni" element={effectiveUser?.can_access_maintenance ? <MaintenanceDashboardPage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni/questionario" element={effectiveUser?.can_access_maintenance ? <MaintenancePage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni/asset/dettaglio/:assetId" element={effectiveUser?.can_access_maintenance ? <MaintenanceAssetDetailPage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni/asset/:classCode" element={effectiveUser?.can_access_maintenance ? <MaintenanceAssetsPage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni/scadenze" element={effectiveUser?.can_access_maintenance ? <MaintenanceDeadlinesPage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni/categorie" element={effectiveUser?.effective_role === "admin" ? <MaintenanceAssetTypesAdminPage /> : <Navigate to="/" replace />} />
+              <Route path="/manutenzioni/notifiche" element={effectiveUser?.effective_role === "admin" ? <MaintenanceNotificationRulesPage /> : <Navigate to="/" replace />} />
               {/* Firma consegna dispositivo: accessibile a ogni utente autenticato,
                   il backend verifica che la consegna appartenga al dipendente collegato. */}
               <Route path="/le-mie-consegne/:deliveryId/firma" element={<DeliverySignaturePage />} />
@@ -758,6 +874,7 @@ function ProtectedLayout() {
           </Container>
         </Box>
       </Box>
+      )}
     </Box>
   );
 }
@@ -778,6 +895,19 @@ export default function App() {
   // firma consegna ricevuto via email), non alla home.
   return (
     <Routes>
+      {/* Pagina pubblica del QR fisico sull'asset (§ manutenzioni): nessun
+          login, deve restare raggiungibile indipendentemente da isAuthenticated,
+          quindi sta fuori dal blocco protetto sotto e non passa da ProtectedLayout. */}
+      <Route
+        path="/manutenzioni/asset-pubblico/:token"
+        element={
+          <ErrorBoundary>
+            <Suspense fallback={<PageLoader />}>
+              <MaintenanceAssetPublicPage />
+            </Suspense>
+          </ErrorBoundary>
+        }
+      />
       <Route path="/login" element={isAuthenticated ? <Navigate to={location.state?.from || "/"} replace /> : <LoginPage />} />
       <Route
         path="/*"

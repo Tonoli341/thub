@@ -507,3 +507,72 @@ def send_operational_reporting_reminder(
         "\n".join(text_lines),
         _wrap_html(subject, body_html, f"{total_missing} rendicontazioni da completare"),
     )
+
+
+_MAINTENANCE_URGENCY_LABELS = {"scaduta": "Scaduta", "urgente": "Urgente", "in_scadenza": "In scadenza"}
+
+
+def send_maintenance_deadline_reminder(
+    email: str,
+    recipient_name: str,
+    deadlines: list[dict],
+) -> bool:
+    """Promemoria giornaliero delle scadenze manutenzioni sopra soglia (§10).
+
+    Come per send_operational_reporting_reminder, il chiamante gira fuori
+    dall'event loop e registra last_notice_email_date solo dopo un invio
+    riuscito.
+    """
+    if not settings.smtp_enabled or not settings.smtp_host or not email or not deadlines:
+        return False
+
+    overdue = sum(1 for item in deadlines if item["urgency"] == "scaduta")
+    subject = f"Manutenzioni: {len(deadlines)} {'scadenza' if len(deadlines) == 1 else 'scadenze'} da presidiare"
+    dashboard_url = f"{_web_base_url()}/manutenzioni/scadenze"
+
+    text_lines = [f"Ciao {recipient_name},", "", "risultano da presidiare le seguenti scadenze:", ""]
+    rows = []
+    for item in sorted(deadlines, key=lambda i: i["due_date"]):
+        label = _MAINTENANCE_URGENCY_LABELS[item["urgency"]]
+        due = item["due_date"].strftime("%d/%m/%Y")
+        text_lines.append(f"- [{label}] {item['asset_internal_code']} · {item['deadline_type']} · {due}")
+        rows.append(
+            "<tr>"
+            f"<td style=\"padding:10px 12px;border-bottom:1px solid #e8e8e4;font-weight:700;\">{escape(item['asset_internal_code'])}</td>"
+            f"<td style=\"padding:10px 12px;border-bottom:1px solid #e8e8e4;\">{escape(item['deadline_type'])}</td>"
+            f"<td style=\"padding:10px 12px;border-bottom:1px solid #e8e8e4;\">{due}</td>"
+            f"<td style=\"padding:10px 12px;border-bottom:1px solid #e8e8e4;\">{escape(label)}</td>"
+            "</tr>"
+        )
+    text_lines.extend(["", f"Apri T-Hub: {dashboard_url}", "", "— T-Hub Workforce Planner · Tonoli S.p.A."])
+
+    body_html = f"""
+    <p style="font-family:'Lexend',Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#2B2B2B;margin:0 0 6px;">
+      Scadenze manutenzioni da presidiare
+    </p>
+    <p style="font-family:'Lexend',Arial,Helvetica,sans-serif;font-size:14px;color:#555;margin:0 0 20px;line-height:1.5;">
+      Ciao {escape(recipient_name)}, risultano <strong>{len(deadlines)}</strong>
+      {'scadenza' if len(deadlines) == 1 else 'scadenze'} da presidiare{f", di cui {overdue} già scadute" if overdue else ""}.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0"
+           style="background:#f8f8f6;border-radius:8px;border-left:4px solid #d97706;font-size:13px;">
+      <tr>
+        <th align="left" style="padding:10px 12px;border-bottom:1px solid #deded8;">Asset</th>
+        <th align="left" style="padding:10px 12px;border-bottom:1px solid #deded8;">Tipo scadenza</th>
+        <th align="left" style="padding:10px 12px;border-bottom:1px solid #deded8;">Scadenza</th>
+        <th align="left" style="padding:10px 12px;border-bottom:1px solid #deded8;">Stato</th>
+      </tr>
+      {''.join(rows)}
+    </table>
+    <table cellpadding="0" cellspacing="0" border="0" style="margin:22px 0 4px;">
+      <tr><td>
+        <a href="{dashboard_url}" style="display:inline-block;background:#007040;color:#ffffff;font-family:'Lexend',Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;padding:12px 18px;border-radius:8px;text-decoration:none;">Apri le scadenze</a>
+      </td></tr>
+    </table>
+    """
+    return _send_sync(
+        [email],
+        subject,
+        "\n".join(text_lines),
+        _wrap_html(subject, body_html, f"{len(deadlines)} scadenze manutenzioni da presidiare"),
+    )

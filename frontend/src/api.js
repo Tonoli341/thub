@@ -42,7 +42,72 @@ export async function request(path, options = {}) {
   return response.json();
 }
 
-async function download(path, fallbackFilename = "download") {
+export async function requestFormData(path, formData, options = {}) {
+  const token = getAccessToken();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(_impersonateEmployeeId ? { "X-Impersonate-Employee": _impersonateEmployeeId } : {}),
+      ...(options.headers ?? {}),
+    },
+    body: formData,
+    ...options,
+  });
+
+  if (!response.ok) {
+    let detail = "Request failed";
+    try {
+      const payload = await response.json();
+      const raw = payload.detail ?? detail;
+      detail = Array.isArray(raw) ? raw.map((e) => e.msg ?? JSON.stringify(e)).join(", ") : String(raw);
+    } catch {
+      detail = response.statusText || detail;
+    }
+    if (response.status === 401) {
+      clearAccessToken();
+    }
+    throw new Error(detail);
+  }
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  return response.json();
+}
+
+/** Come `download`, ma restituisce un blob URL per mostrare il contenuto
+ * inline (es. un'anteprima immagine) invece di avviare il salvataggio. Chi lo
+ * chiama deve revocare l'URL con `URL.revokeObjectURL` quando non serve più. */
+export async function fetchBlobUrl(path) {
+  const token = getAccessToken();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(_impersonateEmployeeId ? { "X-Impersonate-Employee": _impersonateEmployeeId } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    let detail = "Request failed";
+    try {
+      const payload = await response.json();
+      detail = String(payload.detail ?? detail);
+    } catch {
+      detail = response.statusText || detail;
+    }
+    if (response.status === 401) {
+      clearAccessToken();
+    }
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  return window.URL.createObjectURL(blob);
+}
+
+export async function download(path, fallbackFilename = "download") {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {

@@ -118,6 +118,12 @@ questi sistemi. Non proporre "sincronizzazioni bidirezionali".
   (vedi [docs/RENDICONTAZIONE_OPERATIVA.md](docs/RENDICONTAZIONE_OPERATIVA.md)).
 - [backend/app/services/crypto.py](backend/app/services/crypto.py) è **l'unico** punto in
   cui i segreti delle integrazioni vengono cifrati/decifrati.
+- **Modulo Manutenzioni**: prima di qualunque modifica (backend, frontend, migrazioni)
+  leggi per intero [manutenzioni.md](manutenzioni.md) — è la relazione di analisi requisiti
+  che guida le decisioni di disegno del modulo (gerarchia categoria/tipologia/asset,
+  scelte su documenti, scadenze, permessi) e i punti ancora aperti. Non riproporre come
+  scoperta nuova qualcosa che il documento discute già, e non contraddire una decisione
+  che vi è motivata senza dirlo esplicitamente all'utente.
 
 ---
 
@@ -233,27 +239,30 @@ all'head corrente; l'applicazione al database resta sempre a comando dell'utente
 4. Controlla `docs/`: `REPORT_MIGLIORAMENTI.md` e `REPORT_OTTIMIZZAZIONI.md` elencano
    interventi **già applicati** e altri **consapevolmente non applicati** — non riproporre
    i secondi come scoperte nuove.
+5. Se la modifica tocca il modulo **Manutenzioni**, leggi anche
+   [manutenzioni.md](manutenzioni.md) per intero (vedi §1.6): contiene le decisioni di
+   disegno già prese e il perché, non solo l'elenco funzionalità.
 
 **Mentre modifichi**
-5. Diff minimo. Una modifica = un problema.
-6. Scrivi come scrive il repo: nomi in inglese, commenti in italiano, e un commento solo
+6. Diff minimo. Una modifica = un problema.
+7. Scrivi come scrive il repo: nomi in inglese, commenti in italiano, e un commento solo
    dove serve spiegare *perché*.
-7. Se scopri un secondo problema mentre lavori: **segnalalo, non risolverlo di slancio**.
+8. Se scopri un secondo problema mentre lavori: **segnalalo, non risolverlo di slancio**.
    Fai la modifica richiesta e chiudi il riepilogo con "ho anche notato X".
-8. Non toccare `.env`. Se serve una variabile nuova, aggiornala in `.env.example` e dillo.
+9. Non toccare `.env`. Se serve una variabile nuova, aggiornala in `.env.example` e dillo.
 
 **Dopo aver modificato**
-9. Non eseguire la convalida salvo richiesta esplicita dell'utente, come indicato in §5.
-10. Riepilogo in italiano: cosa hai cambiato, quali file, controlli non eseguiti e cosa
+10. Non eseguire la convalida salvo richiesta esplicita dell'utente, come indicato in §5.
+11. Riepilogo in italiano: cosa hai cambiato, quali file, controlli non eseguiti e cosa
     hai volutamente lasciato fuori.
-11. **Non committare e non pushare** se non te lo chiedono. Se te lo chiedono, controlla
+12. **Non committare e non pushare** se non te lo chiedono. Se te lo chiedono, controlla
     `git status` prima: il working tree contiene molto lavoro non tuo.
 
 **Comunicazione**
-12. Se qualcosa non torna, chiedi. Una domanda costa meno di una migrazione sbagliata su
+13. Se qualcosa non torna, chiedi. Una domanda costa meno di una migrazione sbagliata su
     dati HR reali.
-13. Non inventare nomi di file, endpoint o colonne: verifica con `grep` prima di citarli.
-14. Se una richiesta ricade in §1 (Congelato), dillo subito e proponi l'alternativa —
+14. Non inventare nomi di file, endpoint o colonne: verifica con `grep` prima di citarli.
+15. Se una richiesta ricade in §1 (Congelato), dillo subito e proponi l'alternativa —
     poi, se l'utente conferma, procedi.
 
 ---
@@ -298,6 +307,7 @@ innesco nell'interfaccia. Sono candidati al completamento, non alla cancellazion
 | Modello `Site` (tabella `sites`) | [models.py:266](backend/app/models.py#L266) | Tabella creata da `create_all` a ogni avvio, mai letta né scritta. I siti viaggiano come stringa in `Employee.default_site` |
 | Enum `PlannerScope` | [enums.py](backend/app/enums.py) | Gli scope planner circolano come stringhe (`"self"`, `"team"`, `"all"`) via `planner_level_scope()`, che non usa questo enum |
 | Schemi Pydantic orfani | [schemas.py](backend/app/schemas.py) | `InfinityMapFieldAssignmentUpdate`, `DeviceDeliveryReturn`, `LocalUserValidationResponse`, `TimesheetWorkerRead` — nessun endpoint li usa come request o response model |
+| Colonne `version`/`supersedes_id` di `maintenance_documents` | [maintenance_asset_models.py](backend/app/maintenance_asset_models.py) | Rimosse dal modello ORM il 2026-09-03 insieme al versionamento documenti (vedi [manutenzioni.md](manutenzioni.md) §11): restano fisicamente nella tabella `maintenance_documents` (nessuna migrazione distruttiva), ma non sono più mappate né lette/scritte da nessun codice |
 
 ### 7.3 Frontend — file e simboli scollegati
 
@@ -306,6 +316,7 @@ innesco nell'interfaccia. Sono candidati al completamento, non alla cancellazion
 | `getPortalRoleDisplayLabel(appRole, hasDirectReports)` | [pages/EmployeesPage.jsx](frontend/src/pages/EmployeesPage.jsx) | Etichetta corta del ruolo portale (`Mgr`, `Collab`). Rimasta senza chiamanti quando la colonna *Ruolo portale* è passata a sola icona con tooltip: il tooltip usa l'etichetta estesa di `portalRoleMeta` |
 | `theme.js` (35 righe) | [frontend/src/theme.js](frontend/src/theme.js) | `createTheme` MUI **mai importato**: il tema vivo è quello di [ThemeContext.jsx](frontend/src/ThemeContext.jsx). File residuo, rimuovibile con più sicurezza degli altri — ma sempre da §2 |
 | Le 6 funzioni di `api.js` di §7.1 | [frontend/src/api.js](frontend/src/api.js) | Unici export del client HTTP senza consumatori |
+| `removeMaintenanceAssetMainImage(assetId)` | [frontend/src/maintenanceAssetsApi.js](frontend/src/maintenanceAssetsApi.js) | La rimozione dell'immagine principale non è più esposta nel dettaglio asset; resta disponibile nel client per un eventuale flusso amministrativo dedicato |
 
 *Nessun CSS orfano, nessuna pagina fuori dal routing di `App.jsx`, nessun router backend
 non registrato in `api/__init__.py`: quelle tre categorie sono pulite.*

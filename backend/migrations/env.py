@@ -6,7 +6,8 @@ from sqlalchemy import engine_from_config, pool
 from app.config import settings
 from app.db import Base
 import app.models  # noqa: F401  # registra tutti i modelli sulla metadata
-import app.maintenance_models  # noqa: F401  # modulo isolato manutenzioni
+import app.maintenance_models  # noqa: F401  # modulo isolato manutenzioni (questionario)
+import app.maintenance_asset_models  # noqa: F401  # modulo isolato manutenzioni (anagrafica asset, fase 1)
 import app.operational_reporting_models  # noqa: F401  # modulo isolato di rendicontazione operativa
 
 config = context.config

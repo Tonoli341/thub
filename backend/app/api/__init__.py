@@ -25,6 +25,12 @@ from app.api.integrations import router as integrations_router
 from app.api.justifications import router as justifications_router
 from app.api.ldap_employees import router as ldap_employees_router
 from app.api.maintenance import router as maintenance_router
+from app.api.maintenance_assets import router as maintenance_assets_router
+from app.api.maintenance_assets_public import router as maintenance_assets_public_router
+from app.api.maintenance_deadlines import router as maintenance_deadlines_router
+from app.api.maintenance_documents import router as maintenance_documents_router
+from app.api.maintenance_images import router as maintenance_images_router
+from app.api.maintenance_notification_rules import router as maintenance_notification_rules_router
 from app.api.notifications import router as notifications_router
 from app.api.org_entities import router as org_entities_router
 from app.api.operational_reporting import router as operational_reporting_router
@@ -56,8 +62,17 @@ api_router.include_router(equipment_items_router)
 api_router.include_router(device_assets_router)
 api_router.include_router(device_deliveries_router)
 api_router.include_router(employees_router)
+# Pagina pubblica del QR code fisico sull'asset: un tecnico sul campo la apre
+# senza login, per token imprevedibile e rigenerabile — nessun dato sensibile
+# esposto (niente custom_fields/documenti/immagini, vedi maintenance_assets_public.py).
+api_router.include_router(maintenance_assets_public_router)
 protected_router.include_router(ldap_employees_router)
 protected_router.include_router(maintenance_router)
+protected_router.include_router(maintenance_assets_router)
+protected_router.include_router(maintenance_documents_router)
+protected_router.include_router(maintenance_images_router)
+protected_router.include_router(maintenance_deadlines_router)
+protected_router.include_router(maintenance_notification_rules_router)
 protected_router.include_router(projects_router)
 protected_router.include_router(infinity_billing_customer_supplier_map_router)
 protected_router.include_router(infinity_billing_items_router)

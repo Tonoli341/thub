@@ -470,6 +470,7 @@ docker compose exec backend curl -s localhost:8000/openapi.json
 - `POST /api/activity-records/active` (avvio timer attività realtime)
 - `GET /api/activity-records/active` (recupero attività in corso)
 - `POST /api/activity-records/active/close` (chiusura timer → ActivityRecord)
+- `GET /api/maintenance/assets/public/{token}` (pagina pubblica QR asset manutenzioni, senza autenticazione: anagrafica, scadenze, foto, contaore, note asset con autore/data e metadati documento limitati a tipo e note; nessun contenuto documento)
 
 ## Note implementative
 
