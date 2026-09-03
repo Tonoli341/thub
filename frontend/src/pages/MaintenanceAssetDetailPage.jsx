@@ -478,7 +478,7 @@ function CounterReadingsSection({ assetId, isAdmin }) {
                       <TableCell>
                         {delta === null ? "—" : (
                           <Typography component="span" sx={{ fontSize: 13, color: delta < 0 ? "error.main" : "text.secondary" }}>
-                            {delta >= 0 ? "+" : ""}{delta} ore
+                            {delta >= 0 ? "+" : ""}{delta.toFixed(2)} ore
                           </Typography>
                         )}
                       </TableCell>
