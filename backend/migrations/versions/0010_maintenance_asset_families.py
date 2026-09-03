@@ -17,13 +17,8 @@ nel frattempo) invece che dopo 0008 direttamente, perché quella revisione ha
 preso lo stesso down_revision creando due head parallele — stesso caso già
 capitato con 0003_assignment_cause_visita_idoneita_lowercase.
 
-Riagganciata il 2026-09-03 a valle di 0010_ninjaone_tickets (anziché
-direttamente a 0009): quella migrazione era stata applicata in produzione
-prima di essere revertata dal codice, e senza questo aggancio la catena
-Alembic in prod resta spezzata. Nessuna DDL di questo file cambia.
-
 Revision ID: 0010_maintenance_asset_families
-Revises: 0010_ninjaone_tickets
+Revises: 0009_maintenance_notification_rules
 Create Date: 2026-08-29
 """
 
@@ -33,7 +28,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0010_maintenance_asset_families"
-down_revision = "0010_ninjaone_tickets"
+down_revision = "0009_maintenance_notification_rules"
 branch_labels = None
 depends_on = None
 

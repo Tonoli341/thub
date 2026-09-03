@@ -16,7 +16,7 @@ si gestisce rendendo la migrazione idempotente invece di scoprirlo a metà
 deploy.
 
 Revision ID: 0003_maintenance_assets
-Revises: 0003_assignment_cause_visita_idoneita_lowercase
+Revises: 0010_ninjaone_tickets
 Create Date: 2026-08-25
 
 Nota sul nome file: l'id di revisione resta "0003_maintenance_assets" (non
@@ -25,6 +25,13 @@ prima che la 0003_assignment_cause_visita_idoneita_lowercase comparisse nel
 repo — cambiare l'id qui romperebbe quell'ambiente esattamente come vieta
 AGENTS.md §1.2 per le migrazioni già eseguite. Il file si chiama 0004 solo per
 tenere l'ordine leggibile su disco.
+
+Riagganciata il 2026-09-03 a valle di 0010_ninjaone_tickets (anziché
+direttamente a 0003_assignment_cause_visita_idoneita_lowercase): è il vero
+down_revision con cui 0010_ninjaone_tickets fu applicata in produzione (vedi
+commit 045fcc7 del 31/08/2026), e nessuna tabella del modulo Manutenzioni
+risultava mai creata lì — la catena precedente puntava a un innesto (0009)
+mai davvero raggiunto in prod.
 """
 
 from uuid import uuid4
@@ -34,7 +41,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "0003_maintenance_assets"
-down_revision = "0003_assignment_cause_visita_idoneita_lowercase"
+down_revision = "0010_ninjaone_tickets"
 branch_labels = None
 depends_on = None
 

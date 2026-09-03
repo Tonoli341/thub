@@ -9,10 +9,16 @@ catena Alembic — vedi AGENTS.md §7 per la tabella orfana che ne risulta: ness
 modello/endpoint la usa più, non reintrodurre il feature senza deciderlo
 esplicitamente con l'utente.
 
+Aggancio a 0003 (non a 0009): è il down_revision con cui questa migrazione fu
+davvero applicata in produzione (vedi commit 045fcc7 del 31/08/2026, quando la
+catena Manutenzioni 0004-0009 esisteva solo nel working tree, mai committata).
+La catena Manutenzioni ora si innesta a valle di questo nodo, in
+0004_maintenance_assets, non qui.
+
 Migrazione additiva: una tabella nuova.
 
 Revision ID: 0010_ninjaone_tickets
-Revises: 0009_maintenance_notification_rules
+Revises: 0003_assignment_cause_visita_idoneita_lowercase
 Create Date: 2026-08-31
 """
 
@@ -20,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0010_ninjaone_tickets"
-down_revision = "0009_maintenance_notification_rules"
+down_revision = "0003_assignment_cause_visita_idoneita_lowercase"
 branch_labels = None
 depends_on = None
 
