@@ -308,6 +308,7 @@ innesco nell'interfaccia. Sono candidati al completamento, non alla cancellazion
 | Enum `PlannerScope` | [enums.py](backend/app/enums.py) | Gli scope planner circolano come stringhe (`"self"`, `"team"`, `"all"`) via `planner_level_scope()`, che non usa questo enum |
 | Schemi Pydantic orfani | [schemas.py](backend/app/schemas.py) | `InfinityMapFieldAssignmentUpdate`, `DeviceDeliveryReturn`, `LocalUserValidationResponse`, `TimesheetWorkerRead` — nessun endpoint li usa come request o response model |
 | Colonne `version`/`supersedes_id` di `maintenance_documents` | [maintenance_asset_models.py](backend/app/maintenance_asset_models.py) | Rimosse dal modello ORM il 2026-09-03 insieme al versionamento documenti (vedi [manutenzioni.md](manutenzioni.md) §11): restano fisicamente nella tabella `maintenance_documents` (nessuna migrazione distruttiva), ma non sono più mappate né lette/scritte da nessun codice |
+| Tabella `ninjaone_tickets` | [migrations/versions/0010_ninjaone_tickets.py](backend/migrations/versions/0010_ninjaone_tickets.py) | Il feature "apertura ticket NinjaOne da T-Hub" è stato revertato dal codice (commit `4e6bb9b`, 2026-09-01) dopo che questa migrazione era già applicata in produzione: il file è stato ricreato il 2026-09-03 solo per continuità della catena Alembic (`0010_maintenance_asset_families` ora vi si aggancia a valle). Nessun modello/router/pagina usa più questa tabella — non reintrodurre il feature senza deciderlo esplicitamente |
 
 ### 7.3 Frontend — file e simboli scollegati
 
