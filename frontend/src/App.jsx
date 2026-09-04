@@ -488,6 +488,15 @@ function ModuleChooserPage({ canAccessMaintenance, canAccessDeliveries, canAcces
           accent="#007040"
           onClick={() => onSelect("thub")}
         />
+        {canAccessReporting && (
+          <ModuleBox
+            icon="clock"
+            title="T-Hub Rendicontazioni"
+            description="Commesse Jupiter e rendicontazione operativa."
+            accent="#6a3d9a"
+            onClick={() => onSelect("reporting")}
+          />
+        )}
         {canAccessMaintenance && (
           <ModuleBox
             icon="tools"
@@ -504,15 +513,6 @@ function ModuleChooserPage({ canAccessMaintenance, canAccessDeliveries, canAcces
             description="Dotazioni di dispositivi e DPI ai dipendenti."
             accent="#0a5f8a"
             onClick={() => onSelect("deliveries")}
-          />
-        )}
-        {canAccessReporting && (
-          <ModuleBox
-            icon="clock"
-            title="T-Hub Rendicontazioni"
-            description="Commesse Jupiter e rendicontazione operativa."
-            accent="#6a3d9a"
-            onClick={() => onSelect("reporting")}
           />
         )}
       </Stack>
