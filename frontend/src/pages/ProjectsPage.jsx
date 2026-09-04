@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import FilterBar from "../components/FilterBar";
+import FilterSelect from "../components/FilterSelect";
 import PageHeader, { HeaderButton } from "../components/PageHeader";
 import { tableSx } from "../components/tableStyles";
 import {
@@ -1325,7 +1327,11 @@ function InfinityMapSection({ items = [], isLoading, error, infinityItems, custo
   const [dialogItem, setDialogItem] = useState(null);
   const [deleteItem, setDeleteItem] = useState(null);
   const [duplicateClientItem, setDuplicateClientItem] = useState(null);
-  const [clientFilter, setClientFilter] = useState(null);
+  const [search, setSearch] = useState("");
+  const [clientFilter, setClientFilter] = useState("");
+  const [areaFilter, setAreaFilter] = useState("");
+  const [infinityItemFilter, setInfinityItemFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [snackbar, setSnackbar] = useState(null);
 
   function handleAdd() { setEditItem(null); setDialogItem(null); setDialogOpen(true); }
@@ -1421,7 +1427,6 @@ function InfinityMapSection({ items = [], isLoading, error, infinityItems, custo
 
   const activeCount = items.filter((i) => i.is_active).length;
 
-  // Clienti / Fornitori distinti presenti fra gli incroci, per i filtri.
   const clientOptions = [
     ...items
       .reduce((map, i) => {
@@ -1432,24 +1437,125 @@ function InfinityMapSection({ items = [], isLoading, error, infinityItems, custo
       }, new Map())
       .entries(),
   ]
-    .map(([code, description]) => ({ code, description }))
-    .sort((a, b) => a.description.localeCompare(b.description));
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, "it"));
+  const areaOptions = [
+    ...items
+      .reduce((map, item) => {
+        const value = item.operational_area_id || "__none__";
+        const label = item.operational_area_name || "Senza area";
+        if (!map.has(value)) map.set(value, label);
+        return map;
+      }, new Map())
+      .entries(),
+  ]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, "it"));
+  const infinityItemOptions = [
+    ...items
+      .reduce((map, item) => {
+        if (item.infinity_billing_item_id && !map.has(item.infinity_billing_item_id)) {
+          map.set(item.infinity_billing_item_id, item.infinity_billing_item_name || "Voce senza nome");
+        }
+        return map;
+      }, new Map())
+      .entries(),
+  ]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, "it"));
 
-  // Se il cliente filtrato sparisce (incrocio eliminato), torna a "Tutti".
-  const activeFilterExists = clientFilter === null || clientOptions.some((c) => c.code === clientFilter);
-  const effectiveFilter = activeFilterExists ? clientFilter : null;
-  const filteredItems = effectiveFilter
-    ? items.filter((i) => i.customer_supplier_code === effectiveFilter)
-    : items;
+  // Se un'opzione sparisce dopo una modifica, il relativo criterio torna
+  // implicitamente a "Tutti" senza lasciare la tabella vuota senza motivo.
+  const effectiveClientFilter = clientOptions.some((option) => option.value === clientFilter) ? clientFilter : "";
+  const effectiveAreaFilter = areaOptions.some((option) => option.value === areaFilter) ? areaFilter : "";
+  const effectiveInfinityItemFilter = infinityItemOptions.some((option) => option.value === infinityItemFilter) ? infinityItemFilter : "";
+  const normalizedSearch = search.trim().toLocaleLowerCase("it");
+  const hasActiveFilters = Boolean(normalizedSearch || effectiveClientFilter || effectiveAreaFilter || effectiveInfinityItemFilter || statusFilter);
+  const filteredItems = items.filter((item) => {
+    const areaValue = item.operational_area_id || "__none__";
+    if (effectiveClientFilter && item.customer_supplier_code !== effectiveClientFilter) return false;
+    if (effectiveAreaFilter && areaValue !== effectiveAreaFilter) return false;
+    if (effectiveInfinityItemFilter && item.infinity_billing_item_id !== effectiveInfinityItemFilter) return false;
+    if (statusFilter === "active" && !item.is_active) return false;
+    if (statusFilter === "inactive" && item.is_active) return false;
+    if (!normalizedSearch) return true;
+    const searchableText = [
+      item.operational_area_name,
+      ...(item.buildings ?? []),
+      item.customer_supplier_description,
+      item.customer_supplier_code,
+      item.infinity_billing_item_name,
+      item.jupiter_description,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLocaleLowerCase("it");
+    return searchableText.includes(normalizedSearch);
+  });
+
+  function resetFilters() {
+    setSearch("");
+    setClientFilter("");
+    setAreaFilter("");
+    setInfinityItemFilter("");
+    setStatusFilter("");
+  }
 
   return (
     <>
+      <FilterBar onReset={resetFilters} resetDisabled={!hasActiveFilters}>
+        <TextField
+          label="Cerca"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Cliente, codice, Jupiter, immobile..."
+          size="small"
+          sx={{ "--filter-basis": "260px" }}
+        />
+        <FilterSelect
+          label="Cliente / Fornitore"
+          value={effectiveClientFilter}
+          onChange={setClientFilter}
+          options={clientOptions}
+          placeholder="Tutti"
+          disabled={clientOptions.length === 0}
+        />
+        <FilterSelect
+          label="Area"
+          value={effectiveAreaFilter}
+          onChange={setAreaFilter}
+          options={areaOptions}
+          placeholder="Tutte"
+          disabled={areaOptions.length === 0}
+        />
+        <FilterSelect
+          label="Voce Infinity"
+          value={effectiveInfinityItemFilter}
+          onChange={setInfinityItemFilter}
+          options={infinityItemOptions}
+          placeholder="Tutte"
+          disabled={infinityItemOptions.length === 0}
+        />
+        <FilterSelect
+          label="Stato"
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={[
+            { value: "active", label: "Attivi" },
+            { value: "inactive", label: "Inattivi" },
+          ]}
+          placeholder="Tutti"
+          disabled={items.length === 0}
+        />
+      </FilterBar>
+
       <Paper sx={{ p: 3, borderRadius: 3 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
           <Box>
             <Typography variant="h6" fontWeight={700}>Incroci Infinity / Cliente-Fornitore</Typography>
             {!isLoading && items.length > 0 && (
               <Typography variant="caption" color="text.secondary">
+                {hasActiveFilters && `${filteredItems.length} visualizzat${filteredItems.length !== 1 ? "i" : "o"} · `}
                 {activeCount} attiv{activeCount !== 1 ? "i" : "o"} su {items.length}
               </Typography>
             )}
@@ -1458,29 +1564,6 @@ function InfinityMapSection({ items = [], isLoading, error, infinityItems, custo
         </Stack>
 
         {error && <Alert severity="error" sx={{ mb: 2 }}>{error.message}</Alert>}
-
-        {!isLoading && clientOptions.length > 1 && (
-          <Stack direction="row" useFlexGap sx={{ mb: 2, flexWrap: "wrap", gap: 1, alignItems: "center" }}>
-            <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5 }}>Cliente:</Typography>
-            <Chip
-              label="Tutti"
-              size="small"
-              color={effectiveFilter === null ? "primary" : "default"}
-              variant={effectiveFilter === null ? "filled" : "outlined"}
-              onClick={() => setClientFilter(null)}
-            />
-            {clientOptions.map((c) => (
-              <Chip
-                key={c.code}
-                label={c.description}
-                size="small"
-                color={effectiveFilter === c.code ? "primary" : "default"}
-                variant={effectiveFilter === c.code ? "filled" : "outlined"}
-                onClick={() => setClientFilter(effectiveFilter === c.code ? null : c.code)}
-              />
-            ))}
-          </Stack>
-        )}
 
         {isLoading && (
           <Stack spacing={0.5}>
@@ -1528,6 +1611,14 @@ function InfinityMapSection({ items = [], isLoading, error, infinityItems, custo
                     onDelete={setDeleteItem}
                   />
                 ))}
+                {filteredItems.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={10} align="center" sx={{ py: 5 }}>
+                      <Typography variant="body2" color="text.secondary">Nessun incrocio corrisponde ai filtri.</Typography>
+                      <Button size="small" onClick={resetFilters} sx={{ mt: 1, textTransform: "none" }}>Azzera filtri</Button>
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
           </Box>
